@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Portico Web Reader</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 15px/1.5 system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+      h1 { font-size: 1.4rem; }
+      .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0; }
+      textarea { width: 100%; min-height: 7rem; font: inherit; padding: 0.5rem; box-sizing: border-box; }
+      input[type="text"] { flex: 1; font: inherit; padding: 0.4rem; }
+      button { font: inherit; padding: 0.4rem 0.9rem; cursor: pointer; }
+      select { font: inherit; padding: 0.3rem; }
+      #status { font-size: 0.85rem; opacity: 0.8; }
+      #answer { white-space: pre-wrap; border: 1px solid #8884; border-radius: 6px; padding: 0.75rem; min-height: 3rem; }
+      .pill { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid #8886; }
+      .ok { color: #18794e; } .bad { color: #cd2b31; }
+    </style>
+  </head>
+  <body>
+    <h1>Portico Web Reader</h1>
+    <p>Paste an article, pick a local Agent, and ask a question. Streaming answers come
+      from a CLI Agent on <em>your</em> machine via the Portico daemon.</p>
+
+    <div class="row">
+      <span id="status">Checking for Portico…</span>
+      <span id="health" class="pill">unknown</span>
+    </div>
+
+    <div class="row">
+      <label for="agent">Agent:</label>
+      <select id="agent"><option>—</option></select>
+      <button id="refresh">Refresh</button>
+    </div>
+
+    <textarea id="article" placeholder="Paste article text or context here…">Local-first AI tools run models on the user's own machine. They promise lower latency, offline use, and stronger privacy because raw context never leaves the device.</textarea>
+
+    <div class="row">
+      <input id="question" type="text" value="What is the strongest counterargument?" />
+      <button id="ask">Ask</button>
+      <button id="cancel" disabled>Cancel</button>
+    </div>
+
+    <h2>Answer</h2>
+    <div id="answer"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,71 @@
+// @portico/core — in-process Agent discovery and execution.
+
+export type {
+  AgentAdapter,
+  AgentEntry,
+  AgentProtocol,
+  AgentProvider,
+  ChatMessage,
+  ChatRequest,
+  ChatRequestOptions,
+  ContextAttachment,
+  ContextBundle,
+  RunContext,
+  RuntimeEvent,
+} from "./types.ts";
+
+export {
+  PorticoError,
+  AgentNotFoundError,
+  AgentUnavailableError,
+  AdapterUnsupportedError,
+  AgentTimeoutError,
+  isPorticoError,
+} from "./errors.ts";
+export type { PorticoErrorCode } from "./errors.ts";
+
+export {
+  parseSemver,
+  compareVersions,
+  satisfiesMinVersion,
+  versionStatus,
+} from "./version.ts";
+export type { ParsedVersion, VersionStatus } from "./version.ts";
+
+export { renderPrompt, DEFAULT_MAX_CONTEXT_CHARS } from "./context.ts";
+export type { RenderOptions } from "./context.ts";
+
+export { encodeEvent, NdjsonParser, isTerminalEvent } from "./events.ts";
+
+export {
+  spawnStream,
+  capture,
+  DEFAULT_MAX_OUTPUT_BYTES,
+  DEFAULT_TIMEOUT_MS,
+} from "./runner.ts";
+export type { ProcessEvent, SpawnStreamOptions, CaptureResult } from "./runner.ts";
+
+export {
+  resolveViaLoginShell,
+  loginShellPath,
+  candidateShells,
+} from "./shell.ts";
+
+export {
+  DEFAULT_PROVIDERS,
+  registerProvider,
+  getProvider,
+  listProviders,
+  registerAdapter,
+  getAdapter,
+  listAdapters,
+  clearAdapters,
+} from "./registry.ts";
+
+export { discoverAgents, discoverAgent } from "./discovery.ts";
+export type { DiscoverOptions } from "./discovery.ts";
+
+export { createGenericCliAdapter, runGenericCli } from "./generic.ts";
+
+export { runAgent } from "./run.ts";
+export type { RunAgentContext } from "./run.ts";

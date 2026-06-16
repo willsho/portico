@@ -1,0 +1,18 @@
+{
+  "name": "@portico/daemon",
+  "version": "0.1.0",
+  "description": "Portico local daemon: HTTP/NDJSON bridge to local Agents.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@portico/core": "*",
+    "@portico/adapters": "*"
+  },
+  "license": "MIT"
+}

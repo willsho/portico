@@ -1,0 +1,27 @@
+{
+  "name": "portico-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portico is a local Agent runtime bridge for web and desktop apps.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/adapters",
+    "packages/daemon",
+    "packages/client",
+    "packages/cli",
+    "examples/node-cli"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --disable-warning=ExperimentalWarning packages/*/tests/*.test.ts",
+    "portico": "node --disable-warning=ExperimentalWarning packages/cli/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

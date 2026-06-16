@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@portico/core": ["packages/core/src/index.ts"],
+      "@portico/adapters": ["packages/adapters/src/index.ts"],
+      "@portico/daemon": ["packages/daemon/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

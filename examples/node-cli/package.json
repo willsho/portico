@@ -1,0 +1,11 @@
+{
+  "name": "@portico/example-node-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@portico/core": "*",
+    "@portico/adapters": "*"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@portico/cli",
+  "version": "0.1.0",
+  "description": "Portico command-line interface.",
+  "type": "module",
+  "bin": {
+    "portico": "./src/index.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@portico/core": "*",
+    "@portico/adapters": "*",
+    "@portico/daemon": "*"
+  },
+  "license": "MIT"
+}

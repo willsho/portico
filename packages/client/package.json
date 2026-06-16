@@ -1,0 +1,20 @@
+{
+  "name": "@portico/client",
+  "version": "0.1.0",
+  "description": "Portico client SDK: health, agents, and streaming chat for web/Electron/Node.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts"
+  },
+  "types": "./src/index.ts",
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@portico/core": "*",
+    "@portico/adapters": "*",
+    "@portico/daemon": "*"
+  },
+  "license": "MIT"
+}
