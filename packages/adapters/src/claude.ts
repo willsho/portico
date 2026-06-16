@@ -1,8 +1,10 @@
-// Claude Code adapter. MVP strategy (plan §10.3): discover `claude`, drive it in
-// non-interactive print mode (`claude -p`, reading the prompt from stdin). Streaming
-// stream-json output is a later enhancement.
+// Claude Code adapter. Driven in non-interactive print mode with stream-json output
+// (`claude -p --output-format stream-json --verbose`, prompt read from stdin), so the
+// stream-json engine can surface reasoning / tool_call / tool_result as their own events.
+// `--verbose` is required by the CLI whenever stream-json is paired with `--print`.
+// `--include-partial-messages` adds token-level deltas so text and reasoning stream live.
 
-import { createGenericCliAdapter } from "@portico/core";
+import { createStreamJsonAdapter } from "@portico/core";
 import type { AgentAdapter, AgentProvider } from "@portico/core";
 
 export const claudeProvider: AgentProvider = {
@@ -11,8 +13,10 @@ export const claudeProvider: AgentProvider = {
   commandNames: ["claude"],
   envPathNames: ["PORTICO_CLAUDE_PATH"],
   protocols: ["stream-json", "generic-cli"],
-  // `-p` / `--print`: run once non-interactively and print the result. Reads stdin.
-  defaultArgs: ["-p"],
+  defaultArgs: ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+  // Resume a prior conversation. Must run in the same cwd — Claude stores each session's
+  // transcript per project directory, so the daemon pins cwd alongside the session id.
+  resumeArgs: (agentSessionId) => ["--resume", agentSessionId],
 };
 
-export const claudeAdapter: AgentAdapter = createGenericCliAdapter(claudeProvider);
+export const claudeAdapter: AgentAdapter = createStreamJsonAdapter(claudeProvider);

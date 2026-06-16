@@ -32,5 +32,11 @@ export async function* runAgent(
   const adapter = getAdapter(request.provider) ?? createGenericCliAdapter(provider);
   const entry = context.entry ?? (await discoverAgent(provider, { env: context.env }));
 
-  yield* adapter.run(request, entry, { signal: context.signal, env: context.env });
+  yield* adapter.run(request, entry, {
+    signal: context.signal,
+    env: context.env,
+    sessionId: context.sessionId,
+    resumeSessionId: context.resumeSessionId,
+    onAgentSession: context.onAgentSession,
+  });
 }

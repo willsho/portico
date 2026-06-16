@@ -67,5 +67,19 @@ export type { DiscoverOptions } from "./discovery.ts";
 
 export { createGenericCliAdapter, runGenericCli } from "./generic.ts";
 
+export {
+  createStreamJsonAdapter,
+  runStreamJson,
+  translateStreamJsonLine,
+} from "./stream-json.ts";
+
 export { runAgent } from "./run.ts";
 export type { RunAgentContext } from "./run.ts";
+
+export { createInMemorySessionStore } from "./session.ts";
+export type {
+  SessionRecord,
+  SessionStatus,
+  SessionStore,
+  CreateSessionInput,
+} from "./session.ts";

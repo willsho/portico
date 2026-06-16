@@ -4,7 +4,7 @@
 import { createServer as createHttpServer } from "node:http";
 import type { Server, IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { discoverAgents, PorticoError } from "@portico/core";
+import { discoverAgents, PorticoError, createInMemorySessionStore } from "@portico/core";
 import type { AgentEntry } from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
 import type { DaemonConfig } from "./config.ts";
@@ -15,6 +15,8 @@ import {
   handleChat,
   handleHealth,
   handleReload,
+  handleListSessions,
+  handleDeleteSession,
   writeJson,
 } from "./routes.ts";
 import type { DaemonContext } from "./routes.ts";
@@ -58,6 +60,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     return agentsCache;
   };
 
+  const sessions = createInMemorySessionStore();
+  const inFlight = new Set<string>();
+
   const ctx: DaemonContext = {
     name: DAEMON_NAME,
     version: DAEMON_VERSION,
@@ -65,6 +70,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     getAgents: () => agentsCache,
     reload,
     findEntry: (provider) => agentsCache.find((a) => a.provider === provider),
+    sessions,
+    inFlight,
   };
 
   const server = createHttpServer((req, res) => {
@@ -141,11 +148,19 @@ async function handleRequest(
   const route = `${req.method} ${url.pathname}`;
 
   try {
+    // Dynamic session route: DELETE /sessions/:id
+    if (req.method === "DELETE" && url.pathname.startsWith("/sessions/")) {
+      const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
+      return handleDeleteSession(req, res, ctx, id);
+    }
+
     switch (route) {
       case "GET /health":
         return handleHealth(req, res, ctx);
       case "GET /agents":
         return handleAgents(req, res, ctx);
+      case "GET /sessions":
+        return handleListSessions(req, res, ctx);
       case "POST /chat":
         return await handleChat(req, res, ctx);
       case "POST /reload":

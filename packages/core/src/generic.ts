@@ -34,7 +34,7 @@ export async function* runGenericCli(
   entry: AgentEntry,
   context: RunContext = {},
 ): AsyncIterable<RuntimeEvent> {
-  const sessionId = randomUUID();
+  const sessionId = context.sessionId ?? randomUUID();
   yield { type: "start", sessionId, provider: provider.id };
 
   if (!entry.available || !entry.path) {
@@ -80,9 +80,10 @@ export async function* runGenericCli(
   }
 }
 
-type ExitEvent = Extract<ProcessEvent, { type: "exit" }>;
+export type ExitEvent = Extract<ProcessEvent, { type: "exit" }>;
 
-function classifyExit(event: ExitEvent, stderr: string): RuntimeEvent | null {
+/** Map a process exit (timeout / cancel / output cap / non-zero) onto an error event. */
+export function classifyExit(event: ExitEvent, stderr: string): RuntimeEvent | null {
   if (event.cancelled) return { type: "error", error: "Run cancelled by caller.", code: "cancelled" };
   if (event.timedOut) return { type: "error", error: "Agent process timed out.", code: "timeout" };
   if (event.outputLimited)
