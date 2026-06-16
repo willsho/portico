@@ -17,6 +17,18 @@
       #answer { white-space: pre-wrap; border: 1px solid #8884; border-radius: 6px; padding: 0.75rem; min-height: 3rem; }
       .pill { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid #8886; }
       .ok { color: #18794e; } .bad { color: #cd2b31; }
+      .trace { border: 1px solid #8884; border-radius: 6px; padding: 0.6rem 0.75rem; margin: 0.75rem 0; }
+      summary { cursor: pointer; font-weight: 600; }
+      #thinking { white-space: pre-wrap; font: 13px/1.45 ui-monospace, monospace; opacity: 0.85; margin-top: 0.5rem; }
+      #tools { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+      #tools li { padding: 0.35rem 0; border-top: 1px solid #8882; }
+      #tools li:first-child { border-top: 0; }
+      .tool-name { font-weight: 600; }
+      .tool-io { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; opacity: 0.8; margin: 0.15rem 0 0; }
+      .tool-io.err { color: #cd2b31; opacity: 1; }
+      .turn { border-left: 3px solid #8884; padding: 0.1rem 0 0.1rem 0.6rem; margin: 0.6rem 0; }
+      .turn .q { font-weight: 600; }
+      .turn .a { white-space: pre-wrap; margin-top: 0.2rem; }
     </style>
   </head>
   <body>
@@ -38,9 +50,22 @@
     <textarea id="article" placeholder="Paste article text or context here…">Local-first AI tools run models on the user's own machine. They promise lower latency, offline use, and stronger privacy because raw context never leaves the device.</textarea>
 
     <div class="row">
-      <input id="question" type="text" value="What is the strongest counterargument?" />
+      <input id="question" type="text" value="What is the strongest counterargument?" placeholder="Ask a question…" />
       <button id="ask">Ask</button>
       <button id="cancel" disabled>Cancel</button>
+      <button id="newchat">New chat</button>
+    </div>
+
+    <div id="transcript"></div>
+
+    <details id="thinkingBox" class="trace" hidden>
+      <summary>Thinking</summary>
+      <div id="thinking"></div>
+    </details>
+
+    <div id="toolsBox" class="trace" hidden>
+      <strong>Tool activity</strong>
+      <ul id="tools"></ul>
     </div>
 
     <h2>Answer</h2>

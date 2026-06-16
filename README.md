@@ -6,7 +6,7 @@ Portico lets a Web App, Electron app, desktop tool, or CLI connect to the AI Age
 user has **already installed on their machine** — Codex, Claude Code, and others — through
 one uniform interface. It discovers installed Agent CLIs, detects versions and
 capabilities, normalizes their wildly different invocation styles behind adapters, and
-streams their output as a single event type.
+streams their output — text, reasoning, and tool calls — as one unified event type.
 
 The name is the architectural one: a portico is the entryway between the outside world
 and the inside of a building. Portico is the entryway between your app and the user's
@@ -46,7 +46,7 @@ The single problem it solves:
 
 ```bash
 npm install        # links the workspace packages
-npm test           # 36 tests across all packages
+npm test           # 63 tests across all packages
 npm run typecheck  # tsc --noEmit over the monorepo
 ```
 
@@ -96,14 +96,24 @@ the CORS/LAN security posture.
 | `GET /agents` | –                   | `{ agents: AgentEntry[] }`        |
 | `POST /chat`  | `ChatRequest` JSON  | `application/x-ndjson` event stream |
 | `POST /reload`| –                   | `{ agents: AgentEntry[] }` (re-discover) |
+| `GET /sessions` | –                 | `{ sessions: SessionRecord[] }`   |
+| `DELETE /sessions/:id` | –          | `{ ok }` (or `404`)               |
 
-`POST /chat` streams one JSON object per line:
+`POST /chat` streams one JSON object per line. Agents that speak a structured protocol
+(e.g. Claude Code) surface reasoning and tool use as their own events:
 
 ```json
-{"type":"start","sessionId":"…","provider":"codex"}
-{"type":"content","delta":"The strongest counterargument is…"}
+{"type":"start","sessionId":"…","provider":"claude"}
+{"type":"reasoning","delta":"Let me check the file…"}
+{"type":"tool_call","name":"Read","input":{"file_path":"package.json"}}
+{"type":"tool_result","name":"Read","output":"…"}
+{"type":"content","delta":"The answer is…"}
 {"type":"done","message":"…full answer…"}
 ```
+
+The `start` event's `sessionId` (also returned as the `X-Portico-Session` response header)
+is a continuation handle — send it back as `ChatRequest.sessionId` to resume the same
+conversation. See [Sessions](#sessions).
 
 ## Client SDK
 
@@ -141,6 +151,23 @@ for await (const event of runAgent({ provider: "codex", context, messages })) {
 }
 ```
 
+## Sessions
+
+A **session** is a continuable conversation with one agent in one working directory.
+Portico is stateless by default; pass a `sessionId` to continue a prior turn:
+
+- A `/chat` without a `sessionId` mints a handle, returned on the `start` event and the
+  `X-Portico-Session` header.
+- Send that handle back as `ChatRequest.sessionId` and Portico resumes the agent's own
+  session (e.g. `claude --resume`) — it keeps full context, so you don't re-send history.
+- Resume is keyed by `(session, cwd)` and skipped when the previous turn failed (the next
+  turn starts fresh). One run per session at a time — a concurrent `/chat` gets `409`.
+- `GET /sessions` lists records; `DELETE /sessions/:id` forgets one.
+
+Records live in memory for the daemon's lifetime (file-backed persistence is a planned
+switch; Codex resume is not wired yet). Details in
+[`docs/session-management-plan.md`](docs/session-management-plan.md).
+
 ## Discovery
 
 `discoverAgents()` probes in layers, mirroring how mature local runtimes survive a
@@ -170,10 +197,12 @@ export interface AgentAdapter {
 ```
 
 - **generic-cli** — spawn binary, pipe the rendered prompt to stdin, stream stdout as
-  `content`. The MVP basis for `codex` and `claude`.
-- **codex / claude** — discovered and driven through generic-cli (`codex exec`,
-  `claude -p`). Deeper structured protocols are deferred until their non-interactive
-  contracts are confirmed stable.
+  `content`. The universal fallback; currently drives `codex` (`codex exec`).
+- **stream-json** — parses Claude Code's `claude -p --output-format stream-json
+  --include-partial-messages`: token-level `content` / `reasoning` deltas, `tool_call` /
+  `tool_result` events, and `--resume`-based session continuity. Drives `claude`.
+- **codex** — driven through generic-cli; its structured protocol and resume are deferred
+  until the non-interactive contract is confirmed stable.
 - **openclaw / hermes** — discovery + capability display only; a run ends with a clear
   `adapter_unsupported` error rather than hanging on an interactive CLI.
 
@@ -195,8 +224,9 @@ design, milestones, and roadmap.
 
 ## Examples
 
-- [`examples/web`](examples/web) — paste an article, pick a local Agent, stream the answer
-  in the browser. `node examples/web/serve.mjs`, then open `http://localhost:5173`.
+- [`examples/web`](examples/web) — paste an article, pick a local Agent, and stream the
+  answer in the browser with live reasoning, a tool-activity panel, and multi-turn
+  follow-ups. `node examples/web/serve.mjs`, then open `http://localhost:5173`.
 - [`examples/node-cli`](examples/node-cli) — `node examples/node-cli ask --provider codex
   --file context.md`.
 
@@ -212,8 +242,8 @@ docs/agent-runtime-library-plan.md            # full development plan
 ## Status
 
 This is the MVP described in the plan's §23: core + daemon + client + adapters + cli, with
-a generic-cli adapter and codex/claude discovery. Not yet included: LAN pairing, session
-persistence, provider-private advanced protocols, an Electron auto-installer, and a cloud
-relay.
+generic-cli + stream-json engines, structured Claude streaming (reasoning / tool events /
+token deltas), and in-memory session resume. Not yet included: LAN pairing, file-backed
+session persistence, Codex resume, an Electron auto-installer, and a cloud relay.
 
 MIT licensed.

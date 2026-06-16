@@ -44,6 +44,11 @@ export interface AgentProvider {
   protocols: AgentProtocol[];
   /** Default arguments passed to the binary in generic-cli mode. */
   defaultArgs?: string[];
+  /**
+   * Build CLI args that resume a prior agent session, if the provider supports it.
+   * Providers without this can't be resumed (the engine ignores `resumeSessionId`).
+   */
+  resumeArgs?: (agentSessionId: string) => string[];
 }
 
 /** Runtime discovery result for one provider on this machine. */
@@ -82,6 +87,8 @@ export interface ChatRequest {
   contextUrl?: string;
   messages: ChatMessage[];
   options?: ChatRequestOptions;
+  /** Continue a prior Portico session (handle from a previous `start` event). */
+  sessionId?: string;
 }
 
 /** Unified streaming output event emitted by every adapter. */
@@ -98,6 +105,12 @@ export type RuntimeEvent =
 export interface RunContext {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
+  /** Portico session id to stamp on the `start` event (else a per-run UUID). */
+  sessionId?: string;
+  /** When set (and the provider supports resume), continue this agent session. */
+  resumeSessionId?: string;
+  /** Called once with the agent's native session id when first seen (capture → pin). */
+  onAgentSession?: (agentSessionId: string) => void;
 }
 
 /**

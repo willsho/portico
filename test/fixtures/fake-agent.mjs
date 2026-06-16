@@ -38,6 +38,57 @@ function readStdin() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// stream-json mode: emit a canned trace of Claude Code stream-json messages so the
+// stream-json engine can be exercised end to end (the claude adapter passes
+// `--output-format stream-json --include-partial-messages`, which land here). This
+// mirrors the real partial-message shape: token-level `stream_event` deltas for text
+// and thinking, plus the complete `assistant` messages that carry full tool_use input.
+if (args.includes("stream-json")) {
+  // When resumed, prefix the answer with a marker so tests can observe that the engine
+  // forwarded `--resume <id>` to us.
+  const resumeIdx = args.indexOf("--resume");
+  const resumedId = resumeIdx !== -1 ? args[resumeIdx + 1] : null;
+  const head = resumedId ? `(resumed ${resumedId}) ` : "";
+  const lines = [
+    { type: "system", subtype: "init", session_id: "fake-1", tools: ["Bash"], model: "fake" },
+    { type: "rate_limit_event", rate_limit_info: { status: "allowed" } },
+    // Reasoning, streamed token by token.
+    { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking" } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me echo " } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "that." } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "thinking", thinking: "Let me echo that.", signature: "sig" }] } },
+    { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+    // Tool call: input streams as partial_json, full input arrives in the assistant message.
+    { type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "Bash", input: {} } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"command":' } } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "echo hi" } }] } },
+    { type: "stream_event", event: { type: "content_block_stop", index: 1 } },
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "hi", is_error: false }] } },
+    // Final answer, streamed token by token.
+    { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: `${head}The output ` } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "was hi." } } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `${head}The output was hi.` }] } },
+    { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+    { type: "result", subtype: "success", is_error: false, result: `${head}The output was hi.`, usage: { output_tokens: 7 } },
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    const text = JSON.stringify(lines[i]) + "\n";
+    if (i === 3) {
+      // Split one line across two writes to exercise the engine's cross-chunk buffering.
+      const mid = Math.floor(text.length / 2);
+      process.stdout.write(text.slice(0, mid));
+      await sleep(5);
+      process.stdout.write(text.slice(mid));
+    } else {
+      process.stdout.write(text);
+    }
+    await sleep(2);
+  }
+  process.exit(0);
+}
+
 if (!args.includes("--hang")) {
   const prompt = await readStdin();
 

@@ -71,6 +71,60 @@ test("POST /chat streams start -> content -> done as NDJSON", async () => {
   assert.match(done?.type === "done" ? done.message : "", /Echo from fake-agent/);
 });
 
+test("session: /chat opens a session, follow-up resumes, /sessions lists and deletes", async () => {
+  const d = createDaemon({
+    config: { port: 0, reloadIntervalMs: 0 },
+    env: { ...process.env, PORTICO_CLAUDE_PATH: FAKE_AGENT },
+    logger: () => {},
+  });
+  const info = await d.start();
+  try {
+    // First turn — creates a session; the handle rides the header and the start event.
+    const res1 = await fetch(`${info.url}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "claude", messages: [{ role: "user", content: "echo hi" }] }),
+    });
+    assert.equal(res1.status, 200);
+    const sid = res1.headers.get("x-portico-session");
+    assert.ok(sid, "expected an X-Portico-Session header");
+    const ev1 = parseNdjson(await res1.text());
+    assert.equal(ev1[0]?.type, "start");
+    assert.equal(ev1[0]?.type === "start" ? ev1[0].sessionId : "", sid);
+
+    // The session is now active with the agent's native id pinned and one turn recorded.
+    const listed = (await (await fetch(`${info.url}/sessions`)).json()) as {
+      sessions: Array<{ id: string; status: string; agentSessionId?: string; turns: number }>;
+    };
+    const rec = listed.sessions.find((s) => s.id === sid);
+    assert.ok(rec);
+    assert.equal(rec.status, "active");
+    assert.equal(rec.agentSessionId, "fake-1");
+    assert.equal(rec.turns, 1);
+
+    // Follow-up with the same id resumes — the fake agent echoes the resume id into its answer.
+    const res2 = await fetch(`${info.url}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "claude", sessionId: sid, messages: [{ role: "user", content: "again" }] }),
+    });
+    assert.equal(res2.headers.get("x-portico-session"), sid);
+    const text2 = parseNdjson(await res2.text())
+      .filter((e) => e.type === "content")
+      .map((e) => (e.type === "content" ? e.delta : ""))
+      .join("");
+    assert.match(text2, /\(resumed fake-1\)/);
+
+    // Delete forgets the session.
+    const del = await fetch(`${info.url}/sessions/${sid}`, { method: "DELETE" });
+    assert.equal(del.status, 200);
+    const after = (await (await fetch(`${info.url}/sessions`)).json()) as { sessions: unknown[] };
+    assert.equal(after.sessions.length, 0);
+  } finally {
+    await d.stop();
+  }
+});
+
 test("POST /chat rejects a malformed body", async () => {
   const res = await fetch(`${base}/chat`, {
     method: "POST",
