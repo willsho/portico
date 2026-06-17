@@ -11,6 +11,8 @@ import type {
   SessionRecord,
   SessionStore,
 } from "@portico/core";
+import { DelegationError, encodeDelegationEvent } from "@portico/orchestrator";
+import type { DelegateRequest, DelegationOrchestrator } from "@portico/orchestrator";
 import type { DaemonConfig } from "./config.ts";
 
 export interface DaemonContext {
@@ -24,6 +26,7 @@ export interface DaemonContext {
   sessions: SessionStore;
   /** Session ids with a run currently streaming — one writer per transcript. */
   inFlight: Set<string>;
+  delegation: DelegationOrchestrator;
 }
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -157,6 +160,118 @@ export async function handleChat(
   }
 }
 
+export async function handleDelegate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+): Promise<void> {
+  let request: DelegateRequest;
+  try {
+    request = await readJsonBody<DelegateRequest>(req);
+  } catch (err) {
+    writeJson(res, 400, { error: (err as Error).message, code: "bad_request" });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  try {
+    for await (const event of ctx.delegation.delegate(request, { findEntry: ctx.findEntry })) {
+      res.write(encodeDelegationEvent(event));
+    }
+  } finally {
+    res.end();
+  }
+}
+
+export async function handleListRuns(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+): Promise<void> {
+  const repo = repoFromUrl(req);
+  try {
+    writeJson(res, 200, { runs: await ctx.delegation.listRuns(repo) });
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
+export async function handleGetRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  try {
+    writeJson(res, 200, await ctx.delegation.getRun(repoFromUrl(req), id));
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
+export async function handleRunEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  try {
+    const events = await ctx.delegation.readEvents(repoFromUrl(req), id);
+    res.writeHead(200, {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache, no-transform",
+    });
+    for (const event of events) res.write(encodeDelegationEvent(event));
+    res.end();
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
+export async function handleApplyRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  try {
+    writeJson(res, 200, await ctx.delegation.apply(repoFromUrl(req), id));
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
+export async function handleCancelRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  try {
+    writeJson(res, 200, await ctx.delegation.cancel(repoFromUrl(req), id));
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
+export async function handleDiscardRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  try {
+    writeJson(res, 200, await ctx.delegation.discard(repoFromUrl(req), id));
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
 export function handleListSessions(_req: IncomingMessage, res: ServerResponse, ctx: DaemonContext): void {
   writeJson(res, 200, { sessions: ctx.sessions.list() });
 }
@@ -179,6 +294,17 @@ export function writeJson(res: ServerResponse, status: number, body: unknown): v
     "Content-Length": Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+function repoFromUrl(req: IncomingMessage): string {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  return url.searchParams.get("repo") ?? process.cwd();
+}
+
+function writeDelegationError(res: ServerResponse, err: unknown): void {
+  const code = err instanceof DelegationError ? err.code : "internal";
+  const status = code === "bad_request" ? 400 : code === "repo_invalid" ? 400 : code === "invalid_status" ? 409 : 500;
+  writeJson(res, status, { error: err instanceof Error ? err.message : String(err), code });
 }
 
 async function readJsonBody<T>(req: IncomingMessage): Promise<T> {

@@ -7,6 +7,7 @@ import type { AddressInfo } from "node:net";
 import { discoverAgents, PorticoError, createInMemorySessionStore } from "@portico/core";
 import type { AgentEntry } from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
+import { createDelegationOrchestrator } from "@portico/orchestrator";
 import type { DaemonConfig } from "./config.ts";
 import { DEFAULT_CONFIG } from "./config.ts";
 import { corsHeaders, isAuthorized } from "./auth.ts";
@@ -17,6 +18,13 @@ import {
   handleReload,
   handleListSessions,
   handleDeleteSession,
+  handleDelegate,
+  handleListRuns,
+  handleGetRun,
+  handleRunEvents,
+  handleApplyRun,
+  handleCancelRun,
+  handleDiscardRun,
   writeJson,
 } from "./routes.ts";
 import type { DaemonContext } from "./routes.ts";
@@ -62,6 +70,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
   const sessions = createInMemorySessionStore();
   const inFlight = new Set<string>();
+  const delegation = createDelegationOrchestrator();
 
   const ctx: DaemonContext = {
     name: DAEMON_NAME,
@@ -72,6 +81,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     findEntry: (provider) => agentsCache.find((a) => a.provider === provider),
     sessions,
     inFlight,
+    delegation,
   };
 
   const server = createHttpServer((req, res) => {
@@ -153,14 +163,29 @@ async function handleRequest(
       const id = decodeURIComponent(url.pathname.slice("/sessions/".length));
       return handleDeleteSession(req, res, ctx, id);
     }
+    if (url.pathname.startsWith("/runs/")) {
+      const rest = url.pathname.slice("/runs/".length);
+      const [rawId, action] = rest.split("/");
+      const id = decodeURIComponent(rawId ?? "");
+      if (!id) return writeJson(res, 404, { error: "Run id is required.", code: "not_found" });
+      if (req.method === "GET" && !action) return await handleGetRun(req, res, ctx, id);
+      if (req.method === "GET" && action === "events") return await handleRunEvents(req, res, ctx, id);
+      if (req.method === "POST" && action === "apply") return await handleApplyRun(req, res, ctx, id);
+      if (req.method === "POST" && action === "cancel") return await handleCancelRun(req, res, ctx, id);
+      if (req.method === "POST" && action === "discard") return await handleDiscardRun(req, res, ctx, id);
+    }
 
     switch (route) {
       case "GET /health":
         return handleHealth(req, res, ctx);
       case "GET /agents":
         return handleAgents(req, res, ctx);
+      case "GET /runs":
+        return await handleListRuns(req, res, ctx);
       case "GET /sessions":
         return handleListSessions(req, res, ctx);
+      case "POST /delegate":
+        return await handleDelegate(req, res, ctx);
       case "POST /chat":
         return await handleChat(req, res, ctx);
       case "POST /reload":

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { once } from "node:events";
+
 // A fake Agent CLI used by tests and examples. It mimics the generic-cli contract:
 //   --version            print a semver and exit 0
 //   --fail               write to stderr and exit 1
@@ -94,7 +96,9 @@ if (!args.includes("--hang")) {
 
   if (args.includes("--flood")) {
     const block = "x".repeat(8192);
-    for (let i = 0; i < 1000; i++) process.stdout.write(block);
+    for (let i = 0; i < 1000; i++) {
+      if (!process.stdout.write(block)) await once(process.stdout, "drain");
+    }
     process.exit(0);
   }
 

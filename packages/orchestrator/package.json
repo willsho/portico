@@ -1,0 +1,17 @@
+{
+  "name": "@portico/orchestrator",
+  "version": "0.1.0",
+  "description": "Portico delegation orchestration: worktrees, artifacts, tests, and patch flow.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@portico/core": "*"
+  },
+  "license": "MIT"
+}
