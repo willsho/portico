@@ -94,7 +94,9 @@ You'll see a stream of NDJSON `RuntimeEvent`s: `start` → `content` deltas → 
 ```bash
 portico init
 portico start [--host h] [--port p] [--lan --token T] [--allow-origin o] [--config path]
+portico stop
 portico daemon start
+portico daemon stop
 portico agents [--json]
 portico delegate --to <agent> --repo . --task "<task>" [--test "npm test"]
 portico runs [--repo .]
@@ -178,18 +180,18 @@ Delegation controls in the MVP:
 
 ## Skills
 
-Portico ships one unified Skill body for local coding agents:
+There is a single canonical Skill, [`packages/skills/portico/SKILL.md`](packages/skills/portico/SKILL.md).
+`portico init` derives the per-agent variants from it so there's only one body to maintain:
 
-- [`packages/skills/portico/SKILL.md`](packages/skills/portico/SKILL.md) — canonical
-  shared instructions
-- [`packages/skills/claude/portico/SKILL.md`](packages/skills/claude/portico/SKILL.md) —
-  same behavior with Claude Code `allowed-tools` frontmatter
-- [`packages/skills/codex/portico/SKILL.md`](packages/skills/codex/portico/SKILL.md) —
-  same behavior for Codex-style skill loaders
+- `.claude/skills/portico/SKILL.md` — the canonical Skill, including the Claude Code
+  `allowed-tools` frontmatter.
+- `.agents/skills/portico/SKILL.md` — the same Skill with the `allowed-tools` line removed
+  for Codex-style loaders.
 
 The Skill does not hard-code a single direction such as Claude → Codex. It tells the
-current agent to choose an explicit `--to <agent>` target, honor a user-named target when
-provided, and otherwise delegate to a different capable local agent.
+current agent how to write a self-contained delegated task, choose an explicit
+`--to <agent>` target (honoring a user-named one, otherwise a different capable local
+agent), read the run's report and result, and decide apply vs discard with the user.
 
 ## HTTP API (daemon)
 

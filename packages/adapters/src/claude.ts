@@ -14,6 +14,10 @@ export const claudeProvider: AgentProvider = {
   envPathNames: ["PORTICO_CLAUDE_PATH"],
   protocols: ["stream-json", "generic-cli"],
   defaultArgs: ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+  // Granted only on `options.autoEdit` (delegation in a throwaway worktree). `acceptEdits`
+  // auto-approves file edits non-interactively; widen to `bypassPermissions` if the agent
+  // also needs Bash. Version-sensitive — overridable per setup.
+  autoEditArgs: ["--permission-mode", "acceptEdits"],
   // Resume a prior conversation. Must run in the same cwd — Claude stores each session's
   // transcript per project directory, so the daemon pins cwd alongside the session id.
   resumeArgs: (agentSessionId) => ["--resume", agentSessionId],

@@ -45,6 +45,33 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     const discarded = await orchestrator.discard(repo, runId);
     assert.equal(discarded.run.status, "discarded");
     await assert.rejects(() => stat(details.run.worktreePath));
+    // The worktree must be deregistered from git, not just deleted from disk.
+    const worktrees = await capture("git", ["-C", repo, "worktree", "list"]);
+    assert.doesNotMatch(worktrees.stdout, /run_/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("review mode is rejected as unsupported", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("claude", EDIT_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "claude", repo, task: "review the diff", mode: "review" },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const last = events.at(-1);
+    assert.equal(last?.type, "run_error");
+    assert.equal(last?.type === "run_error" ? last.code : "", "mode_unsupported");
+    // Rejected before any run was created, so nothing landed on disk.
+    assert.deepEqual(await orchestrator.listRuns(repo), []);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

@@ -31,7 +31,8 @@ export async function delegateCommand(args: string[]): Promise<number> {
     from: values.from,
     repo: values.repo ?? process.cwd(),
     task: values.task,
-    mode: values.mode === "review" ? "review" : "implement",
+    // Forward the raw mode; the daemon validates it (only "implement" is supported).
+    mode: values.mode as DelegateRequest["mode"],
     testCommands: values.test,
     allowedPaths: values.allowed,
     forbiddenPaths: values.forbidden,

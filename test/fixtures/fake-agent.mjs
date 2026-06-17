@@ -3,6 +3,7 @@ import { once } from "node:events";
 
 // A fake Agent CLI used by tests and examples. It mimics the generic-cli contract:
 //   --version            print a semver and exit 0
+//   --echo-argv          print the received argv as JSON and exit 0
 //   --fail               write to stderr and exit 1
 //   --hang               never exit (used to exercise the timeout watchdog)
 //   --flood              emit a large amount of output (exercise the output cap)
@@ -14,6 +15,13 @@ const args = process.argv.slice(2);
 
 if (args.includes("--version")) {
   process.stdout.write("fake-agent 1.4.2\n");
+  process.exit(0);
+}
+
+// Echo the received argv as a JSON array so tests can assert how the engine assembled
+// the command line (e.g. that autoEdit appended the provider's autoEditArgs).
+if (args.includes("--echo-argv")) {
+  process.stdout.write(JSON.stringify(args) + "\n");
   process.exit(0);
 }
 

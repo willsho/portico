@@ -45,6 +45,12 @@ export interface AgentProvider {
   /** Default arguments passed to the binary in generic-cli mode. */
   defaultArgs?: string[];
   /**
+   * Extra arguments that grant the agent autonomous file-editing permission, appended
+   * only when a request opts in via `options.autoEdit` (e.g. delegation runs in an
+   * isolated worktree). Kept out of `defaultArgs` so plain chat stays read-only.
+   */
+  autoEditArgs?: string[];
+  /**
    * Build CLI args that resume a prior agent session, if the provider supports it.
    * Providers without this can't be resumed (the engine ignores `resumeSessionId`).
    */
@@ -79,6 +85,11 @@ export interface ChatRequestOptions {
   maxContextChars?: number;
   /** Maximum bytes of stdout to buffer before aborting the child. */
   maxOutputChars?: number;
+  /**
+   * Opt in to the provider's autonomous editing mode (appends `provider.autoEditArgs`).
+   * Defaults to off so plain chat never gains write access; delegation runs set it.
+   */
+  autoEdit?: boolean;
 }
 
 export interface ChatRequest {

@@ -2,6 +2,7 @@
 // @portico/cli — the `portico` command. Dispatches to start / agents / doctor.
 
 import { startCommand } from "./commands/start.ts";
+import { stopCommand } from "./commands/stop.ts";
 import { agentsCommand } from "./commands/agents.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { delegateCommand } from "./commands/delegate.ts";
@@ -13,7 +14,9 @@ const USAGE = `Portico — a local Agent runtime bridge.
 Usage:
   portico init                Create .portico folders and local skills
   portico start [options]     Start the local daemon (HTTP/NDJSON)
+  portico stop                Stop the running local daemon
   portico daemon start        Alias for portico start
+  portico daemon stop         Alias for portico stop
   portico agents [--json]     List Agents discovered on this machine
   portico delegate --to a --task t [--test cmd]
   portico runs [--repo .]     List delegation runs
@@ -40,13 +43,12 @@ async function main(): Promise<number> {
       return initCommand(rest);
     case "start":
       return startCommand(rest);
+    case "stop":
+      return stopCommand(rest);
     case "daemon":
       if (rest[0] === "start") return startCommand(rest.slice(1));
-      if (rest[0] === "stop") {
-        console.error("portico daemon stop is not available without a daemon pid file yet. Stop the daemon process directly.");
-        return 1;
-      }
-      console.error("Usage: portico daemon start");
+      if (rest[0] === "stop") return stopCommand(rest.slice(1));
+      console.error("Usage: portico daemon start | portico daemon stop");
       return 1;
     case "agents":
       return agentsCommand(rest);

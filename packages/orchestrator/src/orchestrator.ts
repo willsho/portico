@@ -55,18 +55,24 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
     async *delegate(request, context) {
       let run: Run | undefined;
       let controller: AbortController | undefined;
+      let reservedRepo: string | undefined;
       try {
         validateRequest(request, maxDepth);
         const repoPath = await resolveRepo(request.repo);
-        const active = activeByRepo.get(repoPath) ?? 0;
-        if (active >= maxConcurrent) {
-          throw new DelegationError("repo_busy", `Repo already has ${active} active delegation run(s).`);
-        }
 
         const entry = context.findEntry(request.to);
         if (!entry || !entry.available) {
           throw new DelegationError("agent_unavailable", `Target agent "${request.to}" is not available.`);
         }
+
+        // Reserve a concurrency slot atomically: read and write must not straddle an
+        // await, or two concurrent delegates both see N and both write N+1.
+        const active = activeByRepo.get(repoPath) ?? 0;
+        if (active >= maxConcurrent) {
+          throw new DelegationError("repo_busy", `Repo already has ${active} active delegation run(s).`);
+        }
+        activeByRepo.set(repoPath, active + 1);
+        reservedRepo = repoPath;
 
         await ensurePorticoDirs(repoPath);
         await ensurePorticoExcluded(repoPath);
@@ -75,7 +81,6 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
           : await readDefaultTestCommands(repoPath);
         const effectiveRequest: DelegateRequest = { ...request, testCommands };
 
-        activeByRepo.set(repoPath, active + 1);
         const now = new Date().toISOString();
         const id = `run_${now.replace(/[-:.TZ]/g, "").slice(0, 14)}_${randomUUID().slice(0, 8)}`;
         const branchName = `portico/${id}`;
@@ -123,6 +128,8 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
           options: {
             cwd: worktreePath,
             timeoutMs: request.timeoutMs,
+            // Delegation runs in an isolated worktree, so let the agent edit files autonomously.
+            autoEdit: true,
           },
         };
 
@@ -196,11 +203,11 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
           yield { type: "run_error", error, code };
         }
       } finally {
-        if (run) {
-          activeControllers.delete(run.id);
-          const active = activeByRepo.get(run.repoPath) ?? 1;
-          if (active <= 1) activeByRepo.delete(run.repoPath);
-          else activeByRepo.set(run.repoPath, active - 1);
+        if (run) activeControllers.delete(run.id);
+        if (reservedRepo) {
+          const active = activeByRepo.get(reservedRepo) ?? 1;
+          if (active <= 1) activeByRepo.delete(reservedRepo);
+          else activeByRepo.set(reservedRepo, active - 1);
         }
       }
     },
@@ -262,7 +269,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
     async discard(repo, id) {
       const repoPath = await resolveRepo(repo);
       const details = await readRunDetails(repoPath, id);
-      await removeWorktree(details.run.worktreePath);
+      await removeWorktree(repoPath, details.run.worktreePath);
       const run = await updateRun(details.run, { status: "discarded", completedAt: new Date().toISOString() });
       await writeJson(details.artifacts.resultPath, { ...details.result, run });
       return readRunDetails(repoPath, id);
@@ -311,6 +318,12 @@ function validateRequest(request: DelegateRequest, maxDepth: number): void {
   if (!request.to) throw new DelegationError("bad_request", "Body must include `to`.");
   if (!request.repo) throw new DelegationError("bad_request", "Body must include `repo`.");
   if (!request.task) throw new DelegationError("bad_request", "Body must include `task`.");
+  if (request.mode && request.mode !== "implement") {
+    throw new DelegationError(
+      "mode_unsupported",
+      `Mode "${request.mode}" is not available in this version yet; only "implement" is supported.`,
+    );
+  }
   if ((request.depth ?? 0) >= maxDepth) {
     throw new DelegationError("delegation_depth_exceeded", `Delegation depth ${request.depth ?? 0} exceeds max ${maxDepth}.`);
   }
@@ -366,10 +379,15 @@ async function createWorktree(repoPath: string, worktreePath: string, branchName
   }
 }
 
-async function removeWorktree(worktreePath: string): Promise<void> {
+async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   if (!existsSync(worktreePath)) return;
-  const result = await capture("git", ["worktree", "remove", "--force", worktreePath]);
-  if (result.code !== 0) await rm(worktreePath, { recursive: true, force: true });
+  // Must run from inside the repo, else git can't resolve the worktree registration.
+  const result = await capture("git", ["-C", repoPath, "worktree", "remove", "--force", worktreePath]);
+  if (result.code !== 0) {
+    // Fall back to a raw delete, then prune the now-stale .git/worktrees/<id> metadata.
+    await rm(worktreePath, { recursive: true, force: true });
+    await capture("git", ["-C", repoPath, "worktree", "prune"]);
+  }
 }
 
 function buildDelegationPrompt(run: Run, request: DelegateRequest, defaultForbidden: string[]): string {

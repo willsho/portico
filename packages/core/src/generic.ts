@@ -47,7 +47,8 @@ export async function* runGenericCli(
   }
 
   const prompt = renderPrompt(request);
-  const args = [...(provider.defaultArgs ?? [])];
+  const editArgs = request.options?.autoEdit ? (provider.autoEditArgs ?? []) : [];
+  const args = [...(provider.defaultArgs ?? []), ...editArgs];
 
   let full = "";
   let stderr = "";

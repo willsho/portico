@@ -5,6 +5,7 @@ import { createDaemon } from "@portico/daemon";
 import { resolveConfig } from "@portico/daemon";
 import type { DaemonConfig } from "@portico/daemon";
 import { isPorticoError } from "@portico/core";
+import { removeDaemonPid, writeDaemonPid } from "../pidfile.ts";
 
 export async function startCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -37,8 +38,9 @@ export async function startCommand(args: string[]): Promise<number> {
 
   const daemon = createDaemon({ config });
 
+  let info: { host: string; port: number; url: string };
   try {
-    await daemon.start();
+    info = await daemon.start();
   } catch (err) {
     if (isPorticoError(err)) {
       console.error(`[portico] ${err.message}`);
@@ -47,8 +49,12 @@ export async function startCommand(args: string[]): Promise<number> {
     throw err;
   }
 
+  // Record the running daemon so `portico daemon stop` can find and signal it.
+  writeDaemonPid({ pid: process.pid, ...info, startedAt: new Date().toISOString() });
+
   const shutdown = () => {
     console.log("\n[portico] shutting down…");
+    removeDaemonPid();
     void daemon.stop().then(() => process.exit(0));
   };
   process.on("SIGINT", shutdown);

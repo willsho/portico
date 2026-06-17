@@ -19,7 +19,11 @@ export interface DelegateRequest {
   to: string;
   repo: string;
   task: string;
-  mode?: Extract<DelegationMode, "implement" | "review">;
+  /**
+   * Delegation mode. Only "implement" runs in this version; "review" and "compare"
+   * are on the roadmap (plan §16.2) and are rejected by the daemon for now.
+   */
+  mode?: DelegationMode;
   testCommands?: string[];
   allowedPaths?: string[];
   forbiddenPaths?: string[];
