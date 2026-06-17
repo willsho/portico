@@ -55,3 +55,24 @@ test("autoEditArgs are withheld without the opt-in", async () => {
   // Without autoEdit the agent never receives --echo-argv, so it echoes a chat reply.
   assert.doesNotMatch(text, /--echo-argv|--flag-x/);
 });
+
+test("generic-cli can pass the rendered prompt as an argv argument", async () => {
+  const argvProvider: AgentProvider = {
+    ...provider,
+    defaultArgs: ["--echo-argv"],
+    autoEditArgs: [],
+    promptMode: "argument",
+  };
+
+  let text = "";
+  for await (const event of runGenericCli(argvProvider, {
+    provider: "fake",
+    messages: [{ role: "user", content: "go" }],
+  }, entry) as AsyncIterable<RuntimeEvent>) {
+    if (event.type === "content") text += event.delta;
+  }
+
+  const argv = JSON.parse(text.trim()) as string[];
+  assert.equal(argv[0], "--echo-argv");
+  assert.match(argv.at(-1) ?? "", /User: go/);
+});

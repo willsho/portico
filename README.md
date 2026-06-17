@@ -285,7 +285,7 @@ switch; Codex resume is not wired yet). Details in
 `discoverAgents()` probes in layers, mirroring how mature local runtimes survive a
 GUI-stripped `PATH`:
 
-1. explicit env path (`PORTICO_CODEX_PATH`, `PORTICO_CLAUDE_PATH`, …)
+1. explicit env path (`PORTICO_CODEX_PATH`, `PORTICO_GEMINI_PATH`, `PORTICO_ANTIGRAVITY_PATH`, …)
 2. `PATH` lookup
 3. login-shell fallback — `$SHELL -lc 'command -v <bin>'` (recovers Homebrew / fnm / nvm /
    volta)
@@ -308,13 +308,20 @@ export interface AgentAdapter {
 }
 ```
 
-- **generic-cli** — spawn binary, pipe the rendered prompt to stdin, stream stdout as
-  `content`. The universal fallback; currently drives `codex` (`codex exec`).
+- **generic-cli** — spawn binary, pass the rendered prompt through stdin or argv, and stream
+  stdout as `content`. The universal fallback; currently drives `codex` (`codex exec`),
+  `gemini` (`gemini --prompt <prompt>`), `antigravity` (`agy run <prompt>`),
+  and `opencode` (`opencode run <prompt>`).
 - **stream-json** — parses Claude Code's `claude -p --output-format stream-json
   --include-partial-messages`: token-level `content` / `reasoning` deltas, `tool_call` /
   `tool_result` events, and `--resume`-based session continuity. Drives `claude`.
 - **codex** — driven through generic-cli; its structured protocol and resume are deferred
   until the non-interactive contract is confirmed stable.
+- **gemini / antigravity / opencode** — driven through generic-cli non-interactive modes.
+  Antigravity is discovered as `agy` first, then `antigravity`; `PORTICO_ANTIGRAVITY_PATH`
+  can pin an explicit binary. Its persistent CLI settings live under
+  `~/.gemini/antigravity-cli/settings.json`, while delegation auto-edit mode passes
+  `--dangerously-skip-permissions` as a launch override.
 - **openclaw / hermes** — discovery + capability display only; a run ends with a clear
   `adapter_unsupported` error rather than hanging on an interactive CLI.
 

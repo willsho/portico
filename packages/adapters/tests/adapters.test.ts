@@ -18,7 +18,7 @@ async function collect(gen: AsyncIterable<RuntimeEvent>): Promise<RuntimeEvent[]
 test("installBuiltinAdapters registers every provider adapter", () => {
   clearAdapters();
   installBuiltinAdapters();
-  for (const id of ["codex", "claude", "openclaw", "hermes"]) {
+  for (const id of ["codex", "claude", "gemini", "antigravity", "opencode", "openclaw", "hermes"]) {
     assert.ok(getAdapter(id), `expected an adapter for ${id}`);
   }
 });

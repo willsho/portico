@@ -5,6 +5,9 @@ import type { AgentAdapter } from "@portico/core";
 
 import { codexAdapter, codexProvider } from "./codex.ts";
 import { claudeAdapter, claudeProvider } from "./claude.ts";
+import { geminiAdapter, geminiProvider } from "./gemini.ts";
+import { antigravityAdapter, antigravityProvider } from "./antigravity.ts";
+import { opencodeAdapter, opencodeProvider } from "./opencode.ts";
 import { openclawAdapter, openclawProvider } from "./openclaw.ts";
 import { hermesAdapter, hermesProvider } from "./hermes.ts";
 
@@ -13,6 +16,9 @@ export { createGenericCliAdapter, genericCliAdapter, genericProvider } from "./g
 export { createDetectOnlyAdapter } from "./detect-only.ts";
 export { codexAdapter, codexProvider } from "./codex.ts";
 export { claudeAdapter, claudeProvider } from "./claude.ts";
+export { geminiAdapter, geminiProvider } from "./gemini.ts";
+export { antigravityAdapter, antigravityProvider } from "./antigravity.ts";
+export { opencodeAdapter, opencodeProvider } from "./opencode.ts";
 export { openclawAdapter, openclawProvider } from "./openclaw.ts";
 export { hermesAdapter, hermesProvider } from "./hermes.ts";
 
@@ -20,11 +26,22 @@ export { hermesAdapter, hermesProvider } from "./hermes.ts";
 export const builtinAdapters: AgentAdapter[] = [
   codexAdapter,
   claudeAdapter,
+  geminiAdapter,
+  antigravityAdapter,
+  opencodeAdapter,
   openclawAdapter,
   hermesAdapter,
 ];
 
-export const builtinProviders = [codexProvider, claudeProvider, openclawProvider, hermesProvider];
+export const builtinProviders = [
+  codexProvider,
+  claudeProvider,
+  geminiProvider,
+  antigravityProvider,
+  opencodeProvider,
+  openclawProvider,
+  hermesProvider,
+];
 
 /** Register every built-in adapter into the core registry. Call once at startup. */
 export function installBuiltinAdapters(): void {

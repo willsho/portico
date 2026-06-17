@@ -1,7 +1,7 @@
 {
   "name": "@portico/adapters",
   "version": "0.1.0",
-  "description": "Portico provider adapters (generic-cli, codex, claude, openclaw, hermes).",
+  "description": "Portico provider adapters (generic-cli, codex, claude, gemini, antigravity, opencode, openclaw, hermes).",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

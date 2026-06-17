@@ -45,6 +45,11 @@ export interface AgentProvider {
   /** Default arguments passed to the binary in generic-cli mode. */
   defaultArgs?: string[];
   /**
+   * How the generic-cli engine passes the rendered prompt. Defaults to stdin.
+   * Use "argument" for CLIs whose non-interactive mode requires the prompt in argv.
+   */
+  promptMode?: "stdin" | "argument";
+  /**
    * Extra arguments that grant the agent autonomous file-editing permission, appended
    * only when a request opts in via `options.autoEdit` (e.g. delegation runs in an
    * isolated worktree). Kept out of `defaultArgs` so plain chat stays read-only.
