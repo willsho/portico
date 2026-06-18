@@ -99,6 +99,8 @@ portico daemon start
 portico daemon stop
 portico agents [--json]
 portico delegate --to <agent> --repo . --task "<task>" [--test "npm test"]
+portico delegate --mode review --to <agent> --repo . --task "<review task>"
+portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>"
 portico runs [--repo .]
 portico status <run_id> [--repo .]
 portico cancel <run_id> [--repo .]
@@ -173,10 +175,20 @@ Delegation controls in the MVP:
 - Default forbidden paths include `.env`, `.ssh/**`, `node_modules/**`, `dist/**`, and
   `build/**`.
 - `--allowed` and `--forbidden` constrain changed paths before a run becomes ready.
+- `--isolation worktree|shared` controls workspace isolation. Implement runs default to
+  `worktree`; review runs default to `shared` plus a read-only permission profile.
+- `--base-ref <ref>` chooses the git ref used for isolated worktrees. Use
+  `--base-ref defaultBranch` to branch from the repo's default branch when available.
+- `--cleanup manual|onNoChanges|onSuccess|always` controls automatic worktree cleanup.
+- `--permission-profile default|read-only|auto-edit` controls whether Portico asks the
+  provider adapter for autonomous editing. Shared auto-edit runs require a clean working
+  tree so Portico can attribute the resulting diff.
+- `--mode compare --compare-to <agent>` runs isolated candidate implementations and records
+  a parent comparison report with links to each candidate run.
 - Test commands come from repeated `--test` flags or `.portico/config.json`
   `testCommands`.
-- `apply` requires an explicit command and refuses to run when tracked files in the main
-  worktree are dirty.
+- `apply` requires an explicit command, only applies implement runs, and refuses to run
+  when tracked files in the main worktree are dirty.
 
 ## Skills
 

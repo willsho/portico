@@ -2,6 +2,20 @@ import type { RuntimeEvent } from "@portico/core";
 
 export type DelegationMode = "implement" | "review" | "compare";
 
+export type WorkspaceIsolationMode = "worktree" | "shared";
+
+export type CleanupPolicy = "manual" | "onNoChanges" | "onSuccess" | "always";
+
+export type PermissionProfile = "default" | "read-only" | "auto-edit";
+
+export interface WorkspaceIsolation {
+  workspace: WorkspaceIsolationMode;
+  /** Git ref used when creating an isolated worktree. Defaults to HEAD. */
+  baseRef?: string;
+  /** When Portico may remove the isolated worktree automatically. */
+  cleanup?: CleanupPolicy;
+}
+
 export type RunStatus =
   | "created"
   | "planning"
@@ -17,13 +31,17 @@ export type RunStatus =
 export interface DelegateRequest {
   from?: string;
   to: string;
+  /** Additional target agents for compare mode. */
+  compareTargets?: string[];
   repo: string;
   task: string;
-  /**
-   * Delegation mode. Only "implement" runs in this version; "review" and "compare"
-   * are on the roadmap (plan §16.2) and are rejected by the daemon for now.
-   */
   mode?: DelegationMode;
+  isolation?: WorkspaceIsolationMode | WorkspaceIsolation;
+  /** Shorthand for `isolation.baseRef`. */
+  baseRef?: string;
+  /** Shorthand for `isolation.cleanup`. */
+  cleanup?: CleanupPolicy;
+  permissionProfile?: PermissionProfile;
   testCommands?: string[];
   allowedPaths?: string[];
   forbiddenPaths?: string[];
@@ -41,12 +59,15 @@ export interface Run {
   targetAgent: string;
   task: string;
   mode: DelegationMode;
+  isolation: WorkspaceIsolation;
+  permissionProfile: PermissionProfile;
   status: RunStatus;
   depth: number;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
   completedAt?: string;
+  worktreeRemovedAt?: string;
 }
 
 export interface RunArtifact {
@@ -84,6 +105,7 @@ export interface RunResult {
   changedFiles: string[];
   tests: TestResult[];
   agentEvents: RuntimeEvent[];
+  compareResults?: RunResult[];
   error?: string;
 }
 

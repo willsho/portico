@@ -80,6 +80,8 @@ portico daemon start
 portico daemon stop
 portico agents [--json]
 portico delegate --to <agent> --repo . --task "<task>" [--test "npm test"]
+portico delegate --mode review --to <agent> --repo . --task "<review task>"
+portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>"
 portico runs [--repo .]
 portico status <run_id> [--repo .]
 portico cancel <run_id> [--repo .]
@@ -144,8 +146,19 @@ MVP 阶段的委派控制：
 - 默认最大委派深度为 1，阻止嵌套委派。
 - 默认禁止路径包括 `.env`、`.ssh/**`、`node_modules/**`、`dist/**` 和 `build/**`。
 - `--allowed` 和 `--forbidden` 会在 run 进入 ready 前约束可变更路径。
+- `--isolation worktree|shared` 控制工作区隔离。实现型 run 默认使用 `worktree`；
+  review run 默认使用 `shared` 和只读权限 profile。
+- `--base-ref <ref>` 控制隔离 worktree 从哪个 git ref 分支出来；可以用
+  `--base-ref defaultBranch` 尽量从默认分支创建。
+- `--cleanup manual|onNoChanges|onSuccess|always` 控制是否自动清理 worktree。
+- `--permission-profile default|read-only|auto-edit` 控制 Portico 是否请求 provider
+  adapter 开启自主编辑。共享工作区的 auto-edit run 要求工作树干净，这样 Portico
+  才能归因生成的 diff。
+- `--mode compare --compare-to <agent>` 会运行多个隔离候选实现，并生成一个父级比较报告，
+  指向每个候选 run。
 - 测试命令来自重复传入的 `--test` 参数，或 `.portico/config.json` 中的 `testCommands`。
-- `apply` 必须由明确命令触发，并且在主工作树存在 tracked dirty files 时会拒绝执行。
+- `apply` 必须由明确命令触发，只能应用 implement run，并且在主工作树存在 tracked dirty
+  files 时会拒绝执行。
 
 ## Skills
 

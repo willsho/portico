@@ -23,9 +23,9 @@ yourself, or anything where spinning up a separate agent adds no value.
 
 ## Mental model (read this first)
 
-- The delegate runs in an **isolated worktree** at `.portico/worktrees/<run_id>`, branched
-  from the repo's current HEAD. Its edits never reach the main working tree until the user
-  applies the patch.
+- Implement delegates run in an **isolated worktree** at `.portico/worktrees/<run_id>` by
+  default, branched from the repo's current HEAD unless `--base-ref` is provided. Review
+  runs default to the shared workspace with a read-only permission profile.
 - The delegate is a **fresh process with no memory of this conversation**. It receives only
   the task prompt you write — so the task must be **fully self-contained**.
 - **Portico controls testing and apply, not the delegate.** Test commands come from your
@@ -66,7 +66,18 @@ yourself, or anything where spinning up a separate agent adds no value.
      --allowed "src/**" --allowed "tests/**"
    ```
    Useful flags: repeatable `--test`; repeatable `--allowed`/`--forbidden` (path policy);
+   `--base-ref <ref>`; `--cleanup manual|onNoChanges|onSuccess|always`;
    `--timeout <ms>`; `--json` for machine-readable events.
+
+   For a read-only review:
+   ```bash
+   portico delegate --mode review --to claude --repo . --task "<review task>"
+   ```
+
+   To compare two independent implementations:
+   ```bash
+   portico delegate --mode compare --to codex --compare-to claude --repo . --task "<task>"
+   ```
 
 5. **Read the result, don't trust the stream alone.** The final `run_done` event carries the
    report path. Read `report.md`, and `result.json` for the structured `changedFiles` and
@@ -89,8 +100,9 @@ yourself, or anything where spinning up a separate agent adds no value.
 - The delegate has no memory between runs. To iterate, launch a **new** `portico delegate`
   with a refined task that folds in what the previous run got wrong — quote lines from its
   `report.md` / `test.log` directly into the new task.
-- To compare approaches, delegate the same task to two different agents, compare their
-  `diff.patch` and test results, then apply the better one and discard the other.
+- To compare approaches, prefer `--mode compare --to <agent-a> --compare-to <agent-b>`.
+  Portico records a parent compare report plus separate candidate runs; apply only the
+  chosen implement candidate, never the compare parent.
 - Don't chain delegations: if you are yourself a delegate running inside a Portico worktree,
   do not call `portico delegate` again — nested delegation is rejected by the daemon's depth guard.
 
@@ -99,12 +111,16 @@ yourself, or anything where spinning up a separate agent adds no value.
 - Never edit the user's main working tree to do delegated work yourself.
 - Never reach another agent except through `portico delegate`.
 - Never run `portico apply` without the user's explicit go-ahead.
+- Do not use `--isolation shared --permission-profile auto-edit` unless the user explicitly
+  asked for direct edits in the current checkout; Portico requires a clean tree for that mode.
 - Test commands come only from the user or `.portico/config.json`, never from the delegate.
 
 ## Command reference
 
 - `portico agents [--json]` — list local agents you can delegate to.
 - `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation.
+- `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
+- `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>"` — run candidate implementations for comparison.
 - `portico runs [--repo .]` — list runs.
 - `portico status <run_id>` — show a run's artifacts, changed files, and tests.
 - `portico apply <run_id>` — apply a ready run's patch (only with user approval).

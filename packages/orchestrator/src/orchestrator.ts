@@ -5,14 +5,18 @@ import { randomUUID } from "node:crypto";
 import { capture, encodeEvent, runAgent } from "@portico/core";
 import type { AgentEntry, ChatRequest, RuntimeEvent } from "@portico/core";
 import type {
+  CleanupPolicy,
   DelegateRequest,
   DelegationEvent,
   OrchestratorOptions,
+  PermissionProfile,
   Run,
   RunArtifact,
   RunDetails,
   RunResult,
   TestResult,
+  WorkspaceIsolation,
+  WorkspaceIsolationMode,
 } from "./types.ts";
 
 const DEFAULT_FORBIDDEN = [".env", ".ssh/**", "node_modules/**", "dist/**", "build/**"];
@@ -53,17 +57,10 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
 
   return {
     async *delegate(request, context) {
-      let run: Run | undefined;
-      let controller: AbortController | undefined;
       let reservedRepo: string | undefined;
       try {
         validateRequest(request, maxDepth);
         const repoPath = await resolveRepo(request.repo);
-
-        const entry = context.findEntry(request.to);
-        if (!entry || !entry.available) {
-          throw new DelegationError("agent_unavailable", `Target agent "${request.to}" is not available.`);
-        }
 
         // Reserve a concurrency slot atomically: read and write must not straddle an
         // await, or two concurrent delegates both see N and both write N+1.
@@ -81,129 +78,16 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
           : await readDefaultTestCommands(repoPath);
         const effectiveRequest: DelegateRequest = { ...request, testCommands };
 
-        const now = new Date().toISOString();
-        const id = `run_${now.replace(/[-:.TZ]/g, "").slice(0, 14)}_${randomUUID().slice(0, 8)}`;
-        const branchName = `portico/${id}`;
-        const worktreePath = join(repoPath, ".portico", "worktrees", id);
-        const artifacts = artifactPaths(repoPath, id);
-        run = {
-          id,
-          repoPath,
-          worktreePath,
-          branchName,
-          rootAgent: request.from ?? "unknown",
-          targetAgent: request.to,
-          task: request.task,
-          mode: request.mode ?? "implement",
-          status: "created",
-          depth: request.depth ?? 0,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        await mkdir(dirname(artifacts.taskPath), { recursive: true });
-        await writeJson(artifacts.taskPath, { ...effectiveRequest, repo: repoPath });
-        await saveRun(run);
-        await writeFile(artifacts.eventsPath, "");
-        yield await recordEvent(artifacts.eventsPath, { type: "run_start", runId: run.id, status: run.status });
-
-        run = await updateRun(run, { status: "planning", startedAt: new Date().toISOString() });
-        await createWorktree(repoPath, worktreePath, branchName);
-        yield await recordEvent(artifacts.eventsPath, {
-          type: "worktree_created",
-          runId: run.id,
-          path: worktreePath,
-          branch: branchName,
-        });
-
-        run = await updateRun(run, { status: "running" });
-        yield await recordEvent(artifacts.eventsPath, { type: "agent_start", runId: run.id, agent: request.to });
-        controller = new AbortController();
-        activeControllers.set(run.id, controller);
-
-        const agentEvents: RuntimeEvent[] = [];
-        const chat: ChatRequest = {
-          provider: request.to,
-          messages: [{ role: "user", content: buildDelegationPrompt(run, effectiveRequest, defaultForbidden) }],
-          options: {
-            cwd: worktreePath,
-            timeoutMs: request.timeoutMs,
-            // Delegation runs in an isolated worktree, so let the agent edit files autonomously.
-            autoEdit: true,
-          },
-        };
-
-        for await (const event of runAgent(chat, {
-          entry,
-          signal: controller.signal,
-          env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(run.depth + 1) },
-        })) {
-          agentEvents.push(event);
-          await appendFile(artifacts.agentLogPath, encodeEvent(event));
-          yield await recordEvent(artifacts.eventsPath, { type: "agent_event", runId: run.id, event });
-          if (event.type === "error") throw new DelegationError(event.code ?? "agent_failed", event.error);
+        if ((effectiveRequest.mode ?? "implement") === "compare") {
+          yield* runCompareDelegation(effectiveRequest, repoPath, context, activeControllers, defaultForbidden);
+        } else {
+          yield* runSingleDelegation(effectiveRequest, repoPath, context, activeControllers, defaultForbidden);
         }
-
-        const { diff, changedFiles } = await generateDiff(worktreePath);
-        await writeFile(artifacts.diffPath as string, diff);
-        enforcePathPolicy(changedFiles, effectiveRequest, defaultForbidden);
-        yield await recordEvent(artifacts.eventsPath, {
-          type: "diff_ready",
-          runId: run.id,
-          path: artifacts.diffPath as string,
-          changedFiles,
-        });
-
-        run = await updateRun(run, { status: "testing" });
-        const tests: TestResult[] = [];
-        for (const command of testCommands) {
-          yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
-          const result = await runTestCommand(worktreePath, command, request.timeoutMs);
-          tests.push(result);
-          await appendFile(
-            artifacts.testLogPath as string,
-            `$ ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
-          );
-          yield await recordEvent(artifacts.eventsPath, {
-            type: "test_done",
-            runId: run.id,
-            command,
-            status: result.status,
-            exitCode: result.exitCode,
-          });
-        }
-
-        const failedTest = tests.find((test) => test.status === "failed");
-        run = await updateRun(run, {
-          status: failedTest ? "failed" : "ready",
-          completedAt: new Date().toISOString(),
-        });
-        const result: RunResult = { run, artifacts, changedFiles, tests, agentEvents };
-        await writeJson(artifacts.resultPath, result);
-        await writeReport(artifacts.reportPath, result);
-        yield await recordEvent(artifacts.eventsPath, {
-          type: "run_done",
-          runId: run.id,
-          status: run.status,
-          reportPath: artifacts.reportPath,
-          resultPath: artifacts.resultPath,
-        });
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         const code = err instanceof DelegationError ? err.code : "internal";
-        if (run) {
-          const artifacts = artifactPaths(run.repoPath, run.id);
-          const status = controller?.signal.aborted ? "cancelled" : "failed";
-          run = await updateRun(run, { status, completedAt: new Date().toISOString() });
-          const result: RunResult = { run, artifacts, changedFiles: [], tests: [], agentEvents: [], error };
-          await writeJson(artifacts.resultPath, result);
-          await writeReport(artifacts.reportPath, result);
-          yield await recordEvent(artifacts.eventsPath, { type: "run_error", runId: run.id, error, code });
-        } else {
-          yield { type: "run_error", error, code };
-        }
+        yield { type: "run_error", error, code };
       } finally {
-        if (run) activeControllers.delete(run.id);
         if (reservedRepo) {
           const active = activeByRepo.get(reservedRepo) ?? 1;
           if (active <= 1) activeByRepo.delete(reservedRepo);
@@ -250,6 +134,9 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
     async apply(repo, id) {
       const repoPath = await resolveRepo(repo);
       const details = await readRunDetails(repoPath, id);
+      if (details.run.mode !== "implement") {
+        throw new DelegationError("invalid_mode", `Run ${id} is ${details.run.mode}; only implement runs can be applied.`);
+      }
       if (details.run.status !== "ready") {
         throw new DelegationError("invalid_status", `Run ${id} is ${details.run.status}, not ready.`);
       }
@@ -275,6 +162,270 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
       return readRunDetails(repoPath, id);
     },
   };
+}
+
+async function* runCompareDelegation(
+  request: DelegateRequest,
+  repoPath: string,
+  context: { findEntry(provider: string): AgentEntry | undefined },
+  activeControllers: Map<string, AbortController>,
+  defaultForbidden: string[],
+): AsyncIterable<DelegationEvent> {
+  const targets = [request.to, ...(request.compareTargets ?? [])].filter(Boolean);
+  if (targets.length < 2) {
+    throw new DelegationError("compare_requires_targets", "Compare mode requires `to` plus at least one `compareTargets` entry.");
+  }
+
+  const now = new Date().toISOString();
+  let run = createRun(repoPath, request, {
+    id: newRunId(now),
+    targetAgent: targets.join(","),
+    mode: "compare",
+    isolation: normalizeIsolation(request, "compare"),
+    permissionProfile: "auto-edit",
+    worktreePath: join(repoPath, ".portico", "worktrees", `compare_${now.replace(/[-:.TZ]/g, "").slice(0, 14)}`),
+  });
+  const artifacts = artifactPaths(repoPath, run.id);
+  const childResults: RunResult[] = [];
+
+  await mkdir(dirname(artifacts.taskPath), { recursive: true });
+  await writeJson(artifacts.taskPath, { ...request, repo: repoPath, compareTargets: targets });
+  await saveRun(run);
+  await writeFile(artifacts.eventsPath, "");
+  yield await recordEvent(artifacts.eventsPath, { type: "run_start", runId: run.id, status: run.status });
+  run = await updateRun(run, { status: "planning", startedAt: new Date().toISOString() });
+
+  for (const target of targets) {
+    const candidateRequest: DelegateRequest = {
+      ...request,
+      to: target,
+      compareTargets: undefined,
+      mode: "implement",
+      isolation: {
+        workspace: "worktree",
+        baseRef: normalizeIsolation(request, "compare").baseRef,
+        cleanup: normalizeIsolation(request, "compare").cleanup,
+      },
+      permissionProfile: "auto-edit",
+      task: [
+        "This is one candidate implementation for a Portico compare run.",
+        `Original task: ${request.task}`,
+        "Optimize for a clear, reviewable patch. Another agent may produce a competing patch.",
+      ].join("\n"),
+    };
+
+    let childDone: Extract<DelegationEvent, { type: "run_done" }> | undefined;
+    let childError: Extract<DelegationEvent, { type: "run_error" }> | undefined;
+    for await (const event of runSingleDelegation(candidateRequest, repoPath, context, activeControllers, defaultForbidden)) {
+      yield event;
+      if (event.type === "run_done") childDone = event;
+      if (event.type === "run_error") childError = event;
+    }
+    const childId = childDone?.runId ?? childError?.runId;
+    if (childId) {
+      try {
+        const child = await readJson<RunResult>(artifactPaths(repoPath, childId).resultPath);
+        childResults.push(child);
+      } catch {
+        // The child already emitted its own error event; keep the compare parent going.
+      }
+    }
+  }
+
+  const failed = childResults.length !== targets.length || childResults.some((result) => result.run.status !== "ready");
+  run = await updateRun(run, { status: failed ? "failed" : "ready", completedAt: new Date().toISOString() });
+  const result: RunResult = {
+    run,
+    artifacts,
+    changedFiles: [...new Set(childResults.flatMap((result) => result.changedFiles))],
+    tests: childResults.flatMap((result) => result.tests),
+    agentEvents: [],
+    compareResults: childResults,
+  };
+  await writeJson(artifacts.resultPath, result);
+  await writeReport(artifacts.reportPath, result);
+  yield await recordEvent(artifacts.eventsPath, {
+    type: "run_done",
+    runId: run.id,
+    status: run.status,
+    reportPath: artifacts.reportPath,
+    resultPath: artifacts.resultPath,
+  });
+}
+
+async function* runSingleDelegation(
+  request: DelegateRequest,
+  repoPath: string,
+  context: { findEntry(provider: string): AgentEntry | undefined },
+  activeControllers: Map<string, AbortController>,
+  defaultForbidden: string[],
+): AsyncIterable<DelegationEvent> {
+  let run: Run | undefined;
+  let controller: AbortController | undefined;
+  let artifacts: RunArtifact | undefined;
+  let worktreeCreated = false;
+
+  try {
+    const mode = request.mode ?? "implement";
+    if (mode === "compare") throw new DelegationError("bad_request", "runSingleDelegation cannot run compare mode.");
+    const entry = context.findEntry(request.to);
+    if (!entry || !entry.available) {
+      throw new DelegationError("agent_unavailable", `Target agent "${request.to}" is not available.`);
+    }
+
+    const isolation = normalizeIsolation(request, mode);
+    const permissionProfile = normalizePermissionProfile(request, mode, isolation.workspace);
+    validateExecutionPolicy(mode, isolation, permissionProfile);
+
+    const now = new Date().toISOString();
+    const id = newRunId(now);
+    const worktreePath =
+      isolation.workspace === "worktree" ? join(repoPath, ".portico", "worktrees", id) : repoPath;
+    run = createRun(repoPath, request, {
+      id,
+      targetAgent: request.to,
+      mode,
+      isolation,
+      permissionProfile,
+      worktreePath,
+    });
+    artifacts = artifactPaths(repoPath, id);
+
+    await mkdir(dirname(artifacts.taskPath), { recursive: true });
+    await writeJson(artifacts.taskPath, { ...request, repo: repoPath, isolation, permissionProfile });
+    await saveRun(run);
+    await writeFile(artifacts.eventsPath, "");
+    yield await recordEvent(artifacts.eventsPath, { type: "run_start", runId: run.id, status: run.status });
+
+    run = await updateRun(run, { status: "planning", startedAt: new Date().toISOString() });
+    const workspaceSnapshot = isolation.workspace === "shared" ? await captureStatus(repoPath) : undefined;
+    if (isolation.workspace === "worktree") {
+      const baseRef = await resolveBaseRef(repoPath, isolation.baseRef);
+      await createWorktree(repoPath, worktreePath, run.branchName, baseRef);
+      worktreeCreated = true;
+      yield await recordEvent(artifacts.eventsPath, {
+        type: "worktree_created",
+        runId: run.id,
+        path: worktreePath,
+        branch: run.branchName,
+      });
+    } else if (mode === "implement" && permissionProfile === "auto-edit") {
+      await assertWorkspaceClean(repoPath);
+    }
+
+    run = await updateRun(run, { status: mode === "review" ? "reviewing" : "running" });
+    yield await recordEvent(artifacts.eventsPath, { type: "agent_start", runId: run.id, agent: request.to });
+    controller = new AbortController();
+    activeControllers.set(run.id, controller);
+
+    const agentEvents: RuntimeEvent[] = [];
+    const workDir = isolation.workspace === "worktree" ? worktreePath : repoPath;
+    const chat: ChatRequest = {
+      provider: request.to,
+      messages: [{ role: "user", content: buildDelegationPrompt(run, request, defaultForbidden) }],
+      options: {
+        cwd: workDir,
+        timeoutMs: request.timeoutMs,
+        autoEdit: permissionProfile === "auto-edit",
+      },
+    };
+
+    for await (const event of runAgent(chat, {
+      entry,
+      signal: controller.signal,
+      env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(run.depth + 1) },
+    })) {
+      agentEvents.push(event);
+      await appendFile(artifacts.agentLogPath, encodeEvent(event));
+      yield await recordEvent(artifacts.eventsPath, { type: "agent_event", runId: run.id, event });
+      if (event.type === "error") throw new DelegationError(event.code ?? "agent_failed", event.error);
+    }
+
+    if (mode === "review") {
+      if (workspaceSnapshot !== undefined) await assertStatusUnchanged(repoPath, workspaceSnapshot);
+      await writeFile(artifacts.diffPath as string, "");
+      run = await updateRun(run, { status: "ready", completedAt: new Date().toISOString() });
+      const result: RunResult = { run, artifacts, changedFiles: [], tests: [], agentEvents };
+      await writeJson(artifacts.resultPath, result);
+      await writeReport(artifacts.reportPath, result);
+      yield await recordEvent(artifacts.eventsPath, {
+        type: "run_done",
+        runId: run.id,
+        status: run.status,
+        reportPath: artifacts.reportPath,
+        resultPath: artifacts.resultPath,
+      });
+      return;
+    }
+
+    const { diff, changedFiles } = await generateDiff(workDir);
+    await writeFile(artifacts.diffPath as string, diff);
+    enforcePathPolicy(changedFiles, request, defaultForbidden);
+    yield await recordEvent(artifacts.eventsPath, {
+      type: "diff_ready",
+      runId: run.id,
+      path: artifacts.diffPath as string,
+      changedFiles,
+    });
+
+    run = await updateRun(run, { status: "testing" });
+    const tests: TestResult[] = [];
+    for (const command of request.testCommands ?? []) {
+      yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
+      const result = await runTestCommand(workDir, command, request.timeoutMs);
+      tests.push(result);
+      await appendFile(
+        artifacts.testLogPath as string,
+        `$ ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
+      );
+      yield await recordEvent(artifacts.eventsPath, {
+        type: "test_done",
+        runId: run.id,
+        command,
+        status: result.status,
+        exitCode: result.exitCode,
+      });
+    }
+
+    const failedTest = tests.find((test) => test.status === "failed");
+    run = await updateRun(run, {
+      status: failedTest ? "failed" : "ready",
+      completedAt: new Date().toISOString(),
+    });
+    if (worktreeCreated && shouldCleanupWorktree(isolation.cleanup, run.status, changedFiles)) {
+      await removeWorktree(repoPath, worktreePath);
+      run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
+    }
+    const result: RunResult = { run, artifacts, changedFiles, tests, agentEvents };
+    await writeJson(artifacts.resultPath, result);
+    await writeReport(artifacts.reportPath, result);
+    yield await recordEvent(artifacts.eventsPath, {
+      type: "run_done",
+      runId: run.id,
+      status: run.status,
+      reportPath: artifacts.reportPath,
+      resultPath: artifacts.resultPath,
+    });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    const code = err instanceof DelegationError ? err.code : "internal";
+    if (run && artifacts) {
+      const status = controller?.signal.aborted ? "cancelled" : "failed";
+      run = await updateRun(run, { status, completedAt: new Date().toISOString() });
+      if (worktreeCreated && shouldCleanupWorktree(run.isolation.cleanup, run.status, [])) {
+        await removeWorktree(repoPath, run.worktreePath);
+        run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
+      }
+      const result: RunResult = { run, artifacts, changedFiles: [], tests: [], agentEvents: [], error };
+      await writeJson(artifacts.resultPath, result);
+      await writeReport(artifacts.reportPath, result);
+      yield await recordEvent(artifacts.eventsPath, { type: "run_error", runId: run.id, error, code });
+    } else {
+      yield { type: "run_error", error, code };
+    }
+  } finally {
+    if (run) activeControllers.delete(run.id);
+  }
 }
 
 async function readDefaultTestCommands(repoPath: string): Promise<string[]> {
@@ -318,14 +469,102 @@ function validateRequest(request: DelegateRequest, maxDepth: number): void {
   if (!request.to) throw new DelegationError("bad_request", "Body must include `to`.");
   if (!request.repo) throw new DelegationError("bad_request", "Body must include `repo`.");
   if (!request.task) throw new DelegationError("bad_request", "Body must include `task`.");
-  if (request.mode && request.mode !== "implement") {
-    throw new DelegationError(
-      "mode_unsupported",
-      `Mode "${request.mode}" is not available in this version yet; only "implement" is supported.`,
-    );
+  if (request.mode && !["implement", "review", "compare"].includes(request.mode)) {
+    throw new DelegationError("mode_unsupported", `Mode "${request.mode}" is not supported.`);
   }
   if ((request.depth ?? 0) >= maxDepth) {
     throw new DelegationError("delegation_depth_exceeded", `Delegation depth ${request.depth ?? 0} exceeds max ${maxDepth}.`);
+  }
+}
+
+function newRunId(now: string): string {
+  return `run_${now.replace(/[-:.TZ]/g, "").slice(0, 14)}_${randomUUID().slice(0, 8)}`;
+}
+
+function createRun(
+  repoPath: string,
+  request: DelegateRequest,
+  options: {
+    id: string;
+    targetAgent: string;
+    mode: Run["mode"];
+    isolation: WorkspaceIsolation;
+    permissionProfile: PermissionProfile;
+    worktreePath: string;
+  },
+): Run {
+  const now = new Date().toISOString();
+  return {
+    id: options.id,
+    repoPath,
+    worktreePath: options.worktreePath,
+    branchName: `portico/${options.id}`,
+    rootAgent: request.from ?? "unknown",
+    targetAgent: options.targetAgent,
+    task: request.task,
+    mode: options.mode,
+    isolation: options.isolation,
+    permissionProfile: options.permissionProfile,
+    status: "created",
+    depth: request.depth ?? 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function normalizeIsolation(request: DelegateRequest, mode: Run["mode"]): WorkspaceIsolation {
+  const raw = request.isolation;
+  const workspace: WorkspaceIsolationMode =
+    typeof raw === "string" ? raw : raw?.workspace ?? (mode === "review" ? "shared" : "worktree");
+  const baseRef = request.baseRef ?? (typeof raw === "object" ? raw.baseRef : undefined) ?? "HEAD";
+  const cleanup = request.cleanup ?? (typeof raw === "object" ? raw.cleanup : undefined) ?? "manual";
+  if (!["worktree", "shared"].includes(workspace)) {
+    throw new DelegationError("bad_request", `Unsupported workspace isolation "${workspace}".`);
+  }
+  if (!["manual", "onNoChanges", "onSuccess", "always"].includes(cleanup)) {
+    throw new DelegationError("bad_request", `Unsupported cleanup policy "${cleanup}".`);
+  }
+  return { workspace, baseRef, cleanup };
+}
+
+function normalizePermissionProfile(
+  request: DelegateRequest,
+  mode: Run["mode"],
+  workspace: WorkspaceIsolationMode,
+): PermissionProfile {
+  if (request.permissionProfile) return request.permissionProfile;
+  if (mode === "review") return "read-only";
+  if (mode === "implement" && workspace === "worktree") return "auto-edit";
+  return "default";
+}
+
+function validateExecutionPolicy(
+  mode: Run["mode"],
+  isolation: WorkspaceIsolation,
+  permissionProfile: PermissionProfile,
+): void {
+  if (!["default", "read-only", "auto-edit"].includes(permissionProfile)) {
+    throw new DelegationError("bad_request", `Unsupported permission profile "${permissionProfile}".`);
+  }
+  if (mode === "review" && permissionProfile !== "read-only") {
+    throw new DelegationError("bad_request", "Review mode must use the read-only permission profile.");
+  }
+  if (mode === "implement" && isolation.workspace === "shared" && permissionProfile === "auto-edit") {
+    // Allowed, but intentionally explicit: callers must opt into both shared workspace and auto-edit.
+    return;
+  }
+}
+
+function shouldCleanupWorktree(cleanup: CleanupPolicy | undefined, status: Run["status"], changedFiles: string[]): boolean {
+  switch (cleanup ?? "manual") {
+    case "always":
+      return true;
+    case "onNoChanges":
+      return changedFiles.length === 0;
+    case "onSuccess":
+      return status === "ready";
+    case "manual":
+      return false;
   }
 }
 
@@ -371,9 +610,22 @@ function artifactPaths(repoPath: string, id: string): RunArtifact {
   };
 }
 
-async function createWorktree(repoPath: string, worktreePath: string, branchName: string): Promise<void> {
+async function resolveBaseRef(repoPath: string, baseRef = "HEAD"): Promise<string> {
+  if (baseRef !== "defaultBranch") return baseRef;
+  const originHead = await capture("git", ["-C", repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (originHead.code === 0 && originHead.stdout.trim()) {
+    return originHead.stdout.trim();
+  }
+  const currentBranch = await capture("git", ["-C", repoPath, "symbolic-ref", "--short", "HEAD"]);
+  if (currentBranch.code === 0 && currentBranch.stdout.trim()) {
+    return currentBranch.stdout.trim();
+  }
+  return "HEAD";
+}
+
+async function createWorktree(repoPath: string, worktreePath: string, branchName: string, baseRef: string): Promise<void> {
   await mkdir(dirname(worktreePath), { recursive: true });
-  const result = await capture("git", ["-C", repoPath, "worktree", "add", "-b", branchName, worktreePath, "HEAD"]);
+  const result = await capture("git", ["-C", repoPath, "worktree", "add", "-b", branchName, worktreePath, baseRef]);
   if (result.code !== 0) {
     throw new DelegationError("worktree_failed", (result.stderr || result.stdout || "git worktree add failed").trim());
   }
@@ -394,14 +646,26 @@ function buildDelegationPrompt(run: Run, request: DelegateRequest, defaultForbid
   const forbidden = [...defaultForbidden, ...(request.forbiddenPaths ?? [])];
   const allowed = request.allowedPaths?.length ? request.allowedPaths.join(", ") : "repo files required by the task";
   const tests = request.testCommands?.length ? request.testCommands.join("\n") : "No test command was provided.";
+  const workspace =
+    run.isolation.workspace === "worktree"
+      ? `an isolated Portico worktree at ${run.worktreePath}`
+      : "the caller's shared working tree";
+  const writeRule =
+    run.permissionProfile === "read-only"
+      ? "- Do not modify files. This is a read-only run."
+      : "- Modify only files needed for the task.";
   return [
-    "You are running inside a Portico delegation worktree.",
+    `You are running inside ${workspace}.`,
     `Run id: ${run.id}`,
     `Mode: ${run.mode}`,
+    `Workspace isolation: ${run.isolation.workspace}`,
+    `Base ref: ${run.isolation.baseRef ?? "HEAD"}`,
+    `Cleanup policy: ${run.isolation.cleanup ?? "manual"}`,
+    `Permission profile: ${run.permissionProfile}`,
     `Task: ${request.task}`,
     "",
     "Constraints:",
-    "- Modify only files needed for the task.",
+    writeRule,
     `- Allowed paths: ${allowed}.`,
     `- Forbidden paths: ${forbidden.join(", ")}.`,
     "- Do not run portico delegate or delegate this task again.",
@@ -410,7 +674,9 @@ function buildDelegationPrompt(run: Run, request: DelegateRequest, defaultForbid
     "Known test commands:",
     tests,
     "",
-    "Complete the requested coding work in this worktree and leave changes on disk.",
+    run.mode === "review"
+      ? "Complete the review and report findings in your final response."
+      : "Complete the requested coding work and leave changes on disk.",
   ].join("\n");
 }
 
@@ -430,6 +696,19 @@ async function generateDiff(worktreePath: string): Promise<{ diff: string; chang
   };
 }
 
+async function captureStatus(repoPath: string): Promise<string> {
+  const status = await capture("git", ["-C", repoPath, "status", "--porcelain"]);
+  if (status.code !== 0) throw new DelegationError("git_failed", status.stderr || status.stdout);
+  return status.stdout;
+}
+
+async function assertStatusUnchanged(repoPath: string, before: string): Promise<void> {
+  const after = await captureStatus(repoPath);
+  if (after !== before) {
+    throw new DelegationError("read_only_modified", "Read-only run changed the shared working tree.");
+  }
+}
+
 async function runTestCommand(cwd: string, command: string, timeoutMs?: number): Promise<TestResult> {
   const result = await capture("sh", ["-lc", command], { cwd, timeoutMs });
   return {
@@ -445,6 +724,16 @@ async function assertTrackedTreeClean(repoPath: string): Promise<void> {
   if (status.code !== 0) throw new DelegationError("git_failed", status.stderr || status.stdout);
   if (status.stdout.trim()) {
     throw new DelegationError("working_tree_dirty", "Current working tree has tracked changes; commit or stash before apply.");
+  }
+}
+
+async function assertWorkspaceClean(repoPath: string): Promise<void> {
+  const status = await captureStatus(repoPath);
+  if (status.trim()) {
+    throw new DelegationError(
+      "working_tree_dirty",
+      "Shared auto-edit runs require a clean working tree so Portico can attribute the resulting diff.",
+    );
   }
 }
 
@@ -486,10 +775,33 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     `Target Agent: ${run.targetAgent}`,
     "",
+    `Mode: ${run.mode}`,
+    "",
+    `Workspace Isolation: ${run.isolation.workspace}`,
+    "",
+    `Base Ref: ${run.isolation.baseRef ?? "HEAD"}`,
+    "",
+    `Cleanup Policy: ${run.isolation.cleanup ?? "manual"}`,
+    "",
+    `Permission Profile: ${run.permissionProfile}`,
+    "",
     `Branch: ${run.branchName}`,
     "",
     `Worktree: ${run.worktreePath}`,
     "",
+    run.worktreeRemovedAt ? `Worktree Removed At: ${run.worktreeRemovedAt}` : undefined,
+    run.worktreeRemovedAt ? "" : undefined,
+    result.compareResults?.length ? "## Compare Candidates" : undefined,
+    result.compareResults?.length ? "" : undefined,
+    result.compareResults?.length
+      ? result.compareResults
+          .map(
+            (candidate, index) =>
+              `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s) — ${candidate.artifacts.reportPath}`,
+          )
+          .join("\n")
+      : undefined,
+    result.compareResults?.length ? "" : undefined,
     "## Changed Files",
     "",
     changedFiles.length ? changedFiles.map((file, index) => `${index + 1}. ${file}`).join("\n") : "No file changes detected.",
@@ -516,7 +828,9 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     `1. Apply: \`portico apply ${run.id}\``,
     `2. Discard: \`portico discard ${run.id}\``,
     "",
-  ].join("\n");
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
   await writeFile(path, body);
 }
 

@@ -19,6 +19,8 @@ Usage:
   portico daemon stop         Alias for portico stop
   portico agents [--json]     List Agents discovered on this machine
   portico delegate --to a --task t [--test cmd]
+  portico delegate --mode review --to a --task t
+  portico delegate --mode compare --to a --compare-to b --task t
   portico runs [--repo .]     List delegation runs
   portico status <run_id>     Show a delegation run
   portico cancel <run_id>     Cancel a delegation run
