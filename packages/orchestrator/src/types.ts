@@ -148,5 +148,7 @@ export interface RunDetails {
 export interface OrchestratorOptions {
   maxDepth?: number;
   maxConcurrentRunsPerRepo?: number;
+  /** Max candidate runs executed concurrently within one fan-out (e.g. compare). Defaults to 4. */
+  maxConcurrentAgentProcesses?: number;
   defaultForbiddenPaths?: string[];
 }

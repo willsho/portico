@@ -185,8 +185,9 @@ Delegation controls in the MVP:
 - `--permission-profile default|read-only|auto-edit` controls whether Portico asks the
   provider adapter for autonomous editing. Shared auto-edit runs require a clean working
   tree so Portico can attribute the resulting diff.
-- `--mode compare --compare-to <agent>` runs isolated candidate implementations and records
-  a parent comparison report with links to each candidate run.
+- `--mode compare --compare-to <agent>` runs isolated candidate implementations in parallel
+  (bounded by `maxConcurrentAgentProcesses`, default 4) and records a parent comparison
+  report with links to each candidate run.
 - Test commands come from repeated `--test` flags or `.portico/config.json`
   `testCommands`.
 - Worktree runs snapshot the caller's main checkout before and after the agent runs. If
@@ -391,7 +392,8 @@ docs/portico-delegation-mvp-plan.md                      # delegation MVP plan
 This includes the runtime bridge MVP plus the first delegation MVP: core + adapters +
 orchestrator + daemon + client + cli, generic-cli + stream-json engines, structured
 Claude streaming (reasoning / tool events / token deltas), in-memory session resume,
-isolated delegation worktrees, run artifacts, test logs, patch apply/discard, and unified
+isolated delegation worktrees, run artifacts, test logs, patch apply/discard, parallel
+compare fan-out (bounded agent concurrency, serialized worktree bookkeeping), and unified
 Skill instructions. Not yet included: Web UI, MCP server, cloud workers, automatic PRs,
 LAN pairing, file-backed session persistence, Codex resume, an Electron auto-installer,
 and a cloud relay.

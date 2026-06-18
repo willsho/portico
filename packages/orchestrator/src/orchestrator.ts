@@ -20,8 +20,20 @@ import type {
   WorkspaceIsolation,
   WorkspaceIsolationMode,
 } from "./types.ts";
+import { createSemaphore, mergeAsyncIterables } from "./concurrency.ts";
+import type { Semaphore } from "./concurrency.ts";
 
 const DEFAULT_FORBIDDEN = [".env", ".ssh/**", "node_modules/**", "dist/**", "build/**"];
+
+/** Orchestrator-scoped state shared by every delegation run. */
+interface DelegationDeps {
+  activeControllers: Map<string, AbortController>;
+  defaultForbidden: string[];
+  /** Serializes `git worktree` metadata writes across concurrent runs. */
+  worktreeMutex: Semaphore;
+  /** Upper bound on candidate runs executed concurrently within one fan-out. */
+  maxConcurrentAgentProcesses: number;
+}
 
 export class DelegationError extends Error {
   readonly code: string;
@@ -53,9 +65,17 @@ export interface DelegationOrchestrator {
 export function createDelegationOrchestrator(options: OrchestratorOptions = {}): DelegationOrchestrator {
   const maxDepth = options.maxDepth ?? 1;
   const maxConcurrent = options.maxConcurrentRunsPerRepo ?? 2;
+  const maxConcurrentAgentProcesses = options.maxConcurrentAgentProcesses ?? 4;
   const defaultForbidden = options.defaultForbiddenPaths ?? DEFAULT_FORBIDDEN;
   const activeByRepo = new Map<string, number>();
   const activeControllers = new Map<string, AbortController>();
+  const worktreeMutex = createSemaphore(1);
+  const deps: DelegationDeps = {
+    activeControllers,
+    defaultForbidden,
+    worktreeMutex,
+    maxConcurrentAgentProcesses,
+  };
 
   return {
     async *delegate(request, context) {
@@ -81,9 +101,9 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         const effectiveRequest: DelegateRequest = { ...request, testCommands };
 
         if ((effectiveRequest.mode ?? "implement") === "compare") {
-          yield* runCompareDelegation(effectiveRequest, repoPath, context, activeControllers, defaultForbidden);
+          yield* runCompareDelegation(effectiveRequest, repoPath, context, deps);
         } else {
-          yield* runSingleDelegation(effectiveRequest, repoPath, context, activeControllers, defaultForbidden);
+          yield* runSingleDelegation(effectiveRequest, repoPath, context, deps);
         }
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
@@ -158,7 +178,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
     async discard(repo, id) {
       const repoPath = await resolveRepo(repo);
       const details = await readRunDetails(repoPath, id);
-      await removeWorktree(repoPath, details.run.worktreePath);
+      await removeWorktree(repoPath, details.run.worktreePath, worktreeMutex);
       const run = await updateRun(details.run, { status: "discarded", completedAt: new Date().toISOString() });
       await writeJson(details.artifacts.resultPath, { ...details.result, run });
       return readRunDetails(repoPath, id);
@@ -170,8 +190,7 @@ async function* runCompareDelegation(
   request: DelegateRequest,
   repoPath: string,
   context: { findEntry(provider: string): AgentEntry | undefined },
-  activeControllers: Map<string, AbortController>,
-  defaultForbidden: string[],
+  deps: DelegationDeps,
 ): AsyncIterable<DelegationEvent> {
   const targets = [request.to, ...(request.compareTargets ?? [])].filter(Boolean);
   if (targets.length < 2) {
@@ -198,7 +217,8 @@ async function* runCompareDelegation(
   yield await recordEvent(artifacts.eventsPath, { type: "run_start", runId: run.id, status: run.status });
   run = await updateRun(run, { status: "planning", startedAt: new Date().toISOString() });
 
-  for (const target of targets) {
+  const isolation = normalizeIsolation(request, "compare");
+  const sources = targets.map((target) => {
     const candidateRequest: DelegateRequest = {
       ...request,
       to: target,
@@ -206,8 +226,8 @@ async function* runCompareDelegation(
       mode: "implement",
       isolation: {
         workspace: "worktree",
-        baseRef: normalizeIsolation(request, "compare").baseRef,
-        cleanup: normalizeIsolation(request, "compare").cleanup,
+        baseRef: isolation.baseRef,
+        cleanup: isolation.cleanup,
       },
       permissionProfile: "auto-edit",
       task: [
@@ -216,24 +236,30 @@ async function* runCompareDelegation(
         "Optimize for a clear, reviewable patch. Another agent may produce a competing patch.",
       ].join("\n"),
     };
+    return () => runSingleDelegation(candidateRequest, repoPath, context, deps);
+  });
 
-    let childDone: Extract<DelegationEvent, { type: "run_done" }> | undefined;
-    let childError: Extract<DelegationEvent, { type: "run_error" }> | undefined;
-    for await (const event of runSingleDelegation(candidateRequest, repoPath, context, activeControllers, defaultForbidden)) {
-      yield event;
-      if (event.type === "run_done") childDone = event;
-      if (event.type === "run_error") childError = event;
-    }
-    const childId = childDone?.runId ?? childError?.runId;
-    if (childId) {
-      try {
-        const child = await readJson<RunResult>(artifactPaths(repoPath, childId).resultPath);
-        childResults.push(child);
-      } catch {
-        // The child already emitted its own error event; keep the compare parent going.
-      }
+  // Run candidates in parallel, bounded by the agent-process cap, and forward
+  // their events as they arrive. Every event carries its own runId, so consumers
+  // can demultiplex the interleaved streams.
+  const childIds: string[] = [];
+  const concurrency = Math.min(targets.length, deps.maxConcurrentAgentProcesses);
+  for await (const event of mergeAsyncIterables(sources, { concurrency })) {
+    yield event;
+    if ((event.type === "run_done" || event.type === "run_error") && event.runId && !childIds.includes(event.runId)) {
+      childIds.push(event.runId);
     }
   }
+
+  for (const childId of childIds) {
+    try {
+      childResults.push(await readJson<RunResult>(artifactPaths(repoPath, childId).resultPath));
+    } catch {
+      // The child already emitted its own error event; keep the compare parent going.
+    }
+  }
+  // Present candidates in a stable start-time order regardless of completion order.
+  childResults.sort((a, b) => a.run.createdAt.localeCompare(b.run.createdAt));
 
   const failed = childResults.length !== targets.length || childResults.some((result) => result.run.status !== "ready");
   run = await updateRun(run, { status: failed ? "failed" : "ready", completedAt: new Date().toISOString() });
@@ -266,8 +292,7 @@ async function* runSingleDelegation(
   request: DelegateRequest,
   repoPath: string,
   context: { findEntry(provider: string): AgentEntry | undefined },
-  activeControllers: Map<string, AbortController>,
-  defaultForbidden: string[],
+  deps: DelegationDeps,
 ): AsyncIterable<DelegationEvent> {
   let run: Run | undefined;
   let controller: AbortController | undefined;
@@ -318,7 +343,7 @@ async function* runSingleDelegation(
     const workspaceSnapshot = isolation.workspace === "shared" ? await captureStatus(repoPath) : undefined;
     if (isolation.workspace === "worktree") {
       const baseRef = await resolveBaseRef(repoPath, isolation.baseRef);
-      await createWorktree(repoPath, worktreePath, run.branchName, baseRef);
+      await createWorktree(repoPath, worktreePath, run.branchName, baseRef, deps.worktreeMutex);
       worktreeCreated = true;
       yield await recordEvent(artifacts.eventsPath, {
         type: "worktree_created",
@@ -335,12 +360,12 @@ async function* runSingleDelegation(
     run = await updateRun(run, { status: mode === "review" ? "reviewing" : "running" });
     yield await recordEvent(artifacts.eventsPath, { type: "agent_start", runId: run.id, agent: request.to });
     controller = new AbortController();
-    activeControllers.set(run.id, controller);
+    deps.activeControllers.set(run.id, controller);
 
     const workDir = isolation.workspace === "worktree" ? worktreePath : repoPath;
     const chat: ChatRequest = {
       provider: request.to,
-      messages: [{ role: "user", content: buildDelegationPrompt(run, request, defaultForbidden) }],
+      messages: [{ role: "user", content: buildDelegationPrompt(run, request, deps.defaultForbidden) }],
       options: {
         cwd: workDir,
         timeoutMs: request.timeoutMs,
@@ -398,7 +423,7 @@ async function* runSingleDelegation(
     const diffResult = await generateDiff(workDir);
     changedFiles = diffResult.changedFiles;
     await writeFile(artifacts.diffPath as string, diffResult.diff);
-    enforcePathPolicy(changedFiles, request, defaultForbidden);
+    enforcePathPolicy(changedFiles, request, deps.defaultForbidden);
     yield await recordEvent(artifacts.eventsPath, {
       type: "diff_ready",
       runId: run.id,
@@ -431,7 +456,7 @@ async function* runSingleDelegation(
       completedAt: new Date().toISOString(),
     });
     if (worktreeCreated && shouldCleanupWorktree(isolation.cleanup, run.status, changedFiles)) {
-      await removeWorktree(repoPath, worktreePath);
+      await removeWorktree(repoPath, worktreePath, deps.worktreeMutex);
       run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
     }
     const result = buildRunResult(run, artifacts, changedFiles, tests, agentEvents, outOfTreeChanges, {
@@ -456,7 +481,7 @@ async function* runSingleDelegation(
       const status = controller?.signal.aborted ? "cancelled" : "failed";
       run = await updateRun(run, { status, completedAt: new Date().toISOString() });
       if (worktreeCreated && shouldCleanupWorktree(run.isolation.cleanup, run.status, [])) {
-        await removeWorktree(repoPath, run.worktreePath);
+        await removeWorktree(repoPath, run.worktreePath, deps.worktreeMutex);
         run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
       }
       const result = buildRunResult(
@@ -481,7 +506,11 @@ async function* runSingleDelegation(
       yield { type: "run_error", error, code };
     }
   } finally {
-    if (run) activeControllers.delete(run.id);
+    // If a consumer breaks out of the merged stream (cancellation), this generator
+    // is returned mid-run: abort defensively so the agent process is terminated
+    // instead of orphaned. On the normal path the run is already done, so this is a no-op.
+    controller?.abort();
+    if (run) deps.activeControllers.delete(run.id);
   }
 }
 
@@ -821,22 +850,41 @@ async function resolveBaseRef(repoPath: string, baseRef = "HEAD"): Promise<strin
   return "HEAD";
 }
 
-async function createWorktree(repoPath: string, worktreePath: string, branchName: string, baseRef: string): Promise<void> {
+async function createWorktree(
+  repoPath: string,
+  worktreePath: string,
+  branchName: string,
+  baseRef: string,
+  mutex: Semaphore,
+): Promise<void> {
   await mkdir(dirname(worktreePath), { recursive: true });
-  const result = await capture("git", ["-C", repoPath, "worktree", "add", "-b", branchName, worktreePath, baseRef]);
-  if (result.code !== 0) {
-    throw new DelegationError("worktree_failed", (result.stderr || result.stdout || "git worktree add failed").trim());
+  // Serialize git worktree metadata writes: concurrent `git worktree add` can
+  // contend on .git/worktrees and fail. Agent execution still runs in parallel.
+  await mutex.acquire();
+  try {
+    const result = await capture("git", ["-C", repoPath, "worktree", "add", "-b", branchName, worktreePath, baseRef]);
+    if (result.code !== 0) {
+      throw new DelegationError("worktree_failed", (result.stderr || result.stdout || "git worktree add failed").trim());
+    }
+  } finally {
+    mutex.release();
   }
 }
 
-async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
+async function removeWorktree(repoPath: string, worktreePath: string, mutex: Semaphore): Promise<void> {
   if (!existsSync(worktreePath)) return;
-  // Must run from inside the repo, else git can't resolve the worktree registration.
-  const result = await capture("git", ["-C", repoPath, "worktree", "remove", "--force", worktreePath]);
-  if (result.code !== 0) {
-    // Fall back to a raw delete, then prune the now-stale .git/worktrees/<id> metadata.
-    await rm(worktreePath, { recursive: true, force: true });
-    await capture("git", ["-C", repoPath, "worktree", "prune"]);
+  // Serialize worktree metadata writes alongside createWorktree (see above).
+  await mutex.acquire();
+  try {
+    // Must run from inside the repo, else git can't resolve the worktree registration.
+    const result = await capture("git", ["-C", repoPath, "worktree", "remove", "--force", worktreePath]);
+    if (result.code !== 0) {
+      // Fall back to a raw delete, then prune the now-stale .git/worktrees/<id> metadata.
+      await rm(worktreePath, { recursive: true, force: true });
+      await capture("git", ["-C", repoPath, "worktree", "prune"]);
+    }
+  } finally {
+    mutex.release();
   }
 }
 

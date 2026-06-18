@@ -81,8 +81,12 @@ portico delegate \
   --task "Try three approaches to X"
 ```
 
-Compare mode currently runs candidates one after another. Each candidate is an ordinary
-`implement` run in an isolated worktree with `auto-edit` enabled.
+Compare mode runs candidates in parallel, each an ordinary `implement` run in its own
+isolated worktree with `auto-edit` enabled. The number running at once is bounded by the
+orchestrator's `maxConcurrentAgentProcesses` (default 4); `git worktree` bookkeeping is
+serialized so concurrent runs don't contend. Candidate events stream interleaved, each
+tagged with its own `runId`, and the parent compare run only completes once every
+candidate has finished.
 
 ## Compare Artifacts
 

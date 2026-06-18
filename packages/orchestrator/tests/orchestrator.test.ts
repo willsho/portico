@@ -244,6 +244,88 @@ test("compare mode runs multiple isolated candidates and records a parent report
   }
 });
 
+test("compare mode runs candidates in parallel", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const traceDir = await mkdtemp(join(tmpdir(), "portico-trace-"));
+  const traceFile = join(traceDir, "trace.log");
+  const orchestrator = createDelegationOrchestrator();
+  process.env.PORTICO_TRACE_FILE = traceFile;
+  process.env.PORTICO_AGENT_DELAY_MS = "300";
+
+  try {
+    const events: DelegationEvent[] = [];
+    for await (const event of orchestrator.delegate(
+      { to: "codex", compareTargets: ["gemini", "opencode"], repo, task: "create delegated file", mode: "compare" },
+      { findEntry: (provider) => agentEntry(provider, EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    assert.equal(done?.type === "run_done" ? done.status : "", "ready");
+    const trace = await readFile(traceFile, "utf8");
+    assert.ok(peakConcurrency(trace) >= 2, `expected overlapping agent runs, trace:\n${trace}`);
+  } finally {
+    delete process.env.PORTICO_TRACE_FILE;
+    delete process.env.PORTICO_AGENT_DELAY_MS;
+    await rm(repo, { recursive: true, force: true });
+    await rm(traceDir, { recursive: true, force: true });
+  }
+});
+
+test("compare mode honors the agent-process concurrency cap", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const traceDir = await mkdtemp(join(tmpdir(), "portico-trace-"));
+  const traceFile = join(traceDir, "trace.log");
+  const orchestrator = createDelegationOrchestrator({ maxConcurrentAgentProcesses: 1 });
+  process.env.PORTICO_TRACE_FILE = traceFile;
+  process.env.PORTICO_AGENT_DELAY_MS = "150";
+
+  try {
+    const events: DelegationEvent[] = [];
+    for await (const event of orchestrator.delegate(
+      { to: "codex", compareTargets: ["gemini", "opencode"], repo, task: "create delegated file", mode: "compare" },
+      { findEntry: (provider) => agentEntry(provider, EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    assert.equal(events.at(-1)?.type, "run_done");
+    const trace = await readFile(traceFile, "utf8");
+    assert.equal(peakConcurrency(trace), 1, `expected serialized agent runs, trace:\n${trace}`);
+  } finally {
+    delete process.env.PORTICO_TRACE_FILE;
+    delete process.env.PORTICO_AGENT_DELAY_MS;
+    await rm(repo, { recursive: true, force: true });
+    await rm(traceDir, { recursive: true, force: true });
+  }
+});
+
+/** Reconstruct the peak number of overlapping agent runs from the edit-agent trace. */
+function peakConcurrency(trace: string): number {
+  const events = trace
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [kind, , ts] = line.split(":");
+      return { kind, ts: Number(ts) };
+    })
+    // On a timestamp tie, count ends before starts so overlap is never overstated.
+    .sort((a, b) => a.ts - b.ts || (a.kind === "end" ? -1 : 1));
+  let live = 0;
+  let peak = 0;
+  for (const event of events) {
+    if (event.kind === "start") {
+      live++;
+      peak = Math.max(peak, live);
+    } else {
+      live--;
+    }
+  }
+  return peak;
+}
+
 async function createRepo(): Promise<string> {
   const repo = await mkdtemp(join(tmpdir(), "portico-delegate-"));
   await git(repo, "init");
