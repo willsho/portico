@@ -47,15 +47,18 @@ Every delegation run moves through the same broad lifecycle:
 2. Portico resolves the repository root.
 3. Portico prepares the workspace.
 4. Portico runs the target agent with a self-contained task prompt.
-5. For implementation runs, Portico generates `diff.patch`.
-6. Portico enforces path policy.
-7. Portico runs configured tests.
-8. Portico writes `result.json` and `report.md`.
-9. The user decides whether to apply or discard.
+5. For worktree runs, Portico checks whether the caller's main checkout changed while the
+   agent was running.
+6. For implementation runs, Portico generates `diff.patch`.
+7. Portico enforces path policy.
+8. Portico runs configured tests.
+9. Portico writes `result.json` and `report.md`.
+10. The user decides whether to apply or discard.
 
-The target agent never applies changes back to the caller's main checkout. For isolated
-implementation runs, it leaves changes on disk in the run workspace; Portico turns those
-changes into a patch.
+The target agent is instructed to leave implementation changes in the run workspace.
+Portico turns those changes into a patch. If a worktree-isolated run changes files outside
+that workspace, Portico records the out-of-tree changes separately, marks the run failed,
+and emits a `sandbox_escape_detected` event.
 
 ## Modes
 
@@ -80,10 +83,21 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 | `agent.ndjson` | Target agent runtime events |
 | `diff.patch` | Patch for implementation runs; empty for read-only review runs |
 | `test.log` | Output from configured test commands |
-| `report.md` | Human-readable summary |
-| `result.json` | Stable machine-readable result |
+| `report.md` | Human-readable summary, warnings, telemetry, and next actions |
+| `result.json` | Stable machine-readable result with changed files, warnings, and telemetry |
 
 The final `run_done` event includes the `reportPath` and `resultPath`.
+
+## Gate Warnings and Telemetry
+
+`result.json` records gate warnings when Portico sees a mismatch between the agent's
+terminal claim and Portico's own gates, or when a worktree run changes files outside the
+isolated worktree.
+
+`result.telemetry` records total run duration, agent duration, test duration, and provider
+usage when the agent reports it. Usage data preserves the provider's raw payload and
+extracts common token and cost fields such as `inputTokens`, `outputTokens`,
+`totalTokens`, and `costUsd`.
 
 ## Path Policy
 
@@ -181,4 +195,3 @@ Weak:
 ```text
 add dark mode
 ```
-

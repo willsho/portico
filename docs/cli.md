@@ -80,6 +80,9 @@ portico daemon start
 
 Portico refuses LAN exposure without a token.
 
+If a daemon is already recorded and still running, `portico start` prints
+`daemon already running (pid ..., port ..., ...)` and exits successfully.
+
 ## `portico stop`
 
 Stops the daemon recorded by the local pid file:
@@ -163,6 +166,12 @@ portico delegate \
   --test "npm test"
 ```
 
+If a worktree-isolated run changes files in the caller's main checkout, human output
+prints a `WARNING: sandbox escape detected` block. JSON output includes a
+`sandbox_escape_detected` event with the changed paths. Delegate connection failures also
+include the daemon URL and a more specific connection, timeout, DNS, or abort reason when
+available.
+
 ## `portico runs`
 
 Lists runs for a repository:
@@ -186,10 +195,16 @@ Shows details for a run:
 ```bash
 portico status <run_id>
 portico status <run_id> --json
+portico status <run_id> --json --summary
+portico status <run_id> --json --fields status,changedFiles,telemetry
 ```
 
-Human output includes status, target, branch, worktree, report path, changed files, and
-test summaries.
+Human output includes status, target, branch, worktree, report path, changed files,
+sandbox escape warnings, gate warnings, telemetry, and test summaries.
+
+`--json` returns `RunDetails` with duplicate nested `result.run` and `result.artifacts`
+removed. `--summary` returns a compact top-level object for scripts and LLM callers.
+`--fields` selects comma-separated fields from the summary view.
 
 ## `portico apply`
 
@@ -250,4 +265,3 @@ The report includes:
 - discovered agents;
 - port availability;
 - CORS and LAN/token posture.
-

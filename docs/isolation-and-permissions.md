@@ -58,6 +58,11 @@ portico delegate \
 For shared auto-edit runs, Portico requires the working tree to be clean before the run.
 That lets Portico attribute the resulting diff to the delegated agent.
 
+For `worktree` runs, Portico snapshots the caller's main checkout after the isolated
+worktree is created and checks it again after the target agent exits. If the main checkout
+changed, Portico marks the run failed, emits `sandbox_escape_detected`, and records
+`sandboxEscaped: true` with `outOfTreeChanges` in `result.json`.
+
 ## Base Ref
 
 `--base-ref` controls the git ref used when creating an isolated worktree:
@@ -141,6 +146,23 @@ Defaults:
 Read-only shared runs snapshot `git status --porcelain` before and after the agent runs.
 If the agent changes the shared working tree, the run fails with `read_only_modified`.
 
+## Sandbox Escape Detection
+
+Worktree isolation is a review and attribution boundary, not an OS-level filesystem
+sandbox. Some provider CLIs may ignore their process cwd or resolve paths back to the
+caller checkout. Portico detects observed writes to the main checkout by comparing git
+status snapshots before and after the agent run.
+
+When out-of-tree changes are detected:
+
+- the run status becomes `failed`;
+- `events.ndjson` includes a `sandbox_escape_detected` event;
+- `result.json` includes `sandboxEscaped`, `outOfTreeChanges`, and a gate warning;
+- `report.md` separates `Worktree Changes` from `Out-of-Tree Changes`.
+
+Portico does not automatically delete or revert out-of-tree files. The report tells the
+caller what changed so they can inspect and clean up deliberately.
+
 ## Recommended Defaults
 
 Use these unless you have a specific reason not to:
@@ -158,8 +180,10 @@ current checkout directly.
 
 ## What Isolation Does Not Do
 
-Workspace isolation protects the caller's checkout from direct file changes. It does not:
+Workspace isolation gives Portico a separate patch workspace and lets it detect observed
+out-of-tree writes. It does not:
 
+- provide an OS-level write sandbox;
 - sandbox network access;
 - hide environment variables from the child process;
 - prevent the provider CLI from using its own local configuration;
@@ -167,4 +191,3 @@ Workspace isolation protects the caller's checkout from direct file changes. It 
 
 Portico's safety model is layered: isolated workspace, permission profile, path policy,
 tests, artifacts, and explicit apply.
-

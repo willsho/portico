@@ -93,8 +93,8 @@ Implementation delegation defaults to isolated git worktrees:
 .portico/worktrees/<run_id>
 ```
 
-The target agent edits that worktree. The caller's main checkout is not modified until
-the user runs:
+The target agent is launched in that worktree. The expected path is that the caller's main
+checkout is not modified until the user runs:
 
 ```bash
 portico apply <run_id>
@@ -116,6 +116,12 @@ portico delegate \
 
 Portico requires a clean worktree before shared auto-edit runs so the resulting diff can
 be attributed to the delegated agent.
+
+For worktree runs, Portico snapshots the caller's main checkout after creating the
+isolated worktree and checks it again after the target agent exits. If the delegate writes
+outside the worktree, the run is marked `failed`, `events.ndjson` records
+`sandbox_escape_detected`, and `result.json` records `sandboxEscaped` plus
+`outOfTreeChanges`. Portico reports these changes but does not automatically revert them.
 
 ## Permission Profiles
 
@@ -202,7 +208,8 @@ Every run writes durable artifacts:
 ```
 
 Reports record workspace isolation, base ref, cleanup policy, permission profile, target
-agent, changed files, tests, and next actions.
+agent, worktree changes, out-of-tree changes, gate warnings, telemetry, tests, and next
+actions.
 
 ## What Portico Does Not Guarantee
 
@@ -212,8 +219,8 @@ Portico does not currently guarantee:
 - network isolation for provider CLIs;
 - secret redaction from provider output;
 - prevention of all filesystem reads by providers;
+- prevention of all filesystem writes by providers;
 - durable session persistence across daemon restarts;
 - automatic security review of generated patches.
 
 Use Portico as a controlled local orchestration layer, not as a hostile-code sandbox.
-
