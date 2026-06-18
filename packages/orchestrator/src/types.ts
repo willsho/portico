@@ -86,6 +86,30 @@ export interface TestResult {
   status: "passed" | "failed";
   exitCode: number | null;
   output: string;
+  durationMs?: number;
+}
+
+export interface OutOfTreeChange {
+  path: string;
+  status: string;
+  raw: string;
+}
+
+export interface UsageTelemetry {
+  available: boolean;
+  raw?: unknown;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+  unavailableReason?: string;
+}
+
+export interface RunTelemetry {
+  totalDurationMs: number;
+  agentDurationMs?: number;
+  testDurationMs: number;
+  usage: UsageTelemetry;
 }
 
 export type DelegationEvent =
@@ -93,6 +117,7 @@ export type DelegationEvent =
   | { type: "worktree_created"; runId: string; path: string; branch: string }
   | { type: "agent_start"; runId: string; agent: string }
   | { type: "agent_event"; runId: string; event: RuntimeEvent }
+  | { type: "sandbox_escape_detected"; runId: string; changes: OutOfTreeChange[] }
   | { type: "test_start"; runId: string; command: string }
   | { type: "test_done"; runId: string; command: string; status: "passed" | "failed"; exitCode: number | null }
   | { type: "diff_ready"; runId: string; path: string; changedFiles: string[] }
@@ -106,6 +131,11 @@ export interface RunResult {
   tests: TestResult[];
   agentEvents: RuntimeEvent[];
   compareResults?: RunResult[];
+  sandboxEscaped?: boolean;
+  outOfTreeChanges?: OutOfTreeChange[];
+  agentGateMismatch?: boolean;
+  gateWarnings?: string[];
+  telemetry?: RunTelemetry;
   error?: string;
 }
 

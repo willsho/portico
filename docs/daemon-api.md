@@ -252,6 +252,15 @@ Event examples:
 {"type":"run_done","runId":"run_...","status":"ready","reportPath":"...","resultPath":"..."}
 ```
 
+`sandbox_escape_detected` is emitted only when a worktree-isolated run changes the
+caller's main checkout. Such a run is marked `failed`; the worktree diff remains separate
+from the out-of-tree changes.
+
+```json
+{"type":"sandbox_escape_detected","runId":"run_...","changes":[{"path":"docs/generated.md","status":"??","raw":"?? docs/generated.md"}]}
+{"type":"run_done","runId":"run_...","status":"failed","reportPath":"...","resultPath":"..."}
+```
+
 ## `GET /runs?repo=<path>`
 
 Lists delegation runs for a repository.
@@ -285,6 +294,60 @@ interface RunDetails {
   result?: RunResult;
 }
 ```
+
+Relevant result shapes:
+
+```ts
+interface RunResult {
+  run: Run;
+  artifacts: RunArtifact;
+  changedFiles: string[];
+  tests: TestResult[];
+  agentEvents: RuntimeEvent[];
+  compareResults?: RunResult[];
+  sandboxEscaped?: boolean;
+  outOfTreeChanges?: OutOfTreeChange[];
+  agentGateMismatch?: boolean;
+  gateWarnings?: string[];
+  telemetry?: RunTelemetry;
+  error?: string;
+}
+
+interface TestResult {
+  command: string;
+  status: "passed" | "failed";
+  exitCode: number | null;
+  output: string;
+  durationMs?: number;
+}
+
+interface OutOfTreeChange {
+  path: string;
+  status: string;
+  raw: string;
+}
+
+interface RunTelemetry {
+  totalDurationMs: number;
+  agentDurationMs?: number;
+  testDurationMs: number;
+  usage: UsageTelemetry;
+}
+
+interface UsageTelemetry {
+  available: boolean;
+  raw?: unknown;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+  unavailableReason?: string;
+}
+```
+
+`usage.raw` is the provider-reported usage payload from the terminal agent event. Portico
+extracts common token and cost fields when present, but it does not estimate missing
+costs.
 
 ## `GET /runs/:id/events?repo=<path>`
 
@@ -325,4 +388,3 @@ curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/cancel?repo=$(pwd)"
 Requests with no `Origin` header are allowed. Browser origins from `localhost`,
 `127.0.0.1`, and `[::1]` are allowed by default. Additional origins come from config or
 `--allow-origin`.
-

@@ -122,7 +122,8 @@ agent runtimes.
 Delegation is the local-agent-router path: Claude Code, Codex, or another configured
 agent asks Portico to hand a coding task to a different local agent. Portico creates a
 dedicated git worktree, runs the target agent there, captures logs and events, generates a
-diff, runs configured tests, and leaves the final decision to the user.
+diff, runs configured tests, checks whether the delegate changed files outside the
+worktree, records telemetry, and leaves the final decision to the user.
 
 Initialize a repo:
 
@@ -162,8 +163,9 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 - `agent.ndjson` — target agent runtime events
 - `test.log` — configured test command output
 - `diff.patch` — patch produced from the isolated worktree
-- `report.md` — human-readable summary and next actions
-- `result.json` — stable machine-readable run result
+- `report.md` — human-readable summary, warnings, telemetry, and next actions
+- `result.json` — stable machine-readable run result, including changed files,
+  out-of-tree changes, gate warnings, and telemetry
 
 Worktrees live under `.portico/worktrees/<run_id>/`. Portico excludes `.portico/` from the
 repo's local git exclude file so artifacts and worktrees do not appear as ordinary
@@ -187,6 +189,13 @@ Delegation controls in the MVP:
   a parent comparison report with links to each candidate run.
 - Test commands come from repeated `--test` flags or `.portico/config.json`
   `testCommands`.
+- Worktree runs snapshot the caller's main checkout before and after the agent runs. If
+  Portico observes out-of-tree changes, it marks the run failed, emits a
+  `sandbox_escape_detected` event, and records `sandboxEscaped` / `outOfTreeChanges` in
+  `result.json`.
+- Run results include `telemetry` with total, agent, and test durations. When the target
+  agent reports usage, Portico preserves the raw usage payload and extracts common token
+  and cost fields.
 - `apply` requires an explicit command, only applies implement runs, and refuses to run
   when tracked files in the main worktree are dirty.
 
@@ -348,7 +357,8 @@ Register your own with `registerAdapter(myAdapter)`.
 - The child-process runner enforces a timeout watchdog, a max-output cap, cancellation via
   `AbortSignal`, and guaranteed process cleanup.
 - Delegation runs execute in isolated git worktrees and generate artifacts before any
-  patch is applied to the main working tree.
+  patch is applied to the main working tree. Portico also checks for observed
+  out-of-tree writes and fails the run if a delegate modifies the caller's checkout.
 - Delegation `apply` is never automatic; it must be triggered by the user and requires a
   clean tracked working tree.
 - Portico holds no host-app secrets and never reads host data — it only processes the

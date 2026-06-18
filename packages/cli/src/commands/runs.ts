@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { authHeaders, daemonUrl, readJson } from "./http.ts";
-import type { Run, RunDetails } from "@portico/orchestrator";
+import type { Run, RunDetails, RunResult } from "@portico/orchestrator";
 
 export async function runsCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -28,6 +28,8 @@ export async function statusCommand(args: string[]): Promise<number> {
     options: {
       repo: { type: "string" },
       json: { type: "boolean" },
+      summary: { type: "boolean" },
+      fields: { type: "string" },
       url: { type: "string" },
       token: { type: "string" },
     },
@@ -38,8 +40,10 @@ export async function statusCommand(args: string[]): Promise<number> {
     return 1;
   }
   const body = await getRun(values.url, values.token, values.repo, id);
-  if (values.json) console.log(JSON.stringify(body, null, 2));
-  else printDetails(body);
+  if (values.json) {
+    const printable = values.summary || values.fields ? summarizeDetails(body) : compactDetails(body);
+    console.log(JSON.stringify(values.fields ? selectFields(printable, values.fields) : printable, null, 2));
+  } else printDetails(body);
   return 0;
 }
 
@@ -114,7 +118,73 @@ function printDetails(details: RunDetails): void {
   console.log(`worktree: ${run.worktreePath}`);
   console.log(`report: ${artifacts.reportPath}`);
   if (result?.changedFiles?.length) console.log(`changed: ${result.changedFiles.join(", ")}`);
+  if (result?.sandboxEscaped) {
+    console.error("WARNING: sandbox escape detected");
+    for (const change of result.outOfTreeChanges ?? []) console.error(`  ${change.status} ${change.path}`);
+  }
+  if (result?.gateWarnings?.length) {
+    for (const warning of result.gateWarnings) console.error(`warning: ${warning}`);
+  }
+  if (result?.telemetry) {
+    const usage = result.telemetry.usage;
+    console.log(`duration: ${result.telemetry.totalDurationMs}ms total`);
+    if (result.telemetry.agentDurationMs !== undefined) console.log(`agent: ${result.telemetry.agentDurationMs}ms`);
+    console.log(`tests: ${result.telemetry.testDurationMs}ms`);
+    if (usage.available) {
+      const tokens = [
+        usage.inputTokens !== undefined ? `input=${usage.inputTokens}` : undefined,
+        usage.outputTokens !== undefined ? `output=${usage.outputTokens}` : undefined,
+        usage.totalTokens !== undefined ? `total=${usage.totalTokens}` : undefined,
+      ].filter(Boolean);
+      console.log(`usage: ${tokens.length ? tokens.join(" ") : "reported"}`);
+      console.log(`cost: ${usage.costUsd !== undefined ? `$${usage.costUsd}` : "not reported"}`);
+    } else {
+      console.log(`usage: unavailable (${usage.unavailableReason ?? "not reported"})`);
+    }
+  }
   if (result?.tests?.length) {
     for (const test of result.tests) console.log(`test ${test.status}: ${test.command}`);
   }
+}
+
+type CompactRunResult = Omit<RunResult, "run" | "artifacts">;
+
+function compactDetails(details: RunDetails): Omit<RunDetails, "result"> & { result?: CompactRunResult } {
+  const result = details.result ? compactResult(details.result) : undefined;
+  return {
+    run: details.run,
+    artifacts: details.artifacts,
+    ...(result ? { result } : {}),
+  };
+}
+
+function compactResult(result: RunResult): CompactRunResult {
+  const { run: _run, artifacts: _artifacts, ...rest } = result;
+  return rest;
+}
+
+function summarizeDetails(details: RunDetails): Record<string, unknown> {
+  return {
+    id: details.run.id,
+    status: details.run.status,
+    targetAgent: details.run.targetAgent,
+    mode: details.run.mode,
+    changedFiles: details.result?.changedFiles ?? [],
+    tests: details.result?.tests ?? [],
+    sandboxEscaped: details.result?.sandboxEscaped ?? false,
+    outOfTreeChanges: details.result?.outOfTreeChanges ?? [],
+    agentGateMismatch: details.result?.agentGateMismatch ?? false,
+    gateWarnings: details.result?.gateWarnings ?? [],
+    telemetry: details.result?.telemetry,
+    reportPath: details.artifacts.reportPath,
+    resultPath: details.artifacts.resultPath,
+  };
+}
+
+function selectFields(value: Record<string, unknown>, fields: string): Record<string, unknown> {
+  const selected: Record<string, unknown> = {};
+  for (const field of fields.split(",").map((part) => part.trim()).filter(Boolean)) {
+    selected[field] = value[field];
+  }
+  return selected;
 }

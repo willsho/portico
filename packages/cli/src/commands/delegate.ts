@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { authHeaders, daemonUrl, readDelegationStream } from "./http.ts";
+import { authHeaders, daemonUrl, describeFetchError, fetchWithRetry, readDelegationStream } from "./http.ts";
 import type { DelegateRequest, DelegationEvent } from "@portico/orchestrator";
 
 export async function delegateCommand(args: string[]): Promise<number> {
@@ -50,17 +50,30 @@ export async function delegateCommand(args: string[]): Promise<number> {
     depth: Number(process.env["PORTICO_DELEGATION_DEPTH"] ?? "0"),
   };
 
-  const res = await fetch(`${daemonUrl(values.url)}/delegate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(values.token) },
-    body: JSON.stringify(request),
-  });
+  const url = `${daemonUrl(values.url)}/delegate`;
+  let res: Response;
+  try {
+    res = await fetchWithRetry(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders(values.token) },
+      body: JSON.stringify(request),
+    });
+  } catch (err) {
+    console.error(`[portico] ${describeFetchError(err, url)}`);
+    console.error("[portico] check `portico start` or set PORTICO_URL to the running daemon.");
+    return 1;
+  }
 
   let last: DelegationEvent | undefined;
-  for await (const event of readDelegationStream(res)) {
-    last = event;
-    if (values.json) console.log(JSON.stringify(event));
-    else printEvent(event);
+  try {
+    for await (const event of readDelegationStream(res)) {
+      last = event;
+      if (values.json) console.log(JSON.stringify(event));
+      else printEvent(event);
+    }
+  } catch (err) {
+    console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
   }
 
   return last?.type === "run_error" ? 1 : 0;
@@ -82,6 +95,10 @@ function printEvent(event: DelegationEvent): void {
       else if (event.event.type === "done") console.log(`\n[${event.runId}] agent done`);
       else if (event.event.type === "error") console.log(`\n[${event.runId}] agent error: ${event.event.error}`);
       return;
+    case "sandbox_escape_detected":
+      console.error(`\n[${event.runId}] WARNING: sandbox escape detected`);
+      for (const change of event.changes) console.error(`  ${change.status} ${change.path}`);
+      return;
     case "diff_ready":
       console.log(`\n[${event.runId}] diff ${event.path}`);
       console.log(`changed files: ${event.changedFiles.length ? event.changedFiles.join(", ") : "none"}`);
@@ -95,7 +112,11 @@ function printEvent(event: DelegationEvent): void {
     case "run_done":
       console.log(`[${event.runId}] ${event.status}`);
       console.log(`report: ${event.reportPath}`);
-      console.log(`next: portico apply ${event.runId} | portico discard ${event.runId}`);
+      console.log(
+        event.status === "ready"
+          ? `next: portico apply ${event.runId} | portico discard ${event.runId}`
+          : `next: portico status ${event.runId} | portico discard ${event.runId}`,
+      );
       return;
     case "run_error":
       console.error(`[${event.runId ?? "delegate"}] ${event.code ?? "error"}: ${event.error}`);

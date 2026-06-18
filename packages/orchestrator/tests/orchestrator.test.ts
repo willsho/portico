@@ -13,6 +13,7 @@ import type { DelegationEvent } from "../src/index.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const EDIT_AGENT = join(here, "../../../test/fixtures/edit-agent.mjs");
 const FAKE_AGENT = join(here, "../../../test/fixtures/fake-agent.mjs");
+const ESCAPE_AGENT = join(here, "../../../test/fixtures/escape-agent.mjs");
 
 test("delegation creates a worktree, artifacts, diff and report", async () => {
   installBuiltinAdapters();
@@ -38,8 +39,14 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     assert.equal(details.run.isolation.workspace, "worktree");
     assert.equal(details.run.permissionProfile, "auto-edit");
     assert.ok(details.result?.changedFiles.includes("delegated.txt"));
+    assert.ok((details.result?.telemetry?.totalDurationMs ?? -1) >= 0);
+    assert.ok((details.result?.telemetry?.agentDurationMs ?? -1) >= 0);
+    assert.ok((details.result?.tests[0]?.durationMs ?? -1) >= 0);
+    assert.equal(details.result?.telemetry?.usage.available, false);
     assert.match(await readFile(details.artifacts.diffPath as string, "utf8"), /delegated.txt/);
-    assert.match(await readFile(details.artifacts.reportPath, "utf8"), /Portico Run Report/);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Portico Run Report/);
+    assert.match(report, /## Telemetry/);
 
     const applied = await orchestrator.apply(repo, runId);
     assert.equal(applied.run.status, "applied");
@@ -107,6 +114,71 @@ test("worktree cleanup can remove no-change runs automatically", async () => {
     assert.deepEqual(details.result?.changedFiles, []);
     assert.ok(details.run.worktreeRemovedAt);
     await assert.rejects(() => stat(details.run.worktreePath));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("delegation records token usage when the agent reports it", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("claude", FAKE_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "claude", repo, task: "say hello without editing" },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    assert.equal(done?.type === "run_done" ? done.status : "", "ready");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.result?.telemetry?.usage.available, true);
+    assert.equal(details.result?.telemetry?.usage.outputTokens, 7);
+    assert.equal(details.result?.telemetry?.usage.totalTokens, 7);
+    assert.match(await readFile(details.artifacts.reportPath, "utf8"), /Output Tokens: 7/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("worktree runs detect agents that write outside the sandbox", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", ESCAPE_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      {
+        to: "codex",
+        repo,
+        task: `create escaped.txt. MAIN_REPO:${repo}`,
+        testCommands: ["test -f escaped.txt"],
+      },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    assert.equal(done?.type === "run_done" ? done.status : "", "failed");
+    assert.ok(events.some((event) => event.type === "sandbox_escape_detected"));
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.result?.sandboxEscaped, true);
+    assert.ok(details.result?.outOfTreeChanges?.some((change) => change.path === "escaped.txt"));
+    assert.equal(details.result?.agentGateMismatch, true);
+    assert.match(details.result?.gateWarnings?.join("\n") ?? "", /Agent claimed success but Portico gate failed/);
+    assert.match(await readFile(details.artifacts.reportPath, "utf8"), /Out-of-Tree Changes/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
