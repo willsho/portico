@@ -167,9 +167,10 @@ export async function* runStreamJson(
 
   const prompt = renderPrompt(request);
   const baseArgs = [...(provider.defaultArgs ?? [])];
+  const editArgs = request.options?.autoEdit ? (provider.autoEditArgs ?? []) : [];
   const resumeArgs =
     context.resumeSessionId && provider.resumeArgs ? provider.resumeArgs(context.resumeSessionId) : [];
-  const args = [...baseArgs, ...resumeArgs];
+  const args = [...baseArgs, ...editArgs, ...resumeArgs];
   const partial = args.includes("--include-partial-messages");
 
   const toolNames = new Map<string, string>();

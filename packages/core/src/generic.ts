@@ -1,5 +1,5 @@
-// The generic-cli engine: spawn the binary, pipe the rendered prompt to stdin,
-// stream stdout as `content` deltas. This is the universal fallback every provider
+// The generic-cli engine: spawn the binary, pass the rendered prompt via stdin or argv,
+// and stream stdout as `content` deltas. This is the universal fallback every provider
 // can fall back to, and the basis for the generic-cli adapter.
 
 import { randomUUID } from "node:crypto";
@@ -47,14 +47,17 @@ export async function* runGenericCli(
   }
 
   const prompt = renderPrompt(request);
-  const args = [...(provider.defaultArgs ?? [])];
+  const editArgs = request.options?.autoEdit ? (provider.autoEditArgs ?? []) : [];
+  const promptMode = provider.promptMode ?? "stdin";
+  const args = [...(provider.defaultArgs ?? []), ...editArgs];
+  if (promptMode === "argument") args.push(prompt);
 
   let full = "";
   let stderr = "";
   let failed = false;
 
   for await (const event of spawnStream(entry.path, args, {
-    input: prompt,
+    input: promptMode === "stdin" ? prompt : undefined,
     cwd: request.options?.cwd,
     timeoutMs: request.options?.timeoutMs,
     maxOutputBytes: request.options?.maxOutputChars,

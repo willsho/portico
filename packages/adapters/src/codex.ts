@@ -13,6 +13,10 @@ export const codexProvider: AgentProvider = {
   protocols: ["app-server", "json-stream", "generic-cli"],
   // Non-interactive subcommand. Tuned per Codex version; safe to override via config.
   defaultArgs: ["exec"],
+  // Granted only on `options.autoEdit` (delegation in a throwaway worktree). `--full-auto`
+  // runs `codex exec` with a workspace-write sandbox and no approval prompts so it can edit
+  // files in the worktree. Version-sensitive — overridable per setup.
+  autoEditArgs: ["--full-auto"],
 };
 
 export const codexAdapter: AgentAdapter = createGenericCliAdapter(codexProvider);

@@ -12,7 +12,8 @@
   ],
   "dependencies": {
     "@portico/core": "*",
-    "@portico/adapters": "*"
+    "@portico/adapters": "*",
+    "@portico/orchestrator": "*"
   },
   "license": "MIT"
 }

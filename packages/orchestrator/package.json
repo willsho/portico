@@ -1,7 +1,7 @@
 {
-  "name": "@portico/adapters",
+  "name": "@portico/orchestrator",
   "version": "0.1.0",
-  "description": "Portico provider adapters (generic-cli, codex, claude, gemini, antigravity, opencode, openclaw, hermes).",
+  "description": "Portico delegation orchestration: worktrees, artifacts, tests, and patch flow.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

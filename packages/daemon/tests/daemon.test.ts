@@ -1,13 +1,18 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createDaemon } from "../src/server.ts";
 import type { Daemon } from "../src/server.ts";
+import { capture } from "@portico/core";
 import type { RuntimeEvent } from "@portico/core";
+import type { DelegationEvent, RunDetails } from "@portico/orchestrator";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FAKE_AGENT = join(here, "../../../test/fixtures/fake-agent.mjs");
+const EDIT_AGENT = join(here, "../../../test/fixtures/edit-agent.mjs");
 
 let daemon: Daemon;
 let base: string;
@@ -32,6 +37,14 @@ function parseNdjson(text: string): RuntimeEvent[] {
     .map((l) => l.trim())
     .filter(Boolean)
     .map((l) => JSON.parse(l) as RuntimeEvent);
+}
+
+function parseDelegationNdjson(text: string): DelegationEvent[] {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as DelegationEvent);
 }
 
 test("GET /health returns ok", async () => {
@@ -136,6 +149,39 @@ test("POST /chat rejects a malformed body", async () => {
   assert.equal(body.code, "bad_request");
 });
 
+test("POST /delegate streams a run and GET /runs/:id returns artifacts", async () => {
+  const repo = await createRepo();
+  const d = createDaemon({
+    config: { port: 0, reloadIntervalMs: 0 },
+    env: { ...process.env, PORTICO_CODEX_PATH: EDIT_AGENT },
+    logger: () => {},
+  });
+  const info = await d.start();
+  try {
+    const res = await fetch(`${info.url}/delegate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: "codex",
+        repo,
+        task: "create delegated file",
+        testCommands: ["test -f delegated.txt"],
+      }),
+    });
+    assert.equal(res.status, 200);
+    const events = parseDelegationNdjson(await res.text());
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = (await (await fetch(`${info.url}/runs/${runId}?repo=${encodeURIComponent(repo)}`)).json()) as RunDetails;
+    assert.equal(details.run.status, "ready");
+    assert.ok(details.result?.changedFiles.includes("delegated.txt"));
+  } finally {
+    await d.stop();
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("CORS allows localhost and rejects unlisted origins", async () => {
   const ok = await fetch(`${base}/agents`, { headers: { Origin: "http://localhost:3000" } });
   assert.equal(ok.status, 200);
@@ -144,6 +190,22 @@ test("CORS allows localhost and rejects unlisted origins", async () => {
   const blocked = await fetch(`${base}/agents`, { headers: { Origin: "http://evil.example" } });
   assert.equal(blocked.status, 403);
 });
+
+async function createRepo(): Promise<string> {
+  const repo = await mkdtemp(join(tmpdir(), "portico-daemon-delegate-"));
+  await git(repo, "init");
+  await git(repo, "config", "user.email", "test@example.com");
+  await git(repo, "config", "user.name", "Test User");
+  await writeFile(join(repo, "README.md"), "# test\n");
+  await git(repo, "add", "README.md");
+  await git(repo, "commit", "-m", "init");
+  return repo;
+}
+
+async function git(cwd: string, ...args: string[]): Promise<void> {
+  const result = await capture("git", args, { cwd });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+}
 
 test("token auth rejects requests without a bearer token", async () => {
   const secured = createDaemon({

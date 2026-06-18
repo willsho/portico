@@ -10,6 +10,7 @@
   "workspaces": [
     "packages/core",
     "packages/adapters",
+    "packages/orchestrator",
     "packages/daemon",
     "packages/client",
     "packages/cli",
@@ -17,7 +18,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --disable-warning=ExperimentalWarning packages/*/tests/*.test.ts",
+    "test": "node --experimental-strip-types --test --disable-warning=ExperimentalWarning packages/*/tests/*.test.ts",
     "portico": "node --disable-warning=ExperimentalWarning packages/cli/src/index.ts"
   },
   "devDependencies": {
