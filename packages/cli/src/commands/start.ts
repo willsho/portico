@@ -5,7 +5,7 @@ import { createDaemon } from "@portico/daemon";
 import { resolveConfig } from "@portico/daemon";
 import type { DaemonConfig } from "@portico/daemon";
 import { isPorticoError } from "@portico/core";
-import { removeDaemonPid, writeDaemonPid } from "../pidfile.ts";
+import { isProcessAlive, readDaemonPid, removeDaemonPid, writeDaemonPid } from "../pidfile.ts";
 
 export async function startCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -34,6 +34,15 @@ export async function startCommand(args: string[]): Promise<number> {
 
   if (sources.configError) {
     console.warn(`[portico] config at ${sources.configPath} could not be read: ${sources.configError}`);
+  }
+
+  const existing = readDaemonPid();
+  if (existing) {
+    if (isProcessAlive(existing.pid)) {
+      console.log(`[portico] daemon already running (pid ${existing.pid}, port ${existing.port}, ${existing.url})`);
+      return 0;
+    }
+    removeDaemonPid();
   }
 
   const daemon = createDaemon({ config });

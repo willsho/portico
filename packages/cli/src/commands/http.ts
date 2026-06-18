@@ -14,6 +14,36 @@ export function authHeaders(token?: string): Record<string, string> {
   return value ? { Authorization: `Bearer ${value}` } : {};
 }
 
+export async function fetchWithRetry(input: string, init?: RequestInit, retries = 1): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(input, init);
+    } catch (err) {
+      if (attempt >= retries || !isRetryableFetchError(err)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+}
+
+export function describeFetchError(err: unknown, url: string): string {
+  if (err instanceof Error) {
+    const cause = (err as Error & { cause?: NodeJS.ErrnoException }).cause;
+    if (cause?.code === "ECONNREFUSED") return `connection refused talking to daemon at ${url}`;
+    if (cause?.code === "ETIMEDOUT") return `request timed out talking to daemon at ${url}`;
+    if (cause?.code === "ENOTFOUND") return `daemon host could not be resolved for ${url}`;
+    if (err.name === "AbortError") return `request aborted talking to daemon at ${url}`;
+    if (err.message === "fetch failed") return `network error talking to daemon at ${url}`;
+    return `${err.message} (${url})`;
+  }
+  return `${String(err)} (${url})`;
+}
+
+function isRetryableFetchError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const cause = (err as Error & { cause?: NodeJS.ErrnoException }).cause;
+  return err.message === "fetch failed" || ["ECONNREFUSED", "ETIMEDOUT", "ECONNRESET"].includes(cause?.code ?? "");
+}
+
 export async function readJson<T>(res: Response): Promise<T> {
   const body = (await res.json()) as T;
   if (!res.ok) {

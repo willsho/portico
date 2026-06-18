@@ -10,6 +10,8 @@ import type {
   DelegationEvent,
   OrchestratorOptions,
   PermissionProfile,
+  OutOfTreeChange,
+  RunTelemetry,
   Run,
   RunArtifact,
   RunDetails,
@@ -177,6 +179,7 @@ async function* runCompareDelegation(
   }
 
   const now = new Date().toISOString();
+  const runStartedMs = Date.now();
   let run = createRun(repoPath, request, {
     id: newRunId(now),
     targetAgent: targets.join(","),
@@ -241,6 +244,12 @@ async function* runCompareDelegation(
     tests: childResults.flatMap((result) => result.tests),
     agentEvents: [],
     compareResults: childResults,
+    telemetry: {
+      totalDurationMs: Date.now() - runStartedMs,
+      agentDurationMs: childResults.reduce((sum, result) => sum + (result.telemetry?.agentDurationMs ?? 0), 0),
+      testDurationMs: childResults.reduce((sum, result) => sum + (result.telemetry?.testDurationMs ?? 0), 0),
+      usage: aggregateUsageTelemetry(childResults),
+    },
   };
   await writeJson(artifacts.resultPath, result);
   await writeReport(artifacts.reportPath, result);
@@ -264,6 +273,13 @@ async function* runSingleDelegation(
   let controller: AbortController | undefined;
   let artifacts: RunArtifact | undefined;
   let worktreeCreated = false;
+  let outOfTreeChanges: OutOfTreeChange[] = [];
+  let agentEvents: RuntimeEvent[] = [];
+  let tests: TestResult[] = [];
+  let changedFiles: string[] = [];
+  let runStartedMs = Date.now();
+  let agentDurationMs: number | undefined;
+  let testDurationMs = 0;
 
   try {
     const mode = request.mode ?? "implement";
@@ -278,6 +294,7 @@ async function* runSingleDelegation(
     validateExecutionPolicy(mode, isolation, permissionProfile);
 
     const now = new Date().toISOString();
+    runStartedMs = Date.now();
     const id = newRunId(now);
     const worktreePath =
       isolation.workspace === "worktree" ? join(repoPath, ".portico", "worktrees", id) : repoPath;
@@ -312,13 +329,14 @@ async function* runSingleDelegation(
     } else if (mode === "implement" && permissionProfile === "auto-edit") {
       await assertWorkspaceClean(repoPath);
     }
+    const mainWorkspaceSnapshot =
+      isolation.workspace === "worktree" ? await captureMainWorkspaceSnapshot(repoPath) : undefined;
 
     run = await updateRun(run, { status: mode === "review" ? "reviewing" : "running" });
     yield await recordEvent(artifacts.eventsPath, { type: "agent_start", runId: run.id, agent: request.to });
     controller = new AbortController();
     activeControllers.set(run.id, controller);
 
-    const agentEvents: RuntimeEvent[] = [];
     const workDir = isolation.workspace === "worktree" ? worktreePath : repoPath;
     const chat: ChatRequest = {
       provider: request.to,
@@ -330,6 +348,7 @@ async function* runSingleDelegation(
       },
     };
 
+    const agentStartedMs = Date.now();
     for await (const event of runAgent(chat, {
       entry,
       signal: controller.signal,
@@ -340,12 +359,30 @@ async function* runSingleDelegation(
       yield await recordEvent(artifacts.eventsPath, { type: "agent_event", runId: run.id, event });
       if (event.type === "error") throw new DelegationError(event.code ?? "agent_failed", event.error);
     }
+    agentDurationMs = Date.now() - agentStartedMs;
+
+    if (mainWorkspaceSnapshot) {
+      const mainWorkspaceAfter = await captureMainWorkspaceSnapshot(repoPath);
+      outOfTreeChanges = diffMainWorkspaceSnapshot(mainWorkspaceSnapshot, mainWorkspaceAfter);
+      if (outOfTreeChanges.length) {
+        yield await recordEvent(artifacts.eventsPath, {
+          type: "sandbox_escape_detected",
+          runId: run.id,
+          changes: outOfTreeChanges,
+        });
+      }
+    }
 
     if (mode === "review") {
       if (workspaceSnapshot !== undefined) await assertStatusUnchanged(repoPath, workspaceSnapshot);
       await writeFile(artifacts.diffPath as string, "");
       run = await updateRun(run, { status: "ready", completedAt: new Date().toISOString() });
-      const result: RunResult = { run, artifacts, changedFiles: [], tests: [], agentEvents };
+      const result: RunResult = buildRunResult(run, artifacts, [], [], agentEvents, outOfTreeChanges, {
+        totalDurationMs: Date.now() - runStartedMs,
+        agentDurationMs,
+        testDurationMs,
+        usage: extractUsageTelemetry(agentEvents),
+      });
       await writeJson(artifacts.resultPath, result);
       await writeReport(artifacts.reportPath, result);
       yield await recordEvent(artifacts.eventsPath, {
@@ -358,8 +395,9 @@ async function* runSingleDelegation(
       return;
     }
 
-    const { diff, changedFiles } = await generateDiff(workDir);
-    await writeFile(artifacts.diffPath as string, diff);
+    const diffResult = await generateDiff(workDir);
+    changedFiles = diffResult.changedFiles;
+    await writeFile(artifacts.diffPath as string, diffResult.diff);
     enforcePathPolicy(changedFiles, request, defaultForbidden);
     yield await recordEvent(artifacts.eventsPath, {
       type: "diff_ready",
@@ -369,11 +407,11 @@ async function* runSingleDelegation(
     });
 
     run = await updateRun(run, { status: "testing" });
-    const tests: TestResult[] = [];
     for (const command of request.testCommands ?? []) {
       yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
       const result = await runTestCommand(workDir, command, request.timeoutMs);
       tests.push(result);
+      testDurationMs += result.durationMs ?? 0;
       await appendFile(
         artifacts.testLogPath as string,
         `$ ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
@@ -389,14 +427,19 @@ async function* runSingleDelegation(
 
     const failedTest = tests.find((test) => test.status === "failed");
     run = await updateRun(run, {
-      status: failedTest ? "failed" : "ready",
+      status: failedTest || outOfTreeChanges.length ? "failed" : "ready",
       completedAt: new Date().toISOString(),
     });
     if (worktreeCreated && shouldCleanupWorktree(isolation.cleanup, run.status, changedFiles)) {
       await removeWorktree(repoPath, worktreePath);
       run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
     }
-    const result: RunResult = { run, artifacts, changedFiles, tests, agentEvents };
+    const result = buildRunResult(run, artifacts, changedFiles, tests, agentEvents, outOfTreeChanges, {
+      totalDurationMs: Date.now() - runStartedMs,
+      agentDurationMs,
+      testDurationMs,
+      usage: extractUsageTelemetry(agentEvents),
+    });
     await writeJson(artifacts.resultPath, result);
     await writeReport(artifacts.reportPath, result);
     yield await recordEvent(artifacts.eventsPath, {
@@ -416,7 +459,21 @@ async function* runSingleDelegation(
         await removeWorktree(repoPath, run.worktreePath);
         run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
       }
-      const result: RunResult = { run, artifacts, changedFiles: [], tests: [], agentEvents: [], error };
+      const result = buildRunResult(
+        run,
+        artifacts,
+        changedFiles,
+        tests,
+        agentEvents,
+        outOfTreeChanges,
+        {
+          totalDurationMs: Date.now() - runStartedMs,
+          agentDurationMs,
+          testDurationMs,
+          usage: extractUsageTelemetry(agentEvents),
+        },
+        error,
+      );
       await writeJson(artifacts.resultPath, result);
       await writeReport(artifacts.reportPath, result);
       yield await recordEvent(artifacts.eventsPath, { type: "run_error", runId: run.id, error, code });
@@ -426,6 +483,147 @@ async function* runSingleDelegation(
   } finally {
     if (run) activeControllers.delete(run.id);
   }
+}
+
+function buildRunResult(
+  run: Run,
+  artifacts: RunArtifact,
+  changedFiles: string[],
+  tests: TestResult[],
+  agentEvents: RuntimeEvent[],
+  outOfTreeChanges: OutOfTreeChange[],
+  telemetry: RunTelemetry,
+  error?: string,
+): RunResult {
+  const sandboxEscaped = outOfTreeChanges.length > 0;
+  const agentGateMismatch = run.status === "failed" && agentClaimedSuccess(agentEvents);
+  const gateWarnings: string[] = [];
+  if (sandboxEscaped) {
+    gateWarnings.push("Sandbox escape detected: the delegate changed files outside the Portico worktree.");
+  }
+  if (agentGateMismatch) {
+    gateWarnings.push(
+      sandboxEscaped
+        ? "Agent claimed success but Portico gate failed; it likely wrote outside the sandbox."
+        : "Agent claimed success but Portico gate failed.",
+    );
+  }
+  return {
+    run,
+    artifacts,
+    changedFiles,
+    tests,
+    agentEvents,
+    ...(sandboxEscaped ? { sandboxEscaped, outOfTreeChanges } : {}),
+    ...(agentGateMismatch ? { agentGateMismatch } : {}),
+    ...(gateWarnings.length ? { gateWarnings } : {}),
+    telemetry,
+    ...(error ? { error } : {}),
+  };
+}
+
+function extractUsageTelemetry(events: RuntimeEvent[]): RunTelemetry["usage"] {
+  const done = [...events].reverse().find((event) => event.type === "done" && event.usage !== undefined);
+  if (!done || done.type !== "done" || done.usage === undefined) {
+    return {
+      available: false,
+      unavailableReason: "agent did not report token or cost usage",
+    };
+  }
+
+  const raw = done.usage;
+  return {
+    available: true,
+    raw,
+    ...extractTokenAndCostFields(raw),
+  };
+}
+
+function aggregateUsageTelemetry(results: RunResult[]): RunTelemetry["usage"] {
+  const usages = results.map((result) => result.telemetry?.usage).filter((usage) => usage?.available);
+  if (!usages.length) {
+    return {
+      available: false,
+      unavailableReason: "child agents did not report token or cost usage",
+    };
+  }
+  const sum = (key: "inputTokens" | "outputTokens" | "totalTokens" | "costUsd") =>
+    usages.some((usage) => usage?.[key] !== undefined)
+      ? usages.reduce((total, usage) => total + (usage?.[key] ?? 0), 0)
+      : undefined;
+  const inputTokens = sum("inputTokens");
+  const outputTokens = sum("outputTokens");
+  const totalTokens = sum("totalTokens");
+  const costUsd = sum("costUsd");
+  return {
+    available: true,
+    raw: usages.map((usage) => usage?.raw),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(costUsd !== undefined ? { costUsd } : {}),
+  };
+}
+
+function extractTokenAndCostFields(value: unknown): Omit<RunTelemetry["usage"], "available" | "raw" | "unavailableReason"> {
+  const fields = flattenNumericUsageFields(value);
+  const firstNumber = (...keys: string[]) => {
+    for (const key of keys) {
+      const found = fields.get(key);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  const inputTokens = firstNumber("input_tokens", "prompt_tokens", "inputtokens", "prompttokens");
+  const outputTokens = firstNumber(
+    "output_tokens",
+    "completion_tokens",
+    "outputtokens",
+    "completiontokens",
+    "generated_tokens",
+  );
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(firstNumber("total_tokens", "totaltokens") !== undefined
+      ? { totalTokens: firstNumber("total_tokens", "totaltokens") }
+      : inputTokens !== undefined || outputTokens !== undefined
+        ? { totalTokens: (inputTokens ?? 0) + (outputTokens ?? 0) }
+        : {}),
+    ...(firstNumber("cost_usd", "total_cost_usd", "costusd", "totalcostusd") !== undefined
+      ? { costUsd: firstNumber("cost_usd", "total_cost_usd", "costusd", "totalcostusd") }
+      : {}),
+  };
+}
+
+function flattenNumericUsageFields(value: unknown, prefix = "", out = new Map<string, number>()): Map<string, number> {
+  if (!value || typeof value !== "object") return out;
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const normalized = normalizeUsageKey(prefix ? `${prefix}_${key}` : key);
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      out.set(normalized, raw);
+    } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      flattenNumericUsageFields(raw, normalized, out);
+    }
+  }
+  return out;
+}
+
+function normalizeUsageKey(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase();
+}
+
+function agentClaimedSuccess(events: RuntimeEvent[]): boolean {
+  const text = events
+    .map((event) => {
+      if (event.type === "content") return event.delta;
+      if (event.type === "done") return event.message;
+      return "";
+    })
+    .join("\n")
+    .toLowerCase();
+  return /\b(success|succeeded|successful|complete|completed|done|all[_ -]?[a-z0-9_ -]*present)\b/.test(text)
+    || /成功|完成|已完成|就位|均已|全部/.test(text);
 }
 
 async function readDefaultTestCommands(repoPath: string): Promise<string[]> {
@@ -702,6 +900,41 @@ async function captureStatus(repoPath: string): Promise<string> {
   return status.stdout;
 }
 
+async function captureMainWorkspaceSnapshot(repoPath: string): Promise<OutOfTreeChange[]> {
+  const status = await capture("git", ["-C", repoPath, "status", "--porcelain=v1", "--untracked-files=all"]);
+  if (status.code !== 0) throw new DelegationError("git_failed", status.stderr || status.stdout);
+  return parseStatusSnapshot(status.stdout).filter((entry) => entry.path !== ".portico" && !entry.path.startsWith(".portico/"));
+}
+
+function parseStatusSnapshot(stdout: string): OutOfTreeChange[] {
+  return stdout
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((raw) => {
+      const status = raw.slice(0, 2).trim() || raw.slice(0, 2);
+      const body = raw.slice(3);
+      const path = body.includes(" -> ") ? body.slice(body.lastIndexOf(" -> ") + 4) : body;
+      return { path, status, raw };
+    });
+}
+
+function diffMainWorkspaceSnapshot(before: OutOfTreeChange[], after: OutOfTreeChange[]): OutOfTreeChange[] {
+  const beforeByPath = new Map(before.map((entry) => [entry.path, entry.raw]));
+  const afterByPath = new Map(after.map((entry) => [entry.path, entry.raw]));
+  const changes = after.filter((entry) => beforeByPath.get(entry.path) !== entry.raw);
+  for (const entry of before) {
+    if (!afterByPath.has(entry.path)) {
+      changes.push({
+        path: entry.path,
+        status: "cleared",
+        raw: `cleared: ${entry.raw}`,
+      });
+    }
+  }
+  return changes;
+}
+
 async function assertStatusUnchanged(repoPath: string, before: string): Promise<void> {
   const after = await captureStatus(repoPath);
   if (after !== before) {
@@ -710,12 +943,14 @@ async function assertStatusUnchanged(repoPath: string, before: string): Promise<
 }
 
 async function runTestCommand(cwd: string, command: string, timeoutMs?: number): Promise<TestResult> {
+  const started = Date.now();
   const result = await capture("sh", ["-lc", command], { cwd, timeoutMs });
   return {
     command,
     status: result.code === 0 ? "passed" : "failed",
     exitCode: result.code,
     output: `${result.stdout}${result.stderr}`,
+    durationMs: Date.now() - started,
   };
 }
 
@@ -761,9 +996,14 @@ async function readRunDetails(repoPath: string, id: string): Promise<RunDetails>
 
 async function writeReport(path: string, result: RunResult): Promise<void> {
   const { run, artifacts, changedFiles, tests, error } = result;
+  const outOfTreeChanges = result.outOfTreeChanges ?? [];
   const testLines = tests.length
     ? tests.map((test) => `Command: ${test.command}\nStatus: ${test.status}\nExit Code: ${test.exitCode ?? "null"}`).join("\n\n")
     : "No tests configured.";
+  const warningLines = result.gateWarnings?.length
+    ? result.gateWarnings.map((warning) => `- ${warning}`).join("\n")
+    : "No gate warnings.";
+  const telemetryLines = formatTelemetry(result.telemetry);
   const body = [
     "# Portico Run Report",
     "",
@@ -802,9 +1042,23 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
           .join("\n")
       : undefined,
     result.compareResults?.length ? "" : undefined,
-    "## Changed Files",
+    "## Gate Warnings",
+    "",
+    warningLines,
+    "",
+    "## Worktree Changes",
     "",
     changedFiles.length ? changedFiles.map((file, index) => `${index + 1}. ${file}`).join("\n") : "No file changes detected.",
+    "",
+    "## Out-of-Tree Changes",
+    "",
+    outOfTreeChanges.length
+      ? outOfTreeChanges.map((change, index) => `${index + 1}. ${change.status} ${change.path}`).join("\n")
+      : "No out-of-tree changes detected.",
+    "",
+    "## Telemetry",
+    "",
+    telemetryLines,
     "",
     "## Test Result",
     "",
@@ -814,7 +1068,11 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     `Decision: ${run.status === "ready" ? "approve" : "needs_attention"}`,
     "",
-    error ? `Summary: ${error}` : "Summary: Review the diff before applying.",
+    error
+      ? `Summary: ${error}`
+      : result.gateWarnings?.length
+        ? `Summary: ${result.gateWarnings.join(" ")}`
+        : "Summary: Review the diff before applying.",
     "",
     "## Artifacts",
     "",
@@ -832,6 +1090,22 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     .filter((line): line is string => line !== undefined)
     .join("\n");
   await writeFile(path, body);
+}
+
+function formatTelemetry(telemetry: RunTelemetry | undefined): string {
+  if (!telemetry) return "No telemetry recorded.";
+  const usage = telemetry.usage;
+  const lines = [
+    `Total Duration: ${telemetry.totalDurationMs} ms`,
+    telemetry.agentDurationMs !== undefined ? `Agent Duration: ${telemetry.agentDurationMs} ms` : undefined,
+    `Test Duration: ${telemetry.testDurationMs} ms`,
+    usage.available ? `Usage Available: yes` : `Usage Available: no (${usage.unavailableReason ?? "not reported"})`,
+    usage.inputTokens !== undefined ? `Input Tokens: ${usage.inputTokens}` : undefined,
+    usage.outputTokens !== undefined ? `Output Tokens: ${usage.outputTokens}` : undefined,
+    usage.totalTokens !== undefined ? `Total Tokens: ${usage.totalTokens}` : undefined,
+    usage.costUsd !== undefined ? `Cost USD: ${usage.costUsd}` : "Cost USD: not reported",
+  ];
+  return lines.filter((line): line is string => line !== undefined).join("\n");
 }
 
 async function recordEvent(path: string, event: DelegationEvent): Promise<DelegationEvent> {
