@@ -5,3 +5,5 @@ dist/
 coverage/
 .portico/
 *.tsbuildinfo
+.agents/
+.claude/
