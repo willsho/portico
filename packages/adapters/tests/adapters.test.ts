@@ -13,6 +13,13 @@ import {
   openclawAdapter,
 } from "../src/index.ts";
 
+function contentText(events: RuntimeEvent[]): string {
+  return events
+    .filter((e) => e.type === "content")
+    .map((e) => (e.type === "content" ? e.delta : ""))
+    .join("");
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const FAKE_AGENT = join(here, "../../../test/fixtures/fake-agent.mjs");
 
@@ -86,6 +93,8 @@ test("claude adapter parses stream-json into reasoning / tool_call / tool_result
     available: true,
     path: FAKE_AGENT,
     protocols: ["stream-json"],
+    // Partial token-level streaming is gated on the probed capability.
+    capabilities: { partialMessages: true },
   };
   const events = await collect(
     claudeAdapter.run({ provider: "claude", messages: [{ role: "user", content: "echo hi" }] }, entry),
@@ -125,6 +134,8 @@ test("claude adapter captures the agent session id and forwards resume args", as
     available: true,
     path: FAKE_AGENT,
     protocols: ["stream-json"],
+    // Partial token-level streaming is gated on the probed capability.
+    capabilities: { partialMessages: true },
   };
 
   // First turn: the engine should surface the agent's native session id (capture → pin).
@@ -150,6 +161,29 @@ test("claude adapter captures the agent session id and forwards resume args", as
     .map((e) => (e.type === "content" ? e.delta : ""))
     .join("");
   assert.match(text, /\(resumed sess-9\)/);
+});
+
+test("claude adapter streams partial deltas only when the capability is present", async () => {
+  const base: AgentEntry = {
+    provider: "claude",
+    displayName: "Claude Code",
+    available: true,
+    path: FAKE_AGENT,
+    protocols: ["stream-json"],
+  };
+  const request = { provider: "claude", messages: [{ role: "user" as const, content: "echo hi" }] };
+
+  // Capability present → `--include-partial-messages` is passed, so the complete
+  // assistant message is deduped against the token-level deltas: text appears once.
+  const withCap = await collect(
+    claudeAdapter.run(request, { ...base, capabilities: { partialMessages: true } }),
+  );
+  assert.equal(contentText(withCap), "The output was hi.");
+
+  // Capability absent → no partial flag, so the engine can't dedupe and the complete
+  // assistant message arrives on top of the (still emitted) deltas: text appears twice.
+  const without = await collect(claudeAdapter.run(request, base));
+  assert.equal(contentText(without), "The output was hi.The output was hi.");
 });
 
 test("detect-only adapter explains why it cannot run", async () => {

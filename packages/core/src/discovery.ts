@@ -4,7 +4,7 @@
 import { access, constants } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { resolveViaLoginShell } from "./shell.ts";
-import { capture } from "./runner.ts";
+import { captureProbe } from "./runner.ts";
 import { parseSemver, versionStatus } from "./version.ts";
 import { listProviders } from "./registry.ts";
 import type { AgentEntry, AgentProvider } from "./types.ts";
@@ -26,7 +26,24 @@ interface ResolvedPath {
 
 /** Discover every registered provider on this machine. */
 export async function discoverAgents(options: DiscoverOptions = {}): Promise<AgentEntry[]> {
-  return Promise.all(listProviders().map((provider) => discoverAgent(provider, options)));
+  return Promise.all(listProviders().map((provider) => safeDiscoverAgent(provider, options)));
+}
+
+export async function safeDiscoverAgent(
+  provider: AgentProvider,
+  options: DiscoverOptions = {},
+): Promise<AgentEntry> {
+  try {
+    return await discoverAgent(provider, options);
+  } catch (err) {
+    return {
+      provider: provider.id,
+      displayName: provider.displayName,
+      available: false,
+      protocols: provider.protocols,
+      reason: `Discovery probe failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }
 
 /** Discover a single provider. */
@@ -59,7 +76,12 @@ export async function discoverAgent(
     return entry;
   }
 
-  const version = await probeVersion(resolved.path, options.versionTimeoutMs ?? 5000, env);
+  const version = await probeVersion(
+    resolved.path,
+    provider.versionArgs ?? ["--version"],
+    options.versionTimeoutMs ?? 5000,
+    env,
+  );
   if (version) {
     entry.version = version;
     entry.versionStatus = versionStatus(version, provider.minVersion);
@@ -69,6 +91,15 @@ export async function discoverAgent(
   } else {
     entry.versionStatus = "unknown";
   }
+
+  if (provider.capabilityProbe) {
+    entry.capabilities = await probeCapabilities(
+      resolved.path,
+      provider.capabilityProbe,
+      env,
+    );
+  }
+
   return entry;
 }
 
@@ -136,11 +167,12 @@ async function isExecutable(filePath: string): Promise<boolean> {
 
 async function probeVersion(
   binaryPath: string,
+  args: string[],
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
 ): Promise<string | null> {
   try {
-    const { stdout, stderr } = await capture(binaryPath, ["--version"], {
+    const { stdout, stderr } = await captureProbe(binaryPath, args, {
       timeoutMs,
       env,
       maxOutputBytes: 64_000,
@@ -149,5 +181,34 @@ async function probeVersion(
     return parsed ? parsed.raw : null;
   } catch {
     return null;
+  }
+}
+
+async function probeCapabilities(
+  binaryPath: string,
+  probe: NonNullable<AgentProvider["capabilityProbe"]>,
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, boolean>> {
+  try {
+    const { stdout, stderr, code, timedOut } = await captureProbe(
+      binaryPath,
+      probe.args,
+      {
+        timeoutMs: probe.timeoutMs ?? 5000,
+        env,
+        maxOutputBytes: 64_000,
+      },
+    );
+    if (code !== 0 || timedOut) {
+      return {};
+    }
+    const output = `${stdout}\n${stderr}`;
+    const caps: Record<string, boolean> = {};
+    for (const [flag, key] of Object.entries(probe.flags)) {
+      caps[key] = output.includes(flag);
+    }
+    return caps;
+  } catch {
+    return {};
   }
 }

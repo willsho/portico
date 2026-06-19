@@ -3,6 +3,7 @@
 // and guaranteed cleanup. Adapters build on top of this; they never spawn directly.
 
 import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 export const DEFAULT_TIMEOUT_MS = 120_000;
@@ -199,4 +200,21 @@ export async function capture(
   }
 
   return { stdout, stderr, code, timedOut, error };
+}
+
+/**
+ * Run a read-only probe (version / capability help) to completion. Defaults the
+ * working directory to the OS temp dir so a discovery probe never inherits — or
+ * writes lockfiles/caches into — the user's repo. Callers can still pin a cwd.
+ */
+export async function captureProbe(
+  command: string,
+  args: string[],
+  options: SpawnStreamOptions = {},
+): Promise<CaptureResult> {
+  // Spread first so an explicit `cwd: undefined` can't clobber the temp-dir default.
+  return capture(command, args, {
+    ...options,
+    cwd: options.cwd ?? tmpdir(),
+  });
 }

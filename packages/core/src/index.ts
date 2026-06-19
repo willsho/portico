@@ -65,7 +65,7 @@ export {
 export { discoverAgents, discoverAgent } from "./discovery.ts";
 export type { DiscoverOptions } from "./discovery.ts";
 
-export { createGenericCliAdapter, runGenericCli } from "./generic.ts";
+export { createGenericCliAdapter, runGenericCli, classifyExit } from "./generic.ts";
 
 export {
   createStreamJsonAdapter,

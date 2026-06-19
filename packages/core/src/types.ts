@@ -60,6 +60,15 @@ export interface AgentProvider {
    * Providers without this can't be resumed (the engine ignores `resumeSessionId`).
    */
   resumeArgs?: (agentSessionId: string) => string[];
+  versionArgs?: string[];
+  capabilityProbe?: AgentCapabilityProbe;
+}
+
+export interface AgentCapabilityProbe {
+  args: string[];
+  timeoutMs?: number;
+  /** flag string -> capability key, considered supported if present. */
+  flags: Record<string, string>;
 }
 
 /** Runtime discovery result for one provider on this machine. */
@@ -75,6 +84,7 @@ export interface AgentEntry {
   reason?: string;
   /** How the binary path was resolved. Useful for `portico doctor`. */
   source?: "env" | "path" | "login-shell" | "config";
+  capabilities?: Record<string, boolean>;
 }
 
 export interface ChatMessage {
