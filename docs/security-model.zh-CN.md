@@ -1,28 +1,28 @@
-# 安全模型
+# 安全模型 (Security Model)
 
-Portico 是一个本地 Agent 桥接层。其安全模型是分层的：本地绑定、可选的 token 认证、CORS 检查、子进程限制、工作区隔离、路径策略、测试、持久工件和显式 apply。
+Portico 是一个本地代理桥接器。它的安全模型是分层的：本地绑定、可选的令牌认证、CORS 检查、子进程限制、工作区隔离、路径策略、测试、持久化产物和明确的应用（apply）。
 
-它不是针对任意代码的完整沙箱。
+它不是用于执行任意代码的完整沙箱。
 
 ## 信任边界
 
-Portico 运行用户机器上已安装的本地 Agent CLI。这些 CLI 可能读取本地配置、使用自己的凭据并执行 provider 特定的行为。
+Portico 运行已经安装在用户机器上的本地代理 CLI。这些 CLI 可能会读取本地配置、使用其自己的凭据，并执行特定于提供商的行为。
 
-Portico 控制它们如何启动以及如何捕获它们的输出。它不会重写或完全沙箱化 provider 本身。
+Portico 控制它们的启动方式以及如何捕获它们的输出。它不会重写或完全沙箱化提供商本身。
 
 ## 网络暴露
 
-Daemon 默认绑定到 loopback：
+守护进程默认绑定到回环地址（loopback）：
 
 ```text
 127.0.0.1:8787
 ```
 
-未设置 token 时拒绝 LAN 暴露：
+没有令牌将拒绝 LAN 暴露：
 
 ```bash
 portico start --host 0.0.0.0 --lan
-# 除非设置了 --token 或 PORTICO_TOKEN，否则被拒绝
+# 拒绝，除非设置了 --token 或 PORTICO_TOKEN
 ```
 
 安全的 LAN 示例：
@@ -34,7 +34,7 @@ portico start \
   --token "$PORTICO_TOKEN"
 ```
 
-任何请求都必须包含：
+之后的任何请求都必须包含：
 
 ```http
 Authorization: Bearer <token>
@@ -42,30 +42,30 @@ Authorization: Bearer <token>
 
 ## CORS
 
-不带 `Origin` 头的请求被允许。浏览器请求允许来自：
+允许没有 `Origin` 头的请求。允许来自以下来源的浏览器请求：
 
-- `localhost`；
-- `127.0.0.1`；
-- `[::1]`；
+- `localhost`;
+- `127.0.0.1`;
+- `[::1]`;
 - 配置的 `allowOrigins`；
-- 如果 `allowOrigins` 包含 `*`，则任何 origin。
+- 任何来源（如果 `allowOrigins` 包含 `*`）。
 
-显式添加生产 origin：
+明确添加生产环境来源：
 
 ```bash
 portico start --allow-origin https://example.internal
 ```
 
-CORS 保护浏览器调用方。它不是认证；对暴露的 daemon 使用 token。
+CORS 保护浏览器调用者。它不是身份验证；对于暴露的守护进程，请使用令牌。
 
 ## 子进程控制
 
-Portico 将 provider 作为子进程运行并应用：
+Portico 将提供商作为子进程运行，并应用以下控制：
 
 - 超时看门狗；
 - 最大输出上限；
-- abort signal 取消；
-- 当流被放弃时保证进程清理。
+- 中止信号取消；
+- 在流被放弃时保证清理。
 
 默认值：
 
@@ -83,21 +83,21 @@ Portico 将 provider 作为子进程运行并应用：
 
 ## 工作区隔离
 
-实现型委派默认使用隔离的 git worktree：
+实现（Implementation）委派默认使用隔离的 git 工作树：
 
 ```text
 .portico/worktrees/<run_id>
 ```
 
-目标 Agent 编辑该 worktree。调用方的主 checkout 在用户运行以下命令之前不会被修改：
+目标代理在该工作树中启动。预期的路径是调用者的主检出（main checkout）不会被修改，直到用户运行：
 
 ```bash
 portico apply <run_id>
 ```
 
-Review 委派默认使用共享工作区加只读权限 profile。Portico 检查 `git status --porcelain` 在 run 之后是否未发生变化。
+审查（Review）委派默认使用共享工作区以及只读权限配置。Portico 会检查运行后 `git status --porcelain` 是否保持不变。
 
-共享 auto-edit run 是可能的，但刻意要求显式声明：
+共享的自动编辑（Shared auto-edit）运行是可能的，但被有意设计为必须明确指定：
 
 ```bash
 portico delegate \
@@ -108,21 +108,23 @@ portico delegate \
   --permission-profile auto-edit
 ```
 
-Portico 在共享 auto-edit run 之前要求工作树干净，以便生成的 diff 可以归因于被委派的 Agent。
+Portico 要求在共享自动编辑运行之前工作树是干净的，以便生成的差异可以归因于受委派的代理。
 
-## 权限 Profile
+对于工作树运行，Portico 在创建隔离工作树后对调用者的主检出进行快照，并在目标代理退出后再次检查。如果受委派者写入了工作树之外的内容，运行将被标记为 `failed`，`events.ndjson` 记录 `sandbox_escape_detected`，并且 `result.json` 记录 `sandboxEscaped` 加上 `outOfTreeChanges`。Portico 会报告这些更改，但不会自动还原它们。
 
-Portico 控制是否请求 provider 特定的自主编辑标志：
+## 权限配置
 
-| Profile | 行为 |
+Portico 控制是否请求特定于提供商的自主编辑标志：
+
+| 配置 | 行为 |
 | --- | --- |
-| `default` | 不设置 provider 自动编辑标志 |
-| `read-only` | 只读 run 语义；review 模式必需 |
-| `auto-edit` | 在可用时追加 provider 自动编辑参数 |
+| `default` | 没有提供商的自动编辑标志 |
+| `read-only` | 只读运行语义；审查所需 |
+| `auto-edit` | 附加提供商自动编辑参数（当可用时） |
 
 示例：
 
-| Provider | 自动编辑参数 |
+| 提供商 | 自动编辑参数 |
 | --- | --- |
 | Codex | `--full-auto` |
 | Claude Code | `--permission-mode acceptEdits` |
@@ -130,11 +132,11 @@ Portico 控制是否请求 provider 特定的自主编辑标志：
 | Antigravity | `--dangerously-skip-permissions` |
 | OpenCode | `--dangerously-skip-permissions` |
 
-Provider 标志与版本相关，可能在执行工作区内产生更广泛的影响。对 auto-edit 优先使用隔离的 worktree。
+提供商标志对版本敏感，并可能在执行工作区内产生更广泛的影响。对于自动编辑，优先使用隔离的工作树。
 
 ## 路径策略
 
-Portico 拒绝变更禁止路径或超出允许范围的路径的 run。
+Portico 会拒绝更改被禁止的路径或允许集之外的路径的运行。
 
 默认值：
 
@@ -146,7 +148,7 @@ dist/**
 build/**
 ```
 
-请求级控制：
+请求级别的控制：
 
 ```bash
 portico delegate \
@@ -158,29 +160,29 @@ portico delegate \
   --forbidden "src/secrets/**"
 ```
 
-路径策略在 diff 生成之后执行。它不阻止子进程尝试更改，但阻止被禁止的 patch 变为 ready。
+路径策略在生成差异之后强制执行。它不会阻止子进程尝试更改，但它会阻止违禁的补丁变为就绪（ready）状态。
 
-## Apply 关卡
+## 应用门控 (Apply Gate)
 
-`apply` 从不会自动执行。它必须显式请求：
+`apply` 从不自动执行。它必须被明确请求：
 
 ```bash
 portico apply <run_id>
 ```
 
-Portico 在以下情况拒绝应用：
+当出现以下情况时，Portico 拒绝应用：
 
-- run 不是 `ready` 状态；
-- run 不是 `implement` 模式；
-- patch 缺失；
-- 主 worktree 有已跟踪的更改；
+- 运行不是 `ready` 状态；
+- 运行不是 `implement` 模式；
+- 补丁丢失；
+- 主工作树有被跟踪的更改；
 - `git apply` 失败。
 
-应用的更改是未暂存的。用户仍需负责最终审查和提交。
+应用的更改处于未暂存（unstaged）状态。用户仍然负责最终审查和提交。
 
-## 工件与可审计性
+## 产物与可审计性
 
-每个 run 都会写入持久工件：
+每次运行都会写入持久化的产物：
 
 ```text
 .portico/runs/<run_id>/task.json
@@ -192,17 +194,18 @@ Portico 在以下情况拒绝应用：
 .portico/runs/<run_id>/result.json
 ```
 
-报告记录工作区隔离、base ref、清理策略、权限 profile、目标 Agent、变更文件、测试及后续操作。
+报告记录工作区隔离、基础引用、清理策略、权限配置、目标代理、工作树更改、树外更改、门控警告、遥测、测试以及下一步操作。
 
-## Portico 不保证什么
+## Portico “不”保证什么
 
-Portico 当前不保证：
+Portico 目前**不**保证：
 
-- OS 级沙箱化；
-- provider CLI 的网络隔离；
-- 从 provider 输出中脱敏 secrets；
-- 阻止 provider 进行所有文件系统读取；
-- daemon 重启后持久化 session；
-- 对生成的 patch 进行自动安全审查。
+- 操作系统级别的沙箱；
+- 为提供商 CLI 提供网络隔离；
+- 从提供商输出中对机密信息进行脱敏（redaction）；
+- 阻止提供商的所有文件系统读取；
+- 阻止提供商的所有文件系统写入；
+- 跨守护进程重启的持久会话保存；
+- 对生成的补丁进行自动安全审查。
 
-将 Portico 用作受控的本地编排层，而非恶意代码沙箱。
+将 Portico 用作受控的本地编排层，而不是用作敌对代码（hostile-code）的沙箱。
