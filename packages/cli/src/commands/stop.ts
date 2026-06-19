@@ -5,7 +5,22 @@ import { parseArgs } from "node:util";
 import { daemonPidPath, isProcessAlive, readDaemonPid, removeDaemonPid } from "../pidfile.ts";
 
 export async function stopCommand(args: string[]): Promise<number> {
-  const { values } = parseArgs({ args, options: { timeout: { type: "string" } } });
+  const { values } = parseArgs({
+    args,
+    options: {
+      help: { type: "boolean", short: "h" },
+      timeout: { type: "string" },
+    },
+  });
+
+  if (values.help) {
+    console.log(`Usage: portico stop [options]
+
+Options:
+  --timeout <ms>           Timeout in milliseconds for graceful stop
+  -h, --help               Show this help message`);
+    return 0;
+  }
 
   const info = readDaemonPid();
   if (!info) {

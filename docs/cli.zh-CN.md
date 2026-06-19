@@ -23,14 +23,17 @@ portico stop
 portico daemon start [options]
 portico daemon stop
 portico agents [--json]
-portico delegate --to <agent> --task <task> [options]
+portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
+portico logs <run_id> [options]
 portico apply <run_id> [options]
 portico cancel <run_id> [options]
 portico discard <run_id> [options]
-portico doctor [--config <path>]
+portico doctor [--config <path>] [options]
 ```
+
+所有命令都支持使用 `-h` 或 `--help` 标志来打印其特定用法和可用选项。
 
 ## `portico init`
 
@@ -120,7 +123,8 @@ portico delegate \
 | 选项 | 含义 |
 | --- | --- |
 | `--to <agent>` | 目标提供商 ID |
-| `--task <task>` | 自包含任务提示 |
+| `--task <task>` | 自包含任务提示（需要明确提供 `--task` 或 `--task-file` 其中之一） |
+| `--task-file <path>` | 从 UTF-8 文件或 stdin (`-`) 读取任务提示 |
 
 常用选项：
 
@@ -134,7 +138,7 @@ portico delegate \
 | `--merge none|sequential|integration` | 扇入合并策略（split → `integration`，compare → `none`） |
 | `--judge-to <agent>` | 可选的只读裁判，针对候选者/合并结果 |
 | `--judge-instruction <text>` | 覆盖裁判的默认审查指令 |
-| `--resume <child_id>` | 在现有工作树中使用新的 `--task` 重新运行子项（需要 `--task`） |
+| `--resume <child_id>` | 在现有工作树中使用新任务重新运行子项（需要 `--task` 或 `--task-file`） |
 | `--test <cmd>` | 测试命令；可重复 |
 | `--allowed <pattern>` | 允许更改的路径模式；可重复 |
 | `--forbidden <pattern>` | 禁止更改的路径模式；可重复 |
@@ -185,6 +189,8 @@ portico delegate \
 
 ```bash
 portico delegate --resume <child_id> --task "the test fails because X; fix only Y"
+# 或者
+cat feedback.md | portico delegate --resume <child_id> --task-file -
 ```
 
 恢复操作需要子项的适配器支持原生会话恢复（Claude 支持；generic-CLI 适配器可能不支持）且工作树仍然存在。
@@ -233,6 +239,18 @@ portico status <run_id> --json --fields status,changedFiles,telemetry
 人类可读输出包含状态、目标、分支、工作树、报告路径、更改的文件、沙箱逃逸警告、门控警告、遥测以及测试摘要。
 
 `--json` 返回删除了重复嵌套的 `result.run` 和 `result.artifacts` 的 `RunDetails`。`--summary` 为脚本和 LLM 调用者返回一个紧凑的顶级对象。`--fields` 从摘要视图中选择以逗号分隔的字段。
+
+## `portico logs`
+
+流式传输或跟随运行的事件日志：
+
+```bash
+portico logs <run_id>
+portico logs <run_id> --follow
+portico logs <run_id> --json
+```
+
+打印现有的委派事件和代理进度。如果指定了 `--follow`，它将继续轮询并打印新事件，直到运行完成（`run_done` 或 `run_error`）。`--json` 标志输出原始 NDJSON 事件，而不是格式化的人类可读输出。
 
 ## `portico apply`
 

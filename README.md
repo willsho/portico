@@ -98,7 +98,7 @@ portico stop
 portico daemon start
 portico daemon stop
 portico agents [--json]
-portico delegate --to <agent> --repo . --task "<task>" [--test "npm test"]
+portico delegate --to <agent> --repo . (--task "<task>" | --task-file <path>) [--test "npm test"]
 portico delegate --mode review --to <agent> --repo . --task "<review task>"
 portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" --judge-to <agent-c>
 portico delegate --mode split --to <agent-a> --repo . --task "<task>" \
@@ -107,9 +107,10 @@ portico delegate --mode split --to <agent-a> --repo . --task "<task>" \
 portico delegate --to <agent-a> --repo . --task "<task>" \
   --child '{"to":"codex","permissionProfile":"auto-edit"}' \
   --child '{"to":"claude","model":"sonnet"}'
-portico delegate --resume <child_id> --task "fix the failing tests"
+portico delegate --resume <child_id> (--task "fix the failing tests" | --task-file feedback.txt)
 portico runs [--repo .]
 portico status <run_id> [--repo .]
+portico logs <run_id> [--repo .] [--follow]
 portico cancel <run_id> [--repo .]
 portico apply <run_id> [--repo .]            # single run
 portico apply <group_id> --child <child_id>  # compare: pick one candidate
@@ -162,6 +163,7 @@ Inspect and decide:
 portico runs
 portico runs --flat
 portico status run_20260617143454_65d33c76
+portico logs run_20260617143454_65d33c76 --follow
 portico apply run_20260617143454_65d33c76
 portico apply <group_id> --child <child_id>
 portico discard run_20260617143454_65d33c76
@@ -214,7 +216,7 @@ Delegation controls in the MVP:
 - `--child '{"to":"agent","permissionProfile":"auto-edit","label":"c1"}'` (repeatable)
   defines heterogeneous child specs with per-child agent, task, permission profile, model,
   effort, and path policy. The old `--compare-to` syntax is normalized into children.
-- `--resume <child_id> --task "new task"` re-runs a child in its existing worktree
+- `--resume <child_id> (--task "new task" | --task-file <path>)` re-runs a child in its existing worktree
   to iterate on a fix, regenerating the diff and recomputing the group status (and, for a
   split group, re-running the fan-in merge).
 - Test commands come from repeated `--test` flags or `.portico/config.json`
