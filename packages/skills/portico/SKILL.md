@@ -74,9 +74,18 @@ yourself, or anything where spinning up a separate agent adds no value.
    portico delegate --mode review --to claude --repo . --task "<review task>"
    ```
 
-   To compare two independent implementations:
+   To compare two independent implementations (optionally with a read-only judge that
+   ranks them):
    ```bash
-   portico delegate --mode compare --to codex --compare-to claude --repo . --task "<task>"
+   portico delegate --mode compare --to codex --compare-to claude --repo . --task "<task>" --judge-to gemini
+   ```
+
+   To split one large task into complementary sub-tasks and merge the results (each child
+   needs its own `task`; scope with `allowedPaths` to keep the merge clean):
+   ```bash
+   portico delegate --mode split --to claude --repo . --task "<overall task>" \
+     --child '{"to":"claude","task":"backend part","allowedPaths":["src/server/**"]}' \
+     --child '{"to":"codex","task":"frontend part","allowedPaths":["src/web/**"]}'
    ```
 
 5. **Read the result, don't trust the stream alone.** The final `run_done` event carries the
@@ -100,9 +109,21 @@ yourself, or anything where spinning up a separate agent adds no value.
 - The delegate has no memory between runs. To iterate, launch a **new** `portico delegate`
   with a refined task that folds in what the previous run got wrong — quote lines from its
   `report.md` / `test.log` directly into the new task.
+- To iterate on a **child of a group** without re-running the whole group, use
+  `portico delegate --resume <child_id> --task "<refinement>"`. It re-runs that child in its
+  existing worktree, regenerates the diff, re-runs tests, and recomputes the group (for a
+  split group it also re-runs the fan-in merge). Needs an adapter that supports session
+  resume (Claude does) and the worktree still present.
 - To compare approaches, prefer `--mode compare --to <agent-a> --compare-to <agent-b>`.
   Portico records a parent compare report plus separate candidate runs; apply only the
-  chosen implement candidate, never the compare parent.
+  chosen implement candidate via `portico apply <group_id> --child <child_id>`, never the
+  compare parent.
+- To divide a large task, prefer `--mode split` with a `--child` per sub-task. Portico
+  merges the children's patches; apply the merged result with `portico apply <group_id> --all`.
+  Overlapping edits produce a `conflict` group (never force-merged) — narrow one child with
+  `--resume` and Portico re-merges automatically.
+- An optional `--judge-to <agent>` adds a read-only judge: it ranks compare candidates or
+  vets a split merge, but never changes apply semantics — you and the user still decide.
 - Don't chain delegations: if you are yourself a delegate running inside a Portico worktree,
   do not call `portico delegate` again — nested delegation is rejected by the daemon's depth guard.
 
@@ -120,10 +141,14 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico agents [--json]` — list local agents you can delegate to.
 - `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation.
 - `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
-- `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>"` — run candidate implementations for comparison.
-- `portico runs [--repo .]` — list runs.
+- `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" [--judge-to <agent>]` — run candidate implementations for comparison.
+- `portico delegate --mode split --to <agent> --repo . --task "<task>" --child '{…,"task":"…"}' --child '{…}'` — split into complementary sub-tasks and merge.
+- `portico delegate --resume <child_id> --task "<refinement>"` — iterate on one child in place.
+- `portico runs [--repo .]` — list runs (folded; `--flat` for the legacy flat list).
 - `portico status <run_id>` — show a run's artifacts, changed files, and tests.
-- `portico apply <run_id>` — apply a ready run's patch (only with user approval).
+- `portico apply <run_id>` — apply a ready single run's patch (only with user approval).
+- `portico apply <group_id> --child <child_id>` — apply one compare candidate.
+- `portico apply <group_id> --all` — apply a split group's merged patch.
 - `portico discard <run_id>` — remove a run's worktree (artifacts kept).
 - `portico cancel <run_id>` — cancel an in-flight run.
 

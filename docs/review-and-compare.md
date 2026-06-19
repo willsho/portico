@@ -1,7 +1,10 @@
-# Review and Compare
+# Review, Compare, and Split
 
-Portico supports two non-default delegation modes for getting another agent's judgment
-without immediately applying a patch: `review` and `compare`.
+Portico supports non-default delegation modes for getting another agent's judgment without
+immediately applying a patch: `review`, `compare`, and `split`. `compare` and `split` are
+the two fan-out shapes — compare produces competing implementations of one task, split
+divides one task into complementary sub-tasks and merges them. Both accept an optional
+read-only **judge** to help you decide.
 
 ## Review Mode
 
@@ -148,6 +151,54 @@ When comparing candidates, inspect:
 The best candidate is not always the largest patch or the one with the most explanation.
 Prefer the smallest implementation that satisfies the task and fits the codebase.
 
+## Judge (Optional)
+
+A judge automates the first pass of that choice. Add `--judge-to <agent>` to a compare run
+and Portico runs a read-only `review` over the candidate diffs after they finish, then
+records a ranking and a `recommendedChildId` in the group's `result.json` and report:
+
+```bash
+portico delegate \
+  --mode compare \
+  --to codex \
+  --compare-to claude \
+  --repo . \
+  --task "Refactor the cache layer" \
+  --judge-to gemini
+```
+
+The judge is agent-agnostic and always read-only. It does **not** change apply semantics —
+`apply --child <id>` is still required and you still make the final call. The recommendation
+is surfaced in `portico status` and the report's "Next Actions" (marked `(recommended)`).
+
+## Split Mode
+
+Split mode divides one task into complementary sub-tasks, runs them in parallel like a
+compare group, and then **merges** the resulting patches into one reviewable patch.
+
+```bash
+portico delegate \
+  --mode split \
+  --to claude \
+  --repo . \
+  --task "Add OAuth login end-to-end" \
+  --child '{"to":"claude","task":"Backend OAuth routes","allowedPaths":["src/server/**"]}' \
+  --child '{"to":"codex","task":"Login UI","allowedPaths":["src/web/**"]}' \
+  --judge-to gemini
+```
+
+In split mode every child must declare its own `task`, and `allowedPaths` keeps each child
+in its lane so the merge stays clean. After the children finish, Portico merges them in an
+integration worktree branched from the shared base ref:
+
+- Clean merge → the group becomes `ready` and `apply --all` lands the merged patch.
+- Overlapping edits → Portico records `conflicts.json`, moves the group to `conflict`, and
+  refuses `apply --all`. Narrow a child with `--resume` and Portico re-merges automatically.
+
+With `--judge-to`, the judge reviews the **merged** result and records an `approve` /
+`needs_attention` verdict. See [Delegation → Task Split and Fan-in](delegation.md) for the
+full lifecycle.
+
 ## Common Patterns
 
 Ask two agents for independent implementations:
@@ -171,6 +222,13 @@ portico delegate \
   --to claude \
   --repo . \
   --task "Review candidate run <run_id>; focus on correctness and missing tests"
+```
+
+Iterate on a failing candidate in place (re-runs it in its existing worktree and recomputes
+the group status, so a mixed group can converge to all-ready):
+
+```bash
+portico delegate --resume <candidate_run_id> --task "the typecheck fails at line 42; fix it"
 ```
 
 Discard losing candidates:

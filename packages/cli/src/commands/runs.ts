@@ -8,13 +8,15 @@ export async function runsCommand(args: string[]): Promise<number> {
     options: {
       repo: { type: "string" },
       json: { type: "boolean" },
+      flat: { type: "boolean" },
       url: { type: "string" },
       token: { type: "string" },
     },
   });
   const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const flatParam = values.flat ? "&flat=true" : "";
   const body = await readJson<{ runs: Run[] }>(
-    await fetch(`${daemonUrl(values.url)}/runs?repo=${repo}`, { headers: authHeaders(values.token) }),
+    await fetch(`${daemonUrl(values.url)}/runs?repo=${repo}${flatParam}`, { headers: authHeaders(values.token) }),
   );
   if (values.json) console.log(JSON.stringify(body, null, 2));
   else printRuns(body.runs);
@@ -68,20 +70,33 @@ async function actionCommand(action: "apply" | "cancel" | "discard", args: strin
       json: { type: "boolean" },
       url: { type: "string" },
       token: { type: "string" },
+      child: { type: "string" },
+      all: { type: "boolean" },
     },
   });
   const id = positionals[0];
   if (!id) {
-    console.error(`Usage: portico ${action} <run_id> [--repo .]`);
+    console.error(`Usage: portico ${action} <run_id> [--repo .]${action === "apply" ? " [--child <child_id> | --all]" : ""}`);
     return 1;
   }
   const repo = encodeURIComponent(values.repo ?? process.cwd());
-  const body = await readJson<RunDetails>(
-    await fetch(`${daemonUrl(values.url)}/runs/${encodeURIComponent(id)}/${action}?repo=${repo}`, {
-      method: "POST",
-      headers: authHeaders(values.token),
-    }),
-  );
+  const url = `${daemonUrl(values.url)}/runs/${encodeURIComponent(id)}/${action}?repo=${repo}`;
+  const bodyPayload: Record<string, unknown> = {};
+  if (action === "apply" && values.child) {
+    bodyPayload.child = values.child;
+  }
+  if (action === "apply" && values.all) {
+    bodyPayload.all = true;
+  }
+  const fetchOpts: RequestInit = {
+    method: "POST",
+    headers: authHeaders(values.token),
+  };
+  if (Object.keys(bodyPayload).length > 0) {
+    fetchOpts.headers = { ...authHeaders(values.token), "Content-Type": "application/json" };
+    fetchOpts.body = JSON.stringify(bodyPayload);
+  }
+  const body = await readJson<RunDetails>(await fetch(url, fetchOpts));
   if (values.json) console.log(JSON.stringify(body, null, 2));
   else console.log(`${action} ${body.run.id}: ${body.run.status}`);
   return 0;
@@ -106,7 +121,22 @@ function printRuns(runs: Run[]): void {
     return;
   }
   for (const run of runs) {
-    console.log(`${run.id}\t${run.status}\t${run.targetAgent}\t${run.createdAt}\t${run.task}`);
+    const children = (run as unknown as Record<string, unknown>)["_children"] as Run[] | undefined;
+    const role = (run as Run & { role?: string }).role ?? "single";
+    const status = run.status;
+    const mode = (run as Run & { mode?: string }).mode ?? "implement";
+
+    if (role === "group" && children) {
+      const ready = children.filter((c) => c.status === "ready").length;
+      const failed = children.filter((c) => c.status === "failed" || c.status === "cancelled").length;
+      console.log(`${run.id}\t${mode}\t${status}\t(${children.length} children: ${ready} ready, ${failed} failed)`);
+      for (const child of children) {
+        const prefix = child === children[children.length - 1] ? "  └─" : "  ├─";
+        console.log(`${prefix} ${child.id}\t${child.targetAgent}\t${child.status}\t${child.label ?? ""}`);
+      }
+    } else {
+      console.log(`${run.id}\t${status}\t${run.targetAgent}\t${run.createdAt}\t${run.task}`);
+    }
   }
 }
 
