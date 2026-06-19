@@ -62,15 +62,180 @@ and emits a `sandbox_escape_detected` event.
 
 ## Modes
 
-Portico supports three delegation modes:
+Portico supports four delegation modes:
 
 | Mode | Purpose | Default workspace | Can apply directly? |
 | --- | --- | --- | --- |
 | `implement` | Produce a patch for a bounded coding task | `worktree` | Yes |
 | `review` | Ask another agent to inspect and report | `shared` | No |
-| `compare` | Produce multiple candidate implementations | candidate worktrees | No, apply a chosen candidate |
+| `compare` | Produce multiple **competing** candidate implementations of one task | candidate worktrees | No, apply a chosen candidate via `--child` |
+| `split` | Split one task into **complementary** sub-tasks, then merge the results | candidate worktrees | No, apply the merged patch via `--all` |
 
 If `mode` is omitted, Portico uses `implement`.
+
+`compare` and `split` are the two fan-out shapes. They share the same parallel execution
+and group model; they differ at the edges:
+
+- **compare** — same task, N children, **mutually exclusive** patches, converge by picking
+  one (`apply --child`). Optional judge ranks the candidates.
+- **split** — N complementary sub-tasks, **mutually complementary** patches, converge by
+  **merging** them into one patch (`apply --all`). Optional judge vets the merged result.
+
+## Group Runs (Fan-out)
+
+When Portico receives `compareTargets` or explicit `children`, it creates a **group run**
+that orchestrates multiple **child runs**. Each child runs independently in its own
+worktree. The group run has no worktree of its own; its status is derived from its
+children.
+
+Group run artifacts live under `.portico/runs/<group_id>/` and include:
+- `result.json` with `childResults` (list of per-child `RunResult`) and `groupSummary`
+  (`{ total, ready, failed, cancelled }`)
+- `report.md` with a candidate-by-candidate table and per-candidate apply instructions
+
+### Heterogeneous Fan-out
+
+Each child can be configured independently:
+
+```bash
+portico delegate \
+  --to codex \
+  --repo . \
+  --task "Add a dark mode toggle" \
+  --child '{"to":"codex","label":"codex-impl"}' \
+  --child '{"to":"claude","model":"sonnet","permissionProfile":"auto-edit","label":"claude-impl"}'
+```
+
+`ChildSpec` fields: `to` (required), `task` (optional, inherits group task), `label`,
+`permissionProfile`, `model`, `effort`, `allowedPaths`, `forbiddenPaths`.
+
+The old `--compare-to` syntax is preserved and normalized into children internally.
+
+### Apply a Group Result
+
+Group results contain multiple competing implementations. You must explicitly pick one:
+
+```bash
+portico apply <group_id> --child <child_id>
+```
+
+Applying a group without `--child` returns an error with usage instructions.
+
+### Cancel / Discard Groups
+
+Both operations cascade to all children:
+
+```bash
+portico cancel <group_id>   # cascades cancel to every child
+portico discard <group_id>  # removes all child worktrees, keeps artifacts
+```
+
+These are idempotent — re-cancelling or re-discarding a finished group is safe.
+
+### Folded Run Listing
+
+`portico runs` shows a folded view with children nested under their groups:
+
+```text
+run_abc_group  compare  partial  (3 children: 2 ready, 1 failed)
+  ├─ run_def_a  claude  ready    src/foo.ts, src/bar.ts
+  ├─ run_ghi_b  codex   ready    src/foo.ts
+  └─ run_jkl_c  gemini  failed   (test failed)
+```
+
+Use `portico runs --flat` for the legacy flat list.
+
+### Individual Child Resume
+
+To iterate on a failed child without re-running the entire group:
+
+```bash
+portico delegate --resume <child_id> --task "the test is failing because of X"
+```
+
+This re-runs the child in its existing worktree, capturing a new diff, re-running tests,
+and recomputing the parent group's status. Only works when the target adapter supports
+native session resume (Claude does; generic-CLI adapters may not) and the worktree still
+exists.
+
+## Task Split and Fan-in
+
+`split` mode turns a single large task into N **complementary** sub-tasks, runs them in
+parallel like any group, and then **merges** the resulting patches into one. Each child
+declares its own `task` (required in split mode) and should scope its changes with
+`allowedPaths` to keep the merge clean.
+
+```bash
+portico delegate \
+  --to claude \
+  --repo . \
+  --task "Add OAuth login end-to-end" \
+  --mode split \
+  --child '{"to":"claude","task":"Implement the OAuth backend routes and token exchange","allowedPaths":["src/server/**"]}' \
+  --child '{"to":"codex","task":"Build the login UI and call the new routes","allowedPaths":["src/web/**"]}' \
+  --child '{"to":"gemini","task":"Add integration tests for the OAuth flow","allowedPaths":["tests/**"]}'
+```
+
+### Fan-in merge
+
+After every child is `ready`, Portico merges their patches into a fresh **integration
+worktree** branched from the shared `baseRef`:
+
+- All children derive from the same base, so non-overlapping changes stack cleanly and
+  overlapping-but-disjoint edits merge three-way.
+- The merged patch is written to the group's `diff.patch`; the group becomes `ready`.
+- The integration worktree lives at `.portico/worktrees/<group_id>_integration` and is kept
+  for inspection (subject to the group cleanup policy).
+
+The merge strategy is set by `--merge` (or `fanIn.merge` in the API): `none`, `sequential`,
+or `integration`. It defaults to `integration` for split and `none` for compare.
+
+### Merge conflicts
+
+When two children edit the same region, Portico **never force-merges**. It aborts, records
+the conflicting files and their source child to `conflicts.json`, leaves the conflict
+markers in the integration worktree, and moves the group to a `conflict` status. `apply
+--all` is refused while a group is in `conflict`.
+
+To resolve, narrow one child and let Portico re-merge automatically:
+
+```bash
+portico delegate --resume <child_id> --task "stop touching auth.ts; only change the route file"
+```
+
+A successful child resume re-runs the fan-in merge; once it is clean the group returns to
+`ready`.
+
+### Apply a split result
+
+```bash
+portico apply <group_id> --all      # apply the merged patch (every child's contribution)
+```
+
+`apply --all` is only valid for a `ready` split group. It is refused for `compare` groups
+(use `--child`) and for split groups still in `conflict`. You may still apply a single
+contribution of a split group with `--child <child_id>`.
+
+### Fan-in judge
+
+Both fan-out shapes accept an optional **judge** — a read-only `review` run that evaluates
+the candidates and writes its verdict into the group's `result.json` and report:
+
+```bash
+# compare: rank the candidates and recommend one
+portico delegate --to codex --compare-to claude --mode compare \
+  --task "Refactor the cache layer" --judge-to gemini
+
+# split: vet the merged result as a whole
+portico delegate --to claude --mode split \
+  --child '{"to":"claude","task":"...","allowedPaths":["src/a/**"]}' \
+  --child '{"to":"codex","task":"...","allowedPaths":["src/b/**"]}' \
+  --judge-to gemini
+```
+
+The judge is agent-agnostic (any agent that supports `review`), always read-only, and never
+changes apply semantics — for compare it highlights a `recommendedChildId`, for split it
+records an `approve` / `needs_attention` verdict. **You still make the final decision.**
 
 ## Artifacts
 
@@ -85,8 +250,11 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 | `test.log` | Output from configured test commands |
 | `report.md` | Human-readable summary, warnings, telemetry, and next actions |
 | `result.json` | Stable machine-readable result with changed files, warnings, and telemetry |
+| `conflicts.json` | Split groups only, on a merge conflict: the conflicting files and their source child |
 
-The final `run_done` event includes the `reportPath` and `resultPath`.
+For split groups, `diff.patch` holds the **merged** patch (present only when the merge is
+clean), and `result.json` additionally carries `merge` (strategy + status), `conflicts`, and
+`judge`. The final `run_done` event includes the `reportPath` and `resultPath`.
 
 ## Gate Warnings and Telemetry
 
@@ -143,22 +311,25 @@ the artifacts remain available for diagnosis.
 
 ## Apply
 
-Only `implement` runs can be applied:
+Single `implement` runs apply directly; group runs require an explicit selection:
 
 ```bash
-portico apply <run_id>
+portico apply <run_id>                 # single implement run
+portico apply <group_id> --child <id>  # compare group: pick one candidate
+portico apply <group_id> --all         # split group: apply the merged patch
 ```
 
 `apply` refuses when:
 
-- the run is not `ready`;
-- the run mode is not `implement`;
-- the run has no `diff.patch`;
+- the run is not `ready` (a split group in `conflict` is refused for `--all`);
+- a single run's mode is not `implement`;
+- the run has no `diff.patch` (or a split group has no merged patch);
+- a compare group is applied without `--child`, or `--all` targets a non-split group;
 - the main worktree has tracked changes;
 - `git apply` fails.
 
 Applied changes land in the main worktree as ordinary unstaged file changes. Portico does
-not commit them.
+not commit them. `apply --all` marks every contributing child `applied` alongside the group.
 
 ## Discard
 

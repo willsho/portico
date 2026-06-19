@@ -220,9 +220,12 @@ interface DelegateRequest {
   from?: string;
   to: string;
   compareTargets?: string[];
+  children?: ChildSpec[];
+  maxParallel?: number;
+  fanIn?: FanInPolicy;
   repo: string;
   task: string;
-  mode?: "implement" | "review" | "compare";
+  mode?: "implement" | "review" | "compare" | "split";
   isolation?: "worktree" | "shared" | {
     workspace: "worktree" | "shared";
     baseRef?: string;
@@ -236,6 +239,40 @@ interface DelegateRequest {
   forbiddenPaths?: string[];
   timeoutMs?: number;
   depth?: number;
+}
+
+interface ChildSpec {
+  to: string;
+  task?: string;        // required in split mode (the complementary sub-task)
+  permissionProfile?: "default" | "read-only" | "auto-edit";
+  model?: string;
+  effort?: string;
+  allowedPaths?: string[];
+  forbiddenPaths?: string[];
+  label?: string;
+}
+
+interface FanInPolicy {
+  // Patch merge strategy. Defaults by mode: compare → "none", split → "integration".
+  merge?: "none" | "sequential" | "integration";
+  // Optional judge: a read-only review run that evaluates the candidate / merged diffs.
+  judge?: { to: string; instruction?: string };
+}
+```
+
+A split request supplies `mode: "split"` and `children` with a `task` each:
+
+```json
+{
+  "to": "claude",
+  "repo": ".",
+  "task": "Add OAuth login end-to-end",
+  "mode": "split",
+  "children": [
+    { "to": "claude", "task": "Backend OAuth routes", "allowedPaths": ["src/server/**"] },
+    { "to": "codex", "task": "Login UI", "allowedPaths": ["src/web/**"] }
+  ],
+  "fanIn": { "merge": "integration", "judge": { "to": "gemini" } }
 }
 ```
 
@@ -261,12 +298,32 @@ from the out-of-tree changes.
 {"type":"run_done","runId":"run_...","status":"failed","reportPath":"...","resultPath":"..."}
 ```
 
-## `GET /runs?repo=<path>`
+For fan-out groups, the fan-in phase emits its own events on the group id after the
+children drain and before the group's `run_done` (`runId` is the group id):
 
-Lists delegation runs for a repository.
+```json
+{"type":"fanin_start","runId":"<group_id>","strategy":"merge"}
+{"type":"merge_done","runId":"<group_id>","status":"ready"}
+{"type":"fanin_start","runId":"<group_id>","strategy":"judge"}
+{"type":"judge_done","runId":"<group_id>","recommendedChildId":"run_...","verdict":"approve"}
+{"type":"run_done","runId":"<group_id>","status":"ready","reportPath":"...","resultPath":"..."}
+```
+
+On a merge conflict the group's `run_done` carries `status: "conflict"`:
+
+```json
+{"type":"merge_done","runId":"<group_id>","status":"conflict","conflicts":["src/auth.ts"]}
+{"type":"run_done","runId":"<group_id>","status":"conflict","reportPath":"...","resultPath":"..."}
+```
+
+## `GET /runs?repo=<path>&flat=true`
+
+Lists delegation runs for a repository. By default returns a folded view
+(children nested under their group). Use `?flat=true` for the flat legacy listing.
 
 ```bash
 curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)"
+curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)&flat=true"
 ```
 
 Response:
@@ -279,7 +336,8 @@ Response:
 
 ## `GET /runs/:id?repo=<path>`
 
-Returns run details.
+Returns run details. For group runs, includes `childRunIds` in the run object
+and `childResults` / `groupSummary` in the result.
 
 ```bash
 curl -s "http://127.0.0.1:8787/runs/<run_id>?repo=$(pwd)"
@@ -304,7 +362,28 @@ interface RunResult {
   changedFiles: string[];
   tests: TestResult[];
   agentEvents: RuntimeEvent[];
-  compareResults?: RunResult[];
+  childResults?: RunResult[];      // canonical (Phase 2)
+  compareResults?: RunResult[];    // legacy alias
+  groupSummary?: {
+    total: number;
+    ready: number;
+    failed: number;
+    cancelled: number;
+  };
+  // Split groups (Phase 3) — fan-in outcome.
+  merge?: {
+    strategy: "sequential" | "integration";
+    status: "ready" | "conflict";
+    integrationWorktree?: string;
+  };
+  conflicts?: Array<{ file: string; child: string }>;
+  judge?: {
+    to: string;
+    runId?: string;
+    recommendedChildId?: string;                                 // compare
+    ranking?: Array<{ childId: string; score?: number; note: string }>;
+    verdict?: "approve" | "needs_attention";                     // split
+  };
   sandboxEscaped?: boolean;
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
@@ -359,17 +438,31 @@ curl -N "http://127.0.0.1:8787/runs/<run_id>/events?repo=$(pwd)"
 
 ## `POST /runs/:id/apply?repo=<path>`
 
-Applies a ready implementation run.
+Applies a ready run. For a compare group, send `{ "child": "<child_id>" }` to apply one
+candidate; for a split group, send `{ "all": true }` to apply the merged patch.
 
 ```bash
+# Apply a single run
 curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/apply?repo=$(pwd)"
+
+# Apply a child from a compare group
+curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/apply?repo=$(pwd)" \
+  -H 'Content-Type: application/json' \
+  -d '{"child": "<child_id>"}'
+
+# Apply the merged patch from a split group
+curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/apply?repo=$(pwd)" \
+  -H 'Content-Type: application/json' \
+  -d '{"all": true}'
 ```
 
-Only `implement` runs can be applied.
+A single run must be `implement`. A compare group apply without `child` returns an error; an
+`all` apply against a non-split group, or a split group still in `conflict`, is refused.
 
 ## `POST /runs/:id/discard?repo=<path>`
 
-Removes the run worktree and keeps artifacts.
+Removes the run worktree and keeps artifacts. For group runs, cascades to remove all
+child worktrees.
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/discard?repo=$(pwd)"
@@ -377,11 +470,26 @@ curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/discard?repo=$(pwd)"
 
 ## `POST /runs/:id/cancel?repo=<path>`
 
-Cancels an active run.
+Cancels an active run. For group runs, cascades to cancel all active children.
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/cancel?repo=$(pwd)"
 ```
+
+## `POST /runs/:id/resume?repo=<path>`
+
+Re-runs a child run in its existing worktree with a new task. Requires the child to have
+a stored `agentSessionId` and the worktree to still exist.
+
+```bash
+curl -N "http://127.0.0.1:8787/runs/<child_id>/resume?repo=$(pwd)" \
+  -H 'Content-Type: application/json' \
+  -d '{"task": "fix the failing test: the assertion at line 42 needs to be updated"}'
+```
+
+Streams `DelegationEvent` NDJSON. Regenerates the diff, re-runs tests, refreshes
+`report.md` / `result.json`, and recomputes the parent group's status. For a split group it
+also re-runs the fan-in merge, so narrowing a child can clear a prior `conflict`.
 
 ## CORS
 

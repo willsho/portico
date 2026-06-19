@@ -100,11 +100,20 @@ portico daemon stop
 portico agents [--json]
 portico delegate --to <agent> --repo . --task "<task>" [--test "npm test"]
 portico delegate --mode review --to <agent> --repo . --task "<review task>"
-portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>"
+portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" --judge-to <agent-c>
+portico delegate --mode split --to <agent-a> --repo . --task "<task>" \
+  --child '{"to":"codex","task":"backend","allowedPaths":["src/server/**"]}' \
+  --child '{"to":"claude","task":"frontend","allowedPaths":["src/web/**"]}'
+portico delegate --to <agent-a> --repo . --task "<task>" \
+  --child '{"to":"codex","permissionProfile":"auto-edit"}' \
+  --child '{"to":"claude","model":"sonnet"}'
+portico delegate --resume <child_id> --task "fix the failing tests"
 portico runs [--repo .]
 portico status <run_id> [--repo .]
 portico cancel <run_id> [--repo .]
-portico apply <run_id> [--repo .]
+portico apply <run_id> [--repo .]            # single run
+portico apply <group_id> --child <child_id>  # compare: pick one candidate
+portico apply <group_id> --all               # split: apply the merged patch
 portico discard <run_id> [--repo .]
 portico doctor [--config path]
 ```
@@ -151,8 +160,10 @@ Inspect and decide:
 
 ```bash
 portico runs
+portico runs --flat
 portico status run_20260617143454_65d33c76
 portico apply run_20260617143454_65d33c76
+portico apply <group_id> --child <child_id>
 portico discard run_20260617143454_65d33c76
 ```
 
@@ -185,8 +196,27 @@ Delegation controls in the MVP:
 - `--permission-profile default|read-only|auto-edit` controls whether Portico asks the
   provider adapter for autonomous editing. Shared auto-edit runs require a clean working
   tree so Portico can attribute the resulting diff.
-- `--mode compare --compare-to <agent>` runs isolated candidate implementations and records
-  a parent comparison report with links to each candidate run.
+- `--mode compare --compare-to <agent>` runs isolated **competing** candidate
+  implementations in parallel (bounded by `maxConcurrentAgentProcesses`, default 4) and
+  records a parent group report with links to each candidate run. Apply one candidate with
+  `portico apply <group_id> --child <child_id>`.
+- `--mode split` divides one task into **complementary** sub-tasks (each child must declare
+  its own `task`), runs them in parallel, then merges their patches in an integration
+  worktree. Apply the merged patch with `portico apply <group_id> --all`. Overlapping edits
+  move the group to a `conflict` status (recorded in `conflicts.json`, never force-merged);
+  resuming a child to narrow it re-merges automatically.
+- `--merge none|sequential|integration` sets the fan-in merge strategy (defaults: compare →
+  `none`, split → `integration`).
+- `--judge-to <agent> [--judge-instruction "..."]` adds an optional read-only judge: for
+  compare it ranks the candidates and records a `recommendedChildId`; for split it vets the
+  merged result with an `approve` / `needs_attention` verdict. The judge never changes apply
+  semantics — you still decide.
+- `--child '{"to":"agent","permissionProfile":"auto-edit","label":"c1"}'` (repeatable)
+  defines heterogeneous child specs with per-child agent, task, permission profile, model,
+  effort, and path policy. The old `--compare-to` syntax is normalized into children.
+- `--resume <child_id> --task "new task"` re-runs a child in its existing worktree
+  to iterate on a fix, regenerating the diff and recomputing the group status (and, for a
+  split group, re-running the fan-in merge).
 - Test commands come from repeated `--test` flags or `.portico/config.json`
   `testCommands`.
 - Worktree runs snapshot the caller's main checkout before and after the agent runs. If
@@ -222,12 +252,13 @@ agent), read the run's report and result, and decide apply vs discard with the u
 | `GET /agents` | –                   | `{ agents: AgentEntry[] }`        |
 | `POST /chat`  | `ChatRequest` JSON  | `application/x-ndjson` event stream |
 | `POST /delegate` | `DelegateRequest` JSON | `application/x-ndjson` delegation stream |
-| `GET /runs?repo=/path` | –          | `{ runs: Run[] }`                 |
-| `GET /runs/:id?repo=/path` | –      | `RunDetails`                      |
+| `GET /runs?repo=/path&flat=true` | – | `{ runs: Run[] }` (folded by default) |
+| `GET /runs/:id?repo=/path` | –      | `RunDetails` (group: + children)  |
 | `GET /runs/:id/events?repo=/path` | – | `application/x-ndjson` event history |
-| `POST /runs/:id/cancel?repo=/path` | – | `RunDetails`                    |
-| `POST /runs/:id/apply?repo=/path` | – | `RunDetails`                     |
-| `POST /runs/:id/discard?repo=/path` | – | `RunDetails`                   |
+| `POST /runs/:id/cancel?repo=/path` | – | `RunDetails` (cascades for groups) |
+| `POST /runs/:id/apply?repo=/path` | `{ child? }` | `RunDetails` (child id for groups) |
+| `POST /runs/:id/discard?repo=/path` | – | `RunDetails` (cascades for groups) |
+| `POST /runs/:id/resume?repo=/path` | `{ task }` | `application/x-ndjson` delegation stream |
 | `POST /reload`| –                   | `{ agents: AgentEntry[] }` (re-discover) |
 | `GET /sessions` | –                 | `{ sessions: SessionRecord[] }`   |
 | `DELETE /sessions/:id` | –          | `{ ok }` (or `404`)               |
@@ -381,7 +412,7 @@ design, milestones, and roadmap.
 packages/{core,adapters,orchestrator,daemon,client,cli} # runtime and delegation packages
 packages/skills/portico/SKILL.md                        # unified Portico Skill
 examples/{web,node-cli}                                  # runnable integrations
-test/fixtures/{fake-agent,edit-agent}.mjs                # Agent stand-ins for tests
+test/fixtures/{fake,edit,escape,split,judge}-agent.mjs   # Agent stand-ins for tests
 docs/agent-runtime-library-plan.md                       # runtime plan
 docs/portico-delegation-mvp-plan.md                      # delegation MVP plan
 ```
@@ -391,9 +422,13 @@ docs/portico-delegation-mvp-plan.md                      # delegation MVP plan
 This includes the runtime bridge MVP plus the first delegation MVP: core + adapters +
 orchestrator + daemon + client + cli, generic-cli + stream-json engines, structured
 Claude streaming (reasoning / tool events / token deltas), in-memory session resume,
-isolated delegation worktrees, run artifacts, test logs, patch apply/discard, and unified
-Skill instructions. Not yet included: Web UI, MCP server, cloud workers, automatic PRs,
-LAN pairing, file-backed session persistence, Codex resume, an Electron auto-installer,
-and a cloud relay.
+isolated delegation worktrees, run artifacts, test logs, patch apply/discard, parallel
+compare fan-out (bounded agent concurrency, serialized worktree bookkeeping), group run
+model with lineage roles and aggregate status, per-child heterogeneous fan-out
+configuration, individual child resume/iteration, folded run listing, cascade
+cancel/discard for groups, and task splitting with fan-in merge (integration-worktree
+three-way merge, `conflict` status, apply-all, and an optional agent-agnostic judge). Not
+yet included: Web UI, MCP server, cloud workers, automatic PRs, LAN pairing, file-backed
+session persistence, Codex resume, an Electron auto-installer, and a cloud relay.
 
 MIT licensed.

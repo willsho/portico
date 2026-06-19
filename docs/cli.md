@@ -131,8 +131,13 @@ Common options:
 | --- | --- |
 | `--from <agent>` | Calling/root agent label |
 | `--repo <path>` | Repository path; default current directory |
-| `--mode implement|review|compare` | Delegation mode; default `implement` |
+| `--mode implement|review|compare|split` | Delegation mode; default `implement` |
 | `--compare-to <agent>` | Additional compare candidate; repeatable |
+| `--child <json>` | Child spec (JSON); repeatable. `task` required in split mode |
+| `--merge none|sequential|integration` | Fan-in merge strategy (split → `integration`, compare → `none`) |
+| `--judge-to <agent>` | Optional read-only judge over the candidates / merged result |
+| `--judge-instruction <text>` | Override the judge's default review instruction |
+| `--resume <child_id>` | Re-run a child in its existing worktree with a new `--task` (requires `--task`) |
 | `--test <cmd>` | Test command; repeatable |
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
@@ -163,8 +168,31 @@ portico delegate \
   --compare-to claude \
   --repo . \
   --task "Implement the parser fix" \
-  --test "npm test"
+  --test "npm test" \
+  --judge-to gemini
 ```
+
+Split one task into complementary sub-tasks and merge the results:
+
+```bash
+portico delegate \
+  --mode split \
+  --to claude \
+  --repo . \
+  --task "Add OAuth login end-to-end" \
+  --child '{"to":"claude","task":"Backend routes","allowedPaths":["src/server/**"]}' \
+  --child '{"to":"codex","task":"Login UI","allowedPaths":["src/web/**"]}'
+```
+
+Iterate on a single child run in place (re-runs it in its existing worktree, regenerates
+the diff, re-runs tests, and recomputes the group):
+
+```bash
+portico delegate --resume <child_id> --task "the test fails because X; fix only Y"
+```
+
+Resume requires the child's adapter to support native session resume (Claude does;
+generic-CLI adapters may not) and the worktree to still exist.
 
 If a worktree-isolated run changes files in the caller's main checkout, human output
 prints a `WARNING: sandbox escape detected` block. JSON output includes a
@@ -180,13 +208,25 @@ Lists runs for a repository:
 portico runs
 portico runs --repo .
 portico runs --json
+portico runs --flat
 ```
 
-Each row includes:
+By default `runs` shows a folded view with group runs and their children nested:
+
+```text
+run_abc_group  compare  partial  (3 children: 2 ready, 1 failed)
+  ├─ run_def_a  claude  ready    a-label
+  ├─ run_ghi_b  codex   ready    b-label
+  └─ run_jkl_c  gemini  failed
+```
+
+A single (non-group) row includes:
 
 ```text
 run_id    status    target_agent    created_at    task
 ```
+
+`--flat` returns the legacy flat list with every run (groups and children) on its own row.
 
 ## `portico status`
 
@@ -208,10 +248,12 @@ removed. `--summary` returns a compact top-level object for scripts and LLM call
 
 ## `portico apply`
 
-Applies a ready implementation run:
+Applies a ready run:
 
 ```bash
-portico apply <run_id>
+portico apply <run_id>                 # single implement run
+portico apply <group_id> --child <id>  # compare group: pick one candidate
+portico apply <group_id> --all         # split group: apply the merged patch
 ```
 
 Options:
@@ -219,12 +261,15 @@ Options:
 | Option | Meaning |
 | --- | --- |
 | `--repo <path>` | Repository path |
+| `--child <child_id>` | Apply one candidate of a compare group |
+| `--all` | Apply the merged patch of a split group |
 | `--json` | Print `RunDetails` as JSON |
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
 
-`apply` only works for `implement` runs and requires the main worktree's tracked files to
-be clean.
+A single run must be `implement`. A compare group requires `--child`; a split group uses
+`--all` (refused while the group is in `conflict`). `apply` requires the main worktree's
+tracked files to be clean.
 
 ## `portico discard`
 
@@ -234,7 +279,9 @@ Removes a run worktree and keeps artifacts:
 portico discard <run_id>
 ```
 
-Use this after applying, rejecting, or finishing inspection of a run.
+Use this after applying, rejecting, or finishing inspection of a run. For a group run,
+discard cascades to remove every child worktree (and a split group's integration
+worktree); it is idempotent.
 
 ## `portico cancel`
 
@@ -245,7 +292,7 @@ portico cancel <run_id>
 ```
 
 Cancellation aborts the tracked process when the run is still active and marks the run
-`cancelled`.
+`cancelled`. For a group run, cancel cascades to every active child; it is idempotent.
 
 ## `portico doctor`
 

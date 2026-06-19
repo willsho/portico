@@ -1,6 +1,6 @@
 import type { RuntimeEvent } from "@portico/core";
 
-export type DelegationMode = "implement" | "review" | "compare";
+export type DelegationMode = "implement" | "review" | "compare" | "split";
 
 export type WorkspaceIsolationMode = "worktree" | "shared";
 
@@ -23,16 +23,60 @@ export type RunStatus =
   | "testing"
   | "reviewing"
   | "ready"
+  | "partial"
+  | "conflict"
   | "failed"
   | "cancelled"
   | "applied"
   | "discarded";
+
+export type RunRole = "single" | "group" | "child";
+
+export interface ChildSpec {
+  /** Target agent provider. */
+  to: string;
+  /** Child run task. In compare mode omitted (inherits group task). */
+  task?: string;
+  /** Override permission profile; omitted to derive from mode/isolation. */
+  permissionProfile?: PermissionProfile;
+  /** Model override (adapter-supporting passthrough, e.g. Claude). */
+  model?: string;
+  /** Reasoning effort override (adapter-supporting passthrough). */
+  effort?: string;
+  /** Per-child path policy, overrides group-level defaults. */
+  allowedPaths?: string[];
+  forbiddenPaths?: string[];
+  /** Display label for distinguishing children in concurrent views. */
+  label?: string;
+}
+
+/** Optional judge: a review child that ranks compare candidates / vets a split merge. */
+export interface FanInJudge {
+  /** Judge agent provider. */
+  to: string;
+  /** Review instruction (defaults to: rank by task fit, correctness, maintainability). */
+  instruction?: string;
+}
+
+/** Phase 3 fan-in behaviour: how N child results are converged. */
+export interface FanInPolicy {
+  /** Patch merge strategy. Defaults by mode: compare → "none", split → "integration". */
+  merge?: "none" | "sequential" | "integration";
+  /** Optional judge: a review child that evaluates / ranks the candidate diffs. */
+  judge?: FanInJudge;
+}
 
 export interface DelegateRequest {
   from?: string;
   to: string;
   /** Additional target agents for compare mode. */
   compareTargets?: string[];
+  /** Explicit fan-out: each ChildSpec produces one child run. */
+  children?: ChildSpec[];
+  /** Fan-out concurrency cap (overrides orchestrator default). */
+  maxParallel?: number;
+  /** Phase 3: fan-in behaviour (merge strategy + optional judge). */
+  fanIn?: FanInPolicy;
   repo: string;
   task: string;
   mode?: DelegationMode;
@@ -68,6 +112,18 @@ export interface Run {
   startedAt?: string;
   completedAt?: string;
   worktreeRemovedAt?: string;
+  /** Role in the fan-out structure. Defaults to "single" when absent (backward compat). */
+  role?: RunRole;
+  /** Child run points to its group run id; empty for group/single. */
+  groupId?: string;
+  /** Alias for groupId — group's id for a child. Equals groupId on child runs. */
+  parentRunId?: string;
+  /** Group run lists all of its child run ids; empty for child/single. */
+  childRunIds?: string[];
+  /** Display label (from ChildSpec.label) for distinguishing children. */
+  label?: string;
+  /** Target agent's native session id, captured from adapter start event. */
+  agentSessionId?: string;
 }
 
 export interface RunArtifact {
@@ -121,6 +177,9 @@ export type DelegationEvent =
   | { type: "test_start"; runId: string; command: string }
   | { type: "test_done"; runId: string; command: string; status: "passed" | "failed"; exitCode: number | null }
   | { type: "diff_ready"; runId: string; path: string; changedFiles: string[] }
+  | { type: "fanin_start"; runId: string; strategy: "merge" | "judge" }
+  | { type: "merge_done"; runId: string; status: "ready" | "conflict"; conflicts?: string[] }
+  | { type: "judge_done"; runId: string; recommendedChildId?: string; verdict?: "approve" | "needs_attention" }
   | { type: "run_done"; runId: string; status: RunStatus; reportPath: string; resultPath: string }
   | { type: "run_error"; runId?: string; error: string; code?: string };
 
@@ -130,7 +189,36 @@ export interface RunResult {
   changedFiles: string[];
   tests: TestResult[];
   agentEvents: RuntimeEvent[];
+  /** Group run: child results (canonical name; supersedes compareResults). */
+  childResults?: RunResult[];
+  /** Legacy alias; read both, write childResults. */
   compareResults?: RunResult[];
+  /** Group run: aggregate status summary. */
+  groupSummary?: {
+    total: number;
+    ready: number;
+    failed: number;
+    cancelled: number;
+  };
+  /** Split group: fan-in merge outcome (omitted for compare / un-merged groups). */
+  merge?: {
+    strategy: "sequential" | "integration";
+    status: "ready" | "conflict";
+    /** Integration worktree the merge ran in (kept for inspection). */
+    integrationWorktree?: string;
+  };
+  /** Split group: per-file merge conflicts and their source child (when status=conflict). */
+  conflicts?: Array<{ file: string; child: string }>;
+  /** Fan-in judge verdict (compare: ranking + recommendation; split: overall verdict). */
+  judge?: {
+    to: string;
+    /** The review run id, for `portico status <runId>`. */
+    runId?: string;
+    /** compare: which child the judge recommends applying. */
+    recommendedChildId?: string;
+    ranking?: Array<{ childId: string; score?: number; note: string }>;
+    verdict?: "approve" | "needs_attention";
+  };
   sandboxEscaped?: boolean;
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
@@ -148,5 +236,7 @@ export interface RunDetails {
 export interface OrchestratorOptions {
   maxDepth?: number;
   maxConcurrentRunsPerRepo?: number;
+  /** Max candidate runs executed concurrently within one fan-out (e.g. compare). Defaults to 4. */
+  maxConcurrentAgentProcesses?: number;
   defaultForbiddenPaths?: string[];
 }

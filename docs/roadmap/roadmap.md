@@ -99,6 +99,30 @@ Legend: ✅ shipped · 🟡 partial · ⬜ planned · 🔮 later / deferred
   survive a daemon restart. Same `SessionStore` interface; selected by config.
 - `client.conversation()` helper that hides the `sessionId` plumbing (deferred with M4 client work).
 
+### Fan-out — 并行委派与分治协作 🟡
+
+把现有的 `compare` 模式（同一 task、N 个 agent、各自独立 worktree、串行执行）扩展为完整的
+fan-out 能力。分三阶段推进，各有独立的开发计划文档：
+
+- **Phase 1 — 并行执行与并发池** ✅ — 见
+  [`fanout-phase-1-parallel-execution-plan.md`](../plan/fanout-phase-1-parallel-execution-plan.md)。
+  `mergeAsyncIterables` 事件多路复用、`maxConcurrentAgentProcesses` 并发上限、worktree 操作
+  串行化，把 `compare` 从串行改为有界并行；对外行为不变，只是更快。已并入 orchestrator 并有
+  单测 + 并行/并发上限集成测试覆盖。
+- **Phase 2 — Group Run 模型与生命周期** ✅ — 见
+  [`fanout-phase-2-group-runs-plan.md`](../plan/fanout-phase-2-group-runs-plan.md)。
+  Group Run + lineage（`role`/`groupId`/`parentRunId`）、`partial` 聚合状态、`ChildSpec`
+  异构配置（不同 agent/权限/模型）、`apply`(apply-one)/`cancel`/`discard`/`runs` 理解 group、
+  子 run 个体 resume（迭代修复）。
+- **Phase 3 — 任务分治与 Fan-in 合并** ✅ — 见
+  [`fanout-phase-3-split-and-fan-in-plan.md`](../plan/fanout-phase-3-split-and-fan-in-plan.md)。
+  `split` 模式、patch 合并（互斥叠加 + integration worktree 三方合并）、`conflict` 状态、
+  apply-all、可选 judge 评审（用 Portico 自己的 review child，保持 agent-agnostic）。
+  冲突一律中止上报、子 run resume 自动重新合并。
+
+定位：Portico fan-out 覆盖**写侧 / 产 patch / worktree 隔离**的重型并行，与 Claude Agent SDK
+subagent / Workflow 的**读侧 / 产文本 / 进程内**轻量 fan-out 互补，可组合使用。
+
 ### M6 — Public release ⬜
 
 - npm publish (would need a real build step, e.g. `tsup`, since today there is none).
@@ -122,5 +146,8 @@ Legend: ✅ shipped · 🟡 partial · ⬜ planned · 🔮 later / deferred
 | M4 Adapters | generic-cli, stream-json (Claude), detect-only | 🟡 Codex structured/resume left |
 | M5 LAN & security | token + LAN refusal done; pairing code | 🟡 pairing left |
 | Sessions | in-memory resume done; file store + helper | 🟡 persistence left |
+| Fan-out P1 | parallel compare, concurrency pool, event merge | ✅ done |
+| Fan-out P2 | group runs, lineage, heterogeneous children, resume | ✅ done |
+| Fan-out P3 | split mode, patch merge / conflict, judge | ✅ done |
 | M6 Public release | npm publish, Electron example, docs site | ⬜ not started |
 | Later | cloud relay | 🔮 exploratory |

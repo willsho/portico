@@ -193,9 +193,11 @@ export async function handleListRuns(
   res: ServerResponse,
   ctx: DaemonContext,
 ): Promise<void> {
-  const repo = repoFromUrl(req);
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const repo = url.searchParams.get("repo") ?? process.cwd();
+  const flat = url.searchParams.get("flat") === "true";
   try {
-    writeJson(res, 200, { runs: await ctx.delegation.listRuns(repo) });
+    writeJson(res, 200, { runs: await ctx.delegation.listRuns(repo, { flat }) });
   } catch (err) {
     writeDelegationError(res, err);
   }
@@ -240,9 +242,52 @@ export async function handleApplyRun(
   id: string,
 ): Promise<void> {
   try {
-    writeJson(res, 200, await ctx.delegation.apply(repoFromUrl(req), id));
+    let opts: { child?: string; all?: boolean } | undefined;
+    if (req.method === "POST") {
+      try {
+        const body = await readJsonBody<{ child?: string; all?: boolean }>(req);
+        if (body.child) opts = { ...opts, child: body.child };
+        if (body.all) opts = { ...opts, all: true };
+      } catch {
+        // No body or invalid body — proceed without apply options.
+      }
+    }
+    writeJson(res, 200, await ctx.delegation.apply(repoFromUrl(req), id, opts));
   } catch (err) {
     writeDelegationError(res, err);
+  }
+}
+
+export async function handleResumeRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  let body: { task: string };
+  try {
+    body = await readJsonBody<{ task: string }>(req);
+  } catch (err) {
+    writeJson(res, 400, { error: (err as Error).message, code: "bad_request" });
+    return;
+  }
+  if (!body.task) {
+    writeJson(res, 400, { error: "Body must include a string `task`.", code: "bad_request" });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  try {
+    for await (const event of ctx.delegation.resumeChild(repoFromUrl(req), id, body.task, { findEntry: ctx.findEntry })) {
+      res.write(encodeDelegationEvent(event));
+    }
+  } finally {
+    res.end();
   }
 }
 
@@ -301,9 +346,24 @@ function repoFromUrl(req: IncomingMessage): string {
   return url.searchParams.get("repo") ?? process.cwd();
 }
 
+const BAD_REQUEST_CODES = new Set([
+  "bad_request",
+  "repo_invalid",
+  "mode_unsupported",
+  "split_requires_children",
+  "split_child_task_required",
+]);
+const CONFLICT_CODES = new Set([
+  "invalid_status",
+  "apply_requires_child",
+  "apply_requires_all",
+  "merge_conflict",
+  "working_tree_dirty",
+]);
+
 function writeDelegationError(res: ServerResponse, err: unknown): void {
   const code = err instanceof DelegationError ? err.code : "internal";
-  const status = code === "bad_request" ? 400 : code === "repo_invalid" ? 400 : code === "invalid_status" ? 409 : 500;
+  const status = BAD_REQUEST_CODES.has(code) ? 400 : CONFLICT_CODES.has(code) ? 409 : 500;
   writeJson(res, status, { error: err instanceof Error ? err.message : String(err), code });
 }
 
