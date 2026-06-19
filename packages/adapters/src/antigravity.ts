@@ -1,5 +1,4 @@
-// Antigravity CLI adapter. The public CLI surface is treated as generic run mode
-// until a structured protocol is available.
+// Antigravity CLI adapter. Print mode is the supported non-interactive surface.
 
 import { createGenericCliAdapter } from "@portico/core";
 import type { AgentAdapter, AgentProvider } from "@portico/core";
@@ -10,8 +9,8 @@ export const antigravityProvider: AgentProvider = {
   commandNames: ["agy", "antigravity"],
   envPathNames: ["PORTICO_ANTIGRAVITY_PATH"],
   protocols: ["generic-cli"],
-  defaultArgs: ["run"],
-  promptMode: "argument",
+  defaultArgs: ["-p", "-"],
+  promptMode: "stdin",
   // Granted only on `options.autoEdit` (delegation in a throwaway worktree).
   autoEditArgs: ["--dangerously-skip-permissions"],
 };

@@ -92,9 +92,20 @@ export function classifyExit(event: ExitEvent, stderr: string): RuntimeEvent | n
   if (event.outputLimited)
     return { type: "error", error: "Agent exceeded the maximum output size.", code: "output_limit" };
   if (event.error) return { type: "error", error: event.error, code: "spawn_failed" };
+  const cliError = detectCliError(stderr);
+  if (cliError) return { type: "error", error: cliError, code: "cli_error" };
   if (event.code !== 0 && event.code !== null) {
     const detail = stderr.trim() || `Process exited with code ${event.code}.`;
     return { type: "error", error: detail, code: "spawn_failed" };
   }
+  return null;
+}
+
+function detectCliError(stderr: string): string | null {
+  const detail = stderr.trim();
+  if (!detail) return null;
+  if (/^CLI error:/im.test(detail)) return detail;
+  if (/bubbletea:.*(?:open(?:ing)?|could not open).*TTY/im.test(detail)) return detail;
+  if (/\/dev\/tty/im.test(detail)) return detail;
   return null;
 }

@@ -281,7 +281,7 @@ export interface AgentAdapter {
 }
 ```
 
-- **generic-cli** — 生成二进制文件，通过 stdin 或 argv 传递渲染的提示，并将 stdout 作为 `content` 进行流式传输。通用的回退方案；目前驱动 `codex`（`codex exec`）、`gemini`（`gemini --prompt <prompt>`）、`antigravity`（`agy run <prompt>`）和 `opencode`（`opencode run <prompt>`）。
+- **generic-cli** — 生成二进制文件，通过 stdin 或 argv 传递渲染的提示，并将 stdout 作为 `content` 进行流式传输。通用的回退方案；目前驱动 `codex`（`codex exec`）、`gemini`（`gemini --prompt <prompt>`）、`antigravity`（`agy -p -`，prompt 走 stdin）和 `opencode`（`opencode run <prompt>`）。
 - **stream-json** — 解析 Claude Code 的 `claude -p --output-format stream-json --include-partial-messages`：token 级别的 `content` / `reasoning` 增量、`tool_call` / `tool_result` 事件，以及基于 `--resume` 的会话连续性。驱动 `claude`。
 - **codex** — 通过 generic-cli 驱动；其结构化协议和恢复功能在非交互式契约确认稳定之前被推迟。
 - **gemini / antigravity / opencode** — 通过 generic-cli 非交互模式驱动。Antigravity 首先作为 `agy` 被发现，然后是 `antigravity`；`PORTICO_ANTIGRAVITY_PATH` 可以固定一个显式的二进制文件。其持久化的 CLI 设置位于 `~/.gemini/antigravity-cli/settings.json` 下，而委派的 auto-edit 模式会传递 `--dangerously-skip-permissions` 作为启动覆盖。

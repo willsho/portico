@@ -36,8 +36,8 @@ export const DEFAULT_PROVIDERS: AgentProvider[] = [
     commandNames: ["agy", "antigravity"],
     envPathNames: ["PORTICO_ANTIGRAVITY_PATH"],
     protocols: ["generic-cli"],
-    defaultArgs: ["run"],
-    promptMode: "argument",
+    defaultArgs: ["-p", "-"],
+    promptMode: "stdin",
     autoEditArgs: ["--dangerously-skip-permissions"],
   },
   {

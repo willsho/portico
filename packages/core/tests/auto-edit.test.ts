@@ -76,3 +76,24 @@ test("generic-cli can pass the rendered prompt as an argv argument", async () =>
   assert.equal(argv[0], "--echo-argv");
   assert.match(argv.at(-1) ?? "", /User: go/);
 });
+
+test("generic-cli treats known CLI error stderr as a failed run even on exit 0", async () => {
+  const cliErrorProvider: AgentProvider = {
+    ...provider,
+    defaultArgs: ["--cli-error-ok"],
+    autoEditArgs: [],
+  };
+
+  const events: RuntimeEvent[] = [];
+  for await (const event of runGenericCli(cliErrorProvider, {
+    provider: "fake",
+    messages: [{ role: "user", content: "go" }],
+  }, entry) as AsyncIterable<RuntimeEvent>) {
+    events.push(event);
+  }
+
+  const error = events.at(-1);
+  assert.equal(error?.type, "error");
+  assert.equal(error?.type === "error" ? error.code : "", "cli_error");
+  assert.notEqual(events.at(-1)?.type, "done");
+});
