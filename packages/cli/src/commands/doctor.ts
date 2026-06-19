@@ -7,7 +7,23 @@ import { installBuiltinAdapters } from "@portico/adapters";
 import { resolveConfig } from "@portico/daemon";
 
 export async function doctorCommand(args: string[]): Promise<number> {
-  const { values } = parseArgs({ args, options: { config: { type: "string" } } });
+  const { values } = parseArgs({
+    args,
+    options: {
+      help: { type: "boolean", short: "h" },
+      config: { type: "string" },
+    },
+  });
+
+  if (values.help) {
+    console.log(`Usage: portico doctor [options]
+
+Options:
+  --config <path>          Config file path
+  -h, --help               Show this help message`);
+    return 0;
+  }
+
   installBuiltinAdapters();
 
   console.log("Portico doctor");

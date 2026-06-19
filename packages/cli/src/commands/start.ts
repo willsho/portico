@@ -11,6 +11,7 @@ export async function startCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
+      help: { type: "boolean", short: "h" },
       host: { type: "string" },
       port: { type: "string" },
       lan: { type: "boolean" },
@@ -19,6 +20,20 @@ export async function startCommand(args: string[]): Promise<number> {
       config: { type: "string" },
     },
   });
+
+  if (values.help) {
+    console.log(`Usage: portico start [options]
+
+Options:
+  --host <host>            Bind host
+  --port <port>            Bind port
+  --lan                    Expose beyond loopback
+  --token <token>          Auth token
+  --allow-origin <origin>  Extra CORS origin (repeatable)
+  --config <path>          Config file path
+  -h, --help               Show this help message`);
+    return 0;
+  }
 
   const overrides: Partial<DaemonConfig> = {};
   if (values.host) overrides.host = values.host;

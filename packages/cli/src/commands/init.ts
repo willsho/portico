@@ -1,10 +1,26 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { parseArgs } from "node:util";
 import { capture } from "@portico/core";
 import { renderSkill } from "../skill.ts";
 
-export async function initCommand(_args: string[]): Promise<number> {
+export async function initCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      help: { type: "boolean", short: "h" },
+    },
+  });
+
+  if (values.help) {
+    console.log(`Usage: portico init [options]
+
+Options:
+  -h, --help               Show this help message`);
+    return 0;
+  }
+
   const repo = await capture("git", ["rev-parse", "--show-toplevel"]);
   if (repo.code !== 0) {
     console.error("portico init must be run inside a git repo.");

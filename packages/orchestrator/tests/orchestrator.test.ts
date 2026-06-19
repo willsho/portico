@@ -734,7 +734,7 @@ test("runs folded view nests children under group; flat view flattens", async ()
   }
 });
 
-test("resume a child with agentSessionId re-runs and updates result", async () => {
+test("generic adapters do not capture session id and yield resume_unsupported", async () => {
   installBuiltinAdapters();
   const repo = await createRepo();
   const orchestrator = createDelegationOrchestrator();
@@ -742,33 +742,67 @@ test("resume a child with agentSessionId re-runs and updates result", async () =
   try {
     const events: DelegationEvent[] = [];
     for await (const event of orchestrator.delegate(
-      { to: "codex", compareTargets: ["claude"], repo, task: "create delegated file", mode: "compare" },
+      { to: "codex", repo, task: "create delegated file" },
       { findEntry: (provider) => agentEntry(provider, EDIT_AGENT) },
     )) {
       events.push(event);
     }
     const done = events.at(-1);
     assert.equal(done?.type, "run_done");
-    const groupId = done?.type === "run_done" ? done.runId : "";
-    const group = await orchestrator.getRun(repo, groupId);
-    const childId = group.run.childRunIds![0]!;
-    const child = await orchestrator.getRun(repo, childId);
-    assert.ok(child.run.agentSessionId, "child should have agentSessionId from start event");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const runDetails = await orchestrator.getRun(repo, runId);
+    assert.equal(runDetails.run.agentSessionId, undefined);
 
-    // Resume the child with a new task
     const resumeEvents: DelegationEvent[] = [];
     for await (const event of orchestrator.resumeChild(
-      repo, childId, "create an extra file called resume-output.txt",
+      repo, runId, "continue",
       { findEntry: (provider) => agentEntry(provider, EDIT_AGENT) },
     )) {
       resumeEvents.push(event);
     }
-    const resumeDone = resumeEvents.at(-1);
-    assert.equal(resumeDone?.type, "run_done", "resume should complete");
+    const errorEvent = resumeEvents.at(-1);
+    assert.equal(errorEvent?.type, "run_error");
+    assert.equal(errorEvent?.type === "run_error" ? errorEvent.code : "", "resume_unsupported");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
 
-    // The child should have re-generated its diff
-    const childAfter = await orchestrator.getRun(repo, childId);
-    assert.ok((childAfter.result?.changedFiles?.length ?? 0) >= 1);
+test("stream-json adapter captures native session id and passes resume args on resume", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+
+  try {
+    const events: DelegationEvent[] = [];
+    for await (const event of orchestrator.delegate(
+      { to: "claude", repo, task: "hello", mode: "review" },
+      { findEntry: (provider) => agentEntry(provider, FAKE_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const child = await orchestrator.getRun(repo, runId);
+    assert.equal(child.run.agentSessionId, "fake-1");
+
+    const resumeEvents: DelegationEvent[] = [];
+    for await (const event of orchestrator.resumeChild(
+      repo, runId, "continue",
+      { findEntry: (provider) => agentEntry(provider, FAKE_AGENT) },
+    )) {
+      resumeEvents.push(event);
+    }
+    const resumeDone = resumeEvents.at(-1);
+    assert.equal(resumeDone?.type, "run_done");
+
+    const resumedChild = await orchestrator.getRun(repo, runId);
+    const text = (resumedChild.result?.agentEvents ?? [])
+      .filter((event) => event.type === "content")
+      .map((event) => (event.type === "content" ? event.delta : ""))
+      .join("");
+    assert.match(text, /\(resumed fake-1\)/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

@@ -17,6 +17,10 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 
+if (args.includes("stream-json")) {
+  process.stdout.write('{"type":"system","session_id":"split-fake-sess"}\n');
+}
+
 let prompt = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) prompt += chunk;

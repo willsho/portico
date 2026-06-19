@@ -24,14 +24,17 @@ portico stop
 portico daemon start [options]
 portico daemon stop
 portico agents [--json]
-portico delegate --to <agent> --task <task> [options]
+portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
+portico logs <run_id> [options]
 portico apply <run_id> [options]
 portico cancel <run_id> [options]
 portico discard <run_id> [options]
-portico doctor [--config <path>]
+portico doctor [--config <path>] [options]
 ```
+
+All commands support the `-h` or `--help` flag to print their specific usage and available options.
 
 ## `portico init`
 
@@ -123,7 +126,8 @@ Required:
 | Option | Meaning |
 | --- | --- |
 | `--to <agent>` | Target provider id |
-| `--task <task>` | Self-contained task prompt |
+| `--task <task>` | Self-contained task prompt (exactly one of `--task` or `--task-file` is required) |
+| `--task-file <path>` | Read task prompt from a UTF-8 file or stdin (`-`) |
 
 Common options:
 
@@ -137,7 +141,7 @@ Common options:
 | `--merge none|sequential|integration` | Fan-in merge strategy (split → `integration`, compare → `none`) |
 | `--judge-to <agent>` | Optional read-only judge over the candidates / merged result |
 | `--judge-instruction <text>` | Override the judge's default review instruction |
-| `--resume <child_id>` | Re-run a child in its existing worktree with a new `--task` (requires `--task`) |
+| `--resume <child_id>` | Re-run a child in its existing worktree with a new task (requires `--task` or `--task-file`) |
 | `--test <cmd>` | Test command; repeatable |
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
@@ -189,6 +193,8 @@ the diff, re-runs tests, and recomputes the group):
 
 ```bash
 portico delegate --resume <child_id> --task "the test fails because X; fix only Y"
+# or
+cat feedback.md | portico delegate --resume <child_id> --task-file -
 ```
 
 Resume requires the child's adapter to support native session resume (Claude does;
@@ -245,6 +251,21 @@ sandbox escape warnings, gate warnings, telemetry, and test summaries.
 `--json` returns `RunDetails` with duplicate nested `result.run` and `result.artifacts`
 removed. `--summary` returns a compact top-level object for scripts and LLM callers.
 `--fields` selects comma-separated fields from the summary view.
+
+## `portico logs`
+
+Streams or follows a run's event log:
+
+```bash
+portico logs <run_id>
+portico logs <run_id> --follow
+portico logs <run_id> --json
+```
+
+Prints existing delegation events and agent progress. If `--follow` is specified, it
+continues to poll and print new events until the run finishes (`run_done` or
+`run_error`). The `--json` flag outputs raw NDJSON events instead of formatted human
+output.
 
 ## `portico apply`
 

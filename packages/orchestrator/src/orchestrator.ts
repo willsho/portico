@@ -1057,11 +1057,20 @@ async function* resumeChildDelegation(
     };
 
     const agentStartedMs = Date.now();
+    let capturedSessionId: string | undefined;
     for await (const event of runAgent(chat, {
       entry,
       signal: controller.signal,
       env: { ...process.env, PORTICO_DELEGATION_DEPTH: String((details.run.depth ?? 0) + 1) },
+      resumeSessionId: details.run.agentSessionId,
+      onAgentSession: (id) => {
+        capturedSessionId = id;
+      },
     })) {
+      if (capturedSessionId && capturedSessionId !== details.run.agentSessionId) {
+        details.run = await updateRun(details.run, { agentSessionId: capturedSessionId });
+        capturedSessionId = undefined;
+      }
       agentEvents.push(event);
       await appendFile(details.artifacts.agentLogPath, encodeEvent(event));
       yield await recordEvent(details.artifacts.eventsPath, { type: "agent_event", runId: childId, event });
@@ -1299,17 +1308,22 @@ async function* runSingleDelegation(
     };
 
     const agentStartedMs = Date.now();
+    let capturedSessionId: string | undefined;
     for await (const event of runAgent(chat, {
       entry,
       signal: controller.signal,
       env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(run.depth + 1) },
+      onAgentSession: (id) => {
+        capturedSessionId = id;
+      },
     })) {
+      if (capturedSessionId && !run.agentSessionId) {
+        run = await updateRun(run, { agentSessionId: capturedSessionId });
+        capturedSessionId = undefined;
+      }
       agentEvents.push(event);
       await appendFile(artifacts.agentLogPath, encodeEvent(event));
       yield await recordEvent(artifacts.eventsPath, { type: "agent_event", runId: run.id, event });
-      if (event.type === "start" && event.sessionId && !run.agentSessionId) {
-        run = await updateRun(run, { agentSessionId: event.sessionId });
-      }
       if (event.type === "error") throw new DelegationError(event.code ?? "agent_failed", event.error);
     }
     agentDurationMs = Date.now() - agentStartedMs;

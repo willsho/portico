@@ -1,11 +1,13 @@
 import { parseArgs } from "node:util";
-import { authHeaders, daemonUrl, readJson } from "./http.ts";
+import { authHeaders, daemonUrl, describeFetchError, fetchWithRetry, readDelegationStream, readJson } from "./http.ts";
+import { printEvent } from "./delegate.ts";
 import type { Run, RunDetails, RunResult } from "@portico/orchestrator";
 
 export async function runsCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
+      help: { type: "boolean", short: "h" },
       repo: { type: "string" },
       json: { type: "boolean" },
       flat: { type: "boolean" },
@@ -13,6 +15,20 @@ export async function runsCommand(args: string[]): Promise<number> {
       token: { type: "string" },
     },
   });
+
+  if (values.help) {
+    console.log(`Usage: portico runs [options]
+
+Options:
+  --repo <path>            Repository path (default: cwd)
+  --json                   Output JSON format
+  --flat                   Flatten the list of runs
+  --url <url>              Daemon URL
+  --token <token>          Auth token
+  -h, --help               Show this help message`);
+    return 0;
+  }
+
   const repo = encodeURIComponent(values.repo ?? process.cwd());
   const flatParam = values.flat ? "&flat=true" : "";
   const body = await readJson<{ runs: Run[] }>(
@@ -23,11 +39,86 @@ export async function runsCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+export async function logsCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      help: { type: "boolean", short: "h" },
+      repo: { type: "string" },
+      follow: { type: "boolean" },
+      json: { type: "boolean" },
+      url: { type: "string" },
+      token: { type: "string" },
+    },
+  });
+
+  if (values.help) {
+    console.log(`Usage: portico logs <run_id> [options]
+
+Options:
+  --repo <path>            Repository path (default: cwd)
+  --follow                 Poll and print new events until the run finishes
+  --json                   Output raw NDJSON events
+  --url <url>              Daemon URL
+  --token <token>          Auth token
+  -h, --help               Show this help message`);
+    return 0;
+  }
+
+  const id = positionals[0];
+  if (!id) {
+    console.error("Usage: portico logs <run_id> [--repo .] [--follow] [--json]");
+    return 1;
+  }
+
+  const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const url = `${daemonUrl(values.url)}/runs/${encodeURIComponent(id)}/events?repo=${repo}`;
+  let offset = 0;
+  let done = false;
+  let code = 0;
+
+  while (!done) {
+    let res: Response;
+    try {
+      res = await fetchWithRetry(url, { headers: authHeaders(values.token) });
+    } catch (err) {
+      console.error(`[portico] ${describeFetchError(err, url)}`);
+      return 1;
+    }
+
+    try {
+      let index = 0;
+      for await (const event of readDelegationStream(res)) {
+        if (index >= offset) {
+          if (values.json) console.log(JSON.stringify(event));
+          else printEvent(event);
+          offset++;
+          if (event.type === "run_done" || event.type === "run_error") {
+            done = true;
+            if (event.type === "run_error") code = 1;
+          }
+        }
+        index++;
+      }
+    } catch (err) {
+      console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+
+    if (done || !values.follow) break;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  return code;
+}
+
 export async function statusCommand(args: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
     options: {
+      help: { type: "boolean", short: "h" },
       repo: { type: "string" },
       json: { type: "boolean" },
       summary: { type: "boolean" },
@@ -36,6 +127,21 @@ export async function statusCommand(args: string[]): Promise<number> {
       token: { type: "string" },
     },
   });
+
+  if (values.help) {
+    console.log(`Usage: portico status <run_id> [options]
+
+Options:
+  --repo <path>            Repository path (default: cwd)
+  --json                   Output JSON format
+  --summary                Output summary format
+  --fields <fields>        Comma-separated fields to select
+  --url <url>              Daemon URL
+  --token <token>          Auth token
+  -h, --help               Show this help message`);
+    return 0;
+  }
+
   const id = positionals[0];
   if (!id) {
     console.error("Usage: portico status <run_id> [--repo .]");
@@ -66,6 +172,7 @@ async function actionCommand(action: "apply" | "cancel" | "discard", args: strin
     args,
     allowPositionals: true,
     options: {
+      help: { type: "boolean", short: "h" },
       repo: { type: "string" },
       json: { type: "boolean" },
       url: { type: "string" },
@@ -74,6 +181,21 @@ async function actionCommand(action: "apply" | "cancel" | "discard", args: strin
       all: { type: "boolean" },
     },
   });
+
+  if (values.help) {
+    console.log(`Usage: portico ${action} <run_id> [options]
+
+Options:
+  --repo <path>            Repository path (default: cwd)
+  --json                   Output JSON format
+  --url <url>              Daemon URL
+  --token <token>          Auth token
+  --child <child_id>       Specific child run ID (for apply)
+  --all                    Apply the merged group patch (for apply)
+  -h, --help               Show this help message`);
+    return 0;
+  }
+
   const id = positionals[0];
   if (!id) {
     console.error(`Usage: portico ${action} <run_id> [--repo .]${action === "apply" ? " [--child <child_id> | --all]" : ""}`);

@@ -77,7 +77,7 @@ portico stop
 portico daemon start
 portico daemon stop
 portico agents [--json]
-portico delegate --to <agent> --repo . --task "<task>" [--test "npm test"]
+portico delegate --to <agent> --repo . (--task "<task>" | --task-file <path>) [--test "npm test"]
 portico delegate --mode review --to <agent> --repo . --task "<review task>"
 portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" --judge-to <agent-c>
 portico delegate --mode split --to <agent-a> --repo . --task "<task>" \
@@ -86,9 +86,10 @@ portico delegate --mode split --to <agent-a> --repo . --task "<task>" \
 portico delegate --to <agent-a> --repo . --task "<task>" \
   --child '{"to":"codex","permissionProfile":"auto-edit"}' \
   --child '{"to":"claude","model":"sonnet"}'
-portico delegate --resume <child_id> --task "fix the failing tests"
+portico delegate --resume <child_id> (--task "fix the failing tests" | --task-file feedback.txt)
 portico runs [--repo .]
 portico status <run_id> [--repo .]
+portico logs <run_id> [--repo .] [--follow]
 portico cancel <run_id> [--repo .]
 portico apply <run_id> [--repo .]            # single run (单次运行)
 portico apply <group_id> --child <child_id>  # compare: pick one candidate (比较：选择一个候选方案)
@@ -133,6 +134,7 @@ portico delegate \
 portico runs
 portico runs --flat
 portico status run_20260617143454_65d33c76
+portico logs run_20260617143454_65d33c76 --follow
 portico apply run_20260617143454_65d33c76
 portico apply <group_id> --child <child_id>
 portico discard run_20260617143454_65d33c76
@@ -164,7 +166,7 @@ MVP 中的委派控制：
 - `--merge none|sequential|integration` 设置扇入合并策略（默认值：compare → `none`，split → `integration`）。
 - `--judge-to <agent> [--judge-instruction "..."]` 添加一个可选的只读裁判：对于 compare 模式，它会对候选方案进行排序并记录 `recommendedChildId`；对于 split 模式，它会通过 `approve` / `needs_attention` 结论审查合并结果。裁判永远不会改变应用的语义——依然由您决定。
 - `--child '{"to":"agent","permissionProfile":"auto-edit","label":"c1"}'`（可重复）定义异构的子规范，包含每个子项的代理、任务、权限配置、模型、工作量（effort）和路径策略。旧的 `--compare-to` 语法已被规范化为子项。
-- `--resume <child_id> --task "new task"` 在其现有工作树中重新运行一个子项以迭代修复，重新生成差异并重新计算组状态（并且，对于 split 组，重新运行扇入合并）。
+- `--resume <child_id> (--task "new task" | --task-file <path>)` 在其现有工作树中重新运行一个子项以迭代修复，重新生成差异并重新计算组状态（并且，对于 split 组，重新运行扇入合并）。
 - 测试命令来自重复的 `--test` 标志或 `.portico/config.json` 中的 `testCommands`。
 - 工作树运行在代理运行之前和之后对调用者的主检出（checkout）进行快照。如果 Portico 观察到树外更改，它将标记运行失败，发出 `sandbox_escape_detected` 事件，并在 `result.json` 中记录 `sandboxEscaped` / `outOfTreeChanges`。
 - 运行结果包含 `telemetry`，其中包含总耗时、代理耗时和测试耗时。当目标代理报告使用情况时，Portico 会保留原始使用负载，并提取常见的 token 和成本字段。

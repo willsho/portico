@@ -6,7 +6,23 @@ import type { AgentEntry } from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
 
 export async function agentsCommand(args: string[]): Promise<number> {
-  const { values } = parseArgs({ args, options: { json: { type: "boolean" } } });
+  const { values } = parseArgs({
+    args,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+  });
+
+  if (values.help) {
+    console.log(`Usage: portico agents [options]
+
+Options:
+  --json                   Output JSON format
+  -h, --help               Show this help message`);
+    return 0;
+  }
+
   installBuiltinAdapters();
   const agents = await discoverAgents();
 
