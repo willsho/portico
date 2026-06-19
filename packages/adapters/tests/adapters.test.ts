@@ -3,14 +3,17 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { getAdapter, clearAdapters } from "@portico/core";
-import type { AgentEntry, RuntimeEvent } from "@portico/core";
+import type { AgentEntry, AgentProvider, RuntimeEvent } from "@portico/core";
 import {
   installBuiltinAdapters,
   antigravityAdapter,
   codexAdapter,
+  codexProvider,
   claudeAdapter,
   openclawProvider,
   openclawAdapter,
+  translateCodexJsonLine,
+  runCodexJson,
 } from "../src/index.ts";
 
 function contentText(events: RuntimeEvent[]): string {
@@ -37,24 +40,83 @@ test("installBuiltinAdapters registers every provider adapter", () => {
   }
 });
 
-test("codex adapter drives a binary through the generic-cli engine", async () => {
+test("Codex translator maps real codex exec --json events", () => {
+  // agent_message → content (full text on completion, no token deltas).
+  const msg = translateCodexJsonLine(
+    JSON.stringify({ type: "item.completed", item: { id: "i", type: "agent_message", text: "hello" } }),
+  );
+  assert.equal(msg[0]?.type, "content");
+  assert.equal(msg[0]?.type === "content" ? msg[0].delta : "", "hello");
+
+  // command_execution: started → tool_call, completed → tool_result.
+  const started = translateCodexJsonLine(
+    JSON.stringify({
+      type: "item.started",
+      item: { id: "c", type: "command_execution", command: "echo hi", exit_code: null, status: "in_progress" },
+    }),
+  );
+  assert.equal(started[0]?.type, "tool_call");
+  assert.equal(started[0]?.type === "tool_call" ? started[0].name : "", "shell");
+  const finished = translateCodexJsonLine(
+    JSON.stringify({
+      type: "item.completed",
+      item: { id: "c", type: "command_execution", command: "echo hi", aggregated_output: "hi\n", exit_code: 0, status: "completed" },
+    }),
+  );
+  assert.equal(finished[0]?.type, "tool_result");
+
+  // file_change → tool_result on completion.
+  const fc = translateCodexJsonLine(
+    JSON.stringify({
+      type: "item.completed",
+      item: { id: "f", type: "file_change", changes: [{ path: "/x", kind: "add" }], status: "completed" },
+    }),
+  );
+  assert.equal(fc[0]?.type, "tool_result");
+
+  // turn.completed → done carrying usage.
+  const done = translateCodexJsonLine(JSON.stringify({ type: "turn.completed", usage: { output_tokens: 5 } }));
+  assert.equal(done[0]?.type, "done");
+  assert.deepEqual(done[0]?.type === "done" ? done[0].usage : null, { output_tokens: 5 });
+
+  // Structural / unknown events are ignored and never throw.
+  assert.deepEqual(translateCodexJsonLine(JSON.stringify({ type: "turn.started" })), []);
+  assert.deepEqual(
+    translateCodexJsonLine(JSON.stringify({ type: "item.completed", item: { type: "web_search" } })),
+    [],
+  );
+  assert.ok(Array.isArray(translateCodexJsonLine("{not json")));
+});
+
+test("codex adapter appends edit args only when autoEdit is set", async () => {
+  // A codex-shaped provider whose args echo back as a Codex NDJSON `content` event,
+  // so we can read exactly which flags the adapter assembled.
+  const echoProvider: AgentProvider = {
+    ...codexProvider,
+    defaultArgs: ["--echo-argv-json"],
+    autoEditArgs: ["--sandbox", "workspace-write"],
+  };
   const entry: AgentEntry = {
     provider: "codex",
     displayName: "Codex",
     available: true,
     path: FAKE_AGENT,
-    protocols: ["generic-cli"],
+    protocols: ["json-stream"],
   };
-  const events = await collect(
-    codexAdapter.run(
-      { provider: "codex", messages: [{ role: "user", content: "ping" }] },
-      entry,
-    ),
-  );
-  assert.equal(events[0]?.type, "start");
-  const done = events.at(-1);
-  assert.equal(done?.type, "done");
-  assert.match(done?.type === "done" ? done.message : "", /Echo from fake-agent/);
+
+  const argvWith = async (autoEdit: boolean): Promise<string[]> => {
+    const events = await collect(
+      runCodexJson(
+        echoProvider,
+        { provider: "codex", messages: [{ role: "user", content: "go" }], options: { autoEdit } },
+        entry,
+      ),
+    );
+    return JSON.parse(contentText(events)) as string[];
+  };
+
+  assert.deepEqual(await argvWith(false), ["--echo-argv-json"]);
+  assert.deepEqual(await argvWith(true), ["--echo-argv-json", "--sandbox", "workspace-write"]);
 });
 
 test("antigravity adapter uses print mode and passes the prompt through stdin", async () => {

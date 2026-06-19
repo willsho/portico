@@ -14,7 +14,7 @@ import { hermesAdapter, hermesProvider } from "./hermes.ts";
 export * from "./types.ts";
 export { createGenericCliAdapter, genericCliAdapter, genericProvider } from "./generic-cli.ts";
 export { createDetectOnlyAdapter } from "./detect-only.ts";
-export { codexAdapter, codexProvider } from "./codex.ts";
+export { codexAdapter, codexProvider, translateCodexJsonLine, runCodexJson } from "./codex.ts";
 export { claudeAdapter, claudeProvider } from "./claude.ts";
 export { geminiAdapter, geminiProvider } from "./gemini.ts";
 export { antigravityAdapter, antigravityProvider } from "./antigravity.ts";
