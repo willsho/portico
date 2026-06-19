@@ -1465,6 +1465,9 @@ function buildRunResult(
         : "Agent claimed success but Portico gate failed.",
     );
   }
+  if (run.mode === "implement" && run.status === "ready" && changedFiles.length === 0) {
+    gateWarnings.push("Agent completed successfully but produced no file changes.");
+  }
   return {
     run,
     artifacts,

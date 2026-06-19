@@ -362,7 +362,7 @@ export interface AgentAdapter {
 
 - **generic-cli** — spawn binary, pass the rendered prompt through stdin or argv, and stream
   stdout as `content`. The universal fallback; currently drives `codex` (`codex exec`),
-  `gemini` (`gemini --prompt <prompt>`), `antigravity` (`agy run <prompt>`),
+  `gemini` (`gemini --prompt <prompt>`), `antigravity` (`agy -p -` with stdin),
   and `opencode` (`opencode run <prompt>`).
 - **stream-json** — parses Claude Code's `claude -p --output-format stream-json
   --include-partial-messages`: token-level `content` / `reasoning` deltas, `tool_call` /

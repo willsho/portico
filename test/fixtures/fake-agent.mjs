@@ -4,6 +4,8 @@ import { once } from "node:events";
 // A fake Agent CLI used by tests and examples. It mimics the generic-cli contract:
 //   --version            print a semver and exit 0
 //   --echo-argv          print the received argv as JSON and exit 0
+//   --echo-argv-stdin    print argv and stdin as JSON and exit 0
+//   --cli-error-ok       write a TTY-flavored CLI error to stderr and exit 0
 //   --fail               write to stderr and exit 1
 //   --hang               never exit (used to exercise the timeout watchdog)
 //   --flood              emit a large amount of output (exercise the output cap)
@@ -22,6 +24,11 @@ if (args.includes("--version")) {
 // the command line (e.g. that autoEdit appended the provider's autoEditArgs).
 if (args.includes("--echo-argv")) {
   process.stdout.write(JSON.stringify(args) + "\n");
+  process.exit(0);
+}
+
+if (args.includes("--cli-error-ok")) {
+  process.stderr.write("CLI error: bubbletea: error opening TTY: bubbletea: could not open TTY\n");
   process.exit(0);
 }
 
@@ -101,6 +108,16 @@ if (args.includes("stream-json")) {
 
 if (!args.includes("--hang")) {
   const prompt = await readStdin();
+
+  if (args.includes("--echo-argv-stdin")) {
+    process.stdout.write(JSON.stringify({ args, stdin: prompt }) + "\n");
+    process.exit(0);
+  }
+
+  if (process.env.FAKE_AGENT_ECHO_AGY === "1" && args.includes("-p") && args.includes("-")) {
+    process.stdout.write(JSON.stringify({ args, stdin: prompt }) + "\n");
+    process.exit(0);
+  }
 
   if (args.includes("--flood")) {
     const block = "x".repeat(8192);

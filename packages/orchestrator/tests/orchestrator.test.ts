@@ -114,6 +114,7 @@ test("worktree cleanup can remove no-change runs automatically", async () => {
     const details = await orchestrator.getRun(repo, runId);
     assert.equal(details.run.status, "ready");
     assert.deepEqual(details.result?.changedFiles, []);
+    assert.match(details.result?.gateWarnings?.join("\n") ?? "", /produced no file changes/);
     assert.ok(details.run.worktreeRemovedAt);
     await assert.rejects(() => stat(details.run.worktreePath));
   } finally {
