@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { notifyRunTerminal } from "../notify.ts";
 import {
   authHeaders,
   autoStartDaemon,
@@ -23,6 +26,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       repo: { type: "string" },
       task: { type: "string" },
       "task-file": { type: "string" },
+      name: { type: "string" },
       mode: { type: "string" },
       isolation: { type: "string" },
       "base-ref": { type: "string" },
@@ -44,6 +48,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "apply-on-ready": { type: "boolean" },
       "auto-start": { type: "boolean" },
       detach: { type: "boolean" },
+      notify: { type: "boolean" },
       follow: { type: "string" },
       url: { type: "string" },
       token: { type: "string" },
@@ -59,6 +64,7 @@ Options:
   --repo <path>            Repository path (default: cwd)
   --task <task>            The task description
   --task-file <path>       Read task from a UTF-8 file, or stdin with -
+  --name <name>            Human-readable run name shown in runs/watch (default: slug of task)
   --mode <mode>            Delegation mode
   --isolation <mode>       Isolation mode
   --base-ref <ref>         Base Git reference
@@ -80,6 +86,7 @@ Options:
   --apply-on-ready         Auto-apply a ready single run when all safety guards pass (opt-in)
   --auto-start             If the loopback daemon isn't running, start it and retry once
   --detach                 Exit as soon as the run starts, printing its id (run continues)
+  --notify                 Fire an OS notification when the run reaches a terminal state (macOS)
   --follow <run_id>        Re-attach to a run's event log (same as logs --follow)
   --url <url>              Daemon URL
   --token <token>          Auth token
@@ -156,6 +163,7 @@ Options:
     from: values.from,
     repo: values.repo ?? process.cwd(),
     task: task.value,
+    name: values.name,
     mode: values.mode as DelegateRequest["mode"],
     isolation: values.isolation as DelegateRequest["isolation"],
     baseRef: values["base-ref"],
@@ -188,7 +196,16 @@ Options:
   if (!res) return 1;
 
   const outcome = await consumeRunStream(res, values.json ?? false, values.detach ?? false);
-  if (outcome.detached) return outcome.code;
+  const repoPath = values.repo ?? process.cwd();
+  if (outcome.detached) {
+    if (values.notify && outcome.runId) {
+      spawnDetachedNotifyWatch(outcome.runId, repoPath, values.url, values.token);
+    }
+    return outcome.code;
+  }
+  if (values.notify && outcome.runId) {
+    await notifyRunTerminal(outcome.runId, repoPath, values.url, values.token);
+  }
   if (values["apply-on-ready"] && outcome.runId) {
     await maybeApplyOnReady(outcome, request, values.repo ?? process.cwd(), values.url, values.token);
   } else if (values["review-summary"] && outcome.runId) {
@@ -394,6 +411,24 @@ async function consumeRunStream(res: Response, json: boolean, detach = false): P
   // Stream ended cleanly but without a terminal event — the run outlived the client.
   if (!finished) trackingHint();
   return { code: last?.type === "run_error" ? 1 : 0, runId, status };
+}
+
+/**
+ * Spawn a detached background watcher that notifies once the run reaches a terminal state.
+ * Needed for `--detach --notify`: the foreground process exits at run_start, so a separate
+ * process must observe the terminal event. Loopback-only side effect; fully best-effort.
+ */
+function spawnDetachedNotifyWatch(runId: string, repo: string, url?: string, token?: string): void {
+  const cliEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
+  const args = ["_notify-watch", runId, "--repo", repo];
+  if (url) args.push("--url", url);
+  if (token) args.push("--token", token);
+  const child = spawn(process.execPath, [...process.execArgv, cliEntry, ...args], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.on("error", () => {});
+  child.unref();
 }
 
 function readTask(task: string | undefined, taskFile: string | undefined): { value: string; error?: undefined } | { error: string } {

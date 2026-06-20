@@ -152,6 +152,7 @@ Common options:
 | `--judge-to <agent>` | Optional read-only judge over the candidates / merged result |
 | `--judge-instruction <text>` | Override the judge's default review instruction |
 | `--resume <child_id>` | Re-run a child in its existing worktree with a new task (requires `--task` or `--task-file`) |
+| `--name <slug>` | Human-readable run name shown in `runs` / `watch` (defaults to a slug of the task) |
 | `--test <cmd>` | Test command; repeatable |
 | `--verify <cmd>` | Verification check, reported separately from tests (e.g. doc/policy checks); repeatable |
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
@@ -162,6 +163,7 @@ Common options:
 | `--apply-on-ready` | Auto-apply a single ready run when all safety guards pass (opt-in; see below) |
 | `--auto-start` | If the loopback daemon isn't running, start it and retry the request once |
 | `--detach` | Exit as soon as the run registers, printing its id; the run keeps running on the daemon |
+| `--notify` | OS-notify when the run reaches a terminal state (`ready`/`partial`/`conflict`/`failed`); pairs with `--detach`. macOS only for now |
 | `--follow <run_id>` | Re-attach to a run's event log (same as `logs --follow`); ignores other run flags |
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
@@ -239,12 +241,15 @@ portico runs --json
 portico runs --flat
 portico runs --status failed,cancelled
 portico runs --since 2h
+portico runs --watch
 ```
 
-By default `runs` shows a folded view with group runs and their children nested:
+By default `runs` shows a folded view with group runs and their children nested. A run's name
+(from `--name`, else a slug of the task) leads each row, and group rows show `children
+<ready>/<total> ready`:
 
 ```text
-run_abc_group  compare  partial  (3 children: 2 ready, 1 failed)
+run_abc_group  fan-out  compare  partial  (children 2/3 ready, 1 failed)
   ├─ run_def_a  claude  ready    a-label
   ├─ run_ghi_b  codex   ready    b-label
   └─ run_jkl_c  gemini  failed
@@ -253,7 +258,7 @@ run_abc_group  compare  partial  (3 children: 2 ready, 1 failed)
 A single (non-group) row includes:
 
 ```text
-run_id    status    target_agent    created_at    task
+run_id    name    status    target_agent    created_at    task
 ```
 
 `--flat` returns the legacy flat list with every run (groups and children) on its own row.
@@ -262,8 +267,64 @@ run_id    status    target_agent    created_at    task
 | --- | --- |
 | `--status <s1,s2>` | Keep only runs whose status is in this comma-separated set |
 | `--since <dur>` | Keep only runs created within the window (`90s`, `30m`, `2h`, `1d`; a bare number is seconds) |
+| `--watch` | Open the live status board (equivalent to `portico watch`, sharing these filters) |
 
 Runs with a live agent process are tagged `[active]` in the human output.
+
+## `portico watch`
+
+A live status board for runs — the multi-run companion to `runs`. It polls the runs list on an
+interval and groups runs by state, surfacing the ones that need a decision at the top:
+
+```bash
+portico watch
+portico watch --needs-review        # only ready / partial / conflict
+portico watch --to codex            # only runs targeting one agent
+portico watch --once                # one snapshot, then exit
+```
+
+```text
+portico watch   3 ready · 1 conflict · 2 active
+
+Needs decision
+    ready     dark-mode      codex      add a dark mode toggle             2m
+  ● partial   fan-out        codex,…    split · 2/3 ready · 1 failed       1m
+    └ ready   backend        codex      implement the API                  1m
+
+Working
+  ● running   flaky-test     claude     investigate the flaky checkout…    30s
+
+Done
+    applied   sound-effects  codex      export the SFX                     4h
+    … 6 more done
+```
+
+Groups: decision-needed (`ready`/`partial`/`conflict`) on top, then working, then done. Older
+finished runs fold into a `… N more done` row; failures always stay visible.
+
+Select a row with `↑`/`↓` and act on it inline — the board delegates to the existing commands and
+never relaxes a gate:
+
+| Key | Action |
+| --- | --- |
+| `a` | Apply (shows a one-line guard check first, then asks to confirm) |
+| `d` / `c` | Discard / cancel (with confirm) |
+| `f` | Follow the run's event log |
+| `r` / `i` | Review / integrate (group runs) |
+| `enter` | Show the run's status (peek) |
+| `q` / `esc` | Quit |
+
+| Option | Meaning |
+| --- | --- |
+| `--needs-review` | Shorthand for `--status ready,partial,conflict` |
+| `--to <agent>` | Only runs targeting this agent (keeps a group with a matching child) |
+| `--status <s1,s2>` / `--since <dur>` | Same server-side filters as `runs` |
+| `--interval <ms>` | Poll interval (default `2000`) |
+| `--notify` | OS-notify when a run transitions into a decision-needed or failed state |
+| `--once` / `--json` | Print a single snapshot (the default when stdout is not a TTY) and exit |
+
+The board is a hand-written ANSI TUI with no extra dependencies. When stdout is not a TTY (a pipe
+or redirect), or with `--once` / `--json`, it prints one snapshot and exits so it stays scriptable.
 
 ## `portico status`
 

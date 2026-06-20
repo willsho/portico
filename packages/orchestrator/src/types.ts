@@ -79,6 +79,8 @@ export interface DelegateRequest {
   fanIn?: FanInPolicy;
   repo: string;
   task: string;
+  /** Human-readable run name shown in listings; defaults to a slug of the task. */
+  name?: string;
   mode?: DelegationMode;
   isolation?: WorkspaceIsolationMode | WorkspaceIsolation;
   /** Shorthand for `isolation.baseRef`. */
@@ -125,6 +127,8 @@ export interface Run {
   childRunIds?: string[];
   /** Display label (from ChildSpec.label) for distinguishing children. */
   label?: string;
+  /** Human-readable name (from DelegateRequest.name, else a slug of the task). */
+  name?: string;
   /** Target agent's native session id, captured from adapter start event. */
   agentSessionId?: string;
 }

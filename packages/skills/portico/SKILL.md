@@ -65,15 +65,17 @@ yourself, or anything where spinning up a separate agent adds no value.
      --test "npm test" \
      --allowed "src/**" --allowed "tests/**"
    ```
-   Useful flags: repeatable `--test`; repeatable `--verify` (checks reported separately from
-   tests — use for doc/policy tasks that have no test command); repeatable
+   Useful flags: `--name <slug>` (a human-readable run name shown in `runs`/`watch`; defaults
+   to a slug of the task); repeatable `--test`; repeatable `--verify` (checks reported
+   separately from tests — use for doc/policy tasks that have no test command); repeatable
    `--allowed`/`--forbidden` (path policy); `--base-ref <ref>`;
    `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>`;
    `--review-summary` (after the run, print a one-click apply command + risk summary);
    `--auto-start` (start a loopback daemon and retry once if it isn't running);
    `--detach` (exit as soon as the run registers, printing its id; the run keeps going on the
    daemon — re-attach later with `portico delegate --follow <run_id>` or `portico logs <run_id> --follow`);
-   `--json` for machine-readable events.
+   `--notify` (fire an OS notification when the run reaches a terminal state — pairs with
+   `--detach`; macOS only for now); `--json` for machine-readable events.
 
    `--apply-on-ready` is an explicit opt-in that auto-applies a **single** ready run only when
    every safety guard holds — you passed `--allowed` (a path boundary), the tracked tree is
@@ -167,6 +169,12 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico delegate --follow <run_id>` — re-attach to a run's event log (e.g. after `--detach`).
 - `portico runs [--repo .]` — list runs (folded; `--flat` for the legacy flat list). Filter with
   `--status <s1,s2>` and `--since <dur>` (e.g. `30m`, `2h`, `1d`); active runs are tagged `[active]`.
+  Group rows show `children <ready>/<total> ready`. `--watch` opens the live board.
+- `portico watch [--repo .]` — live status board: runs grouped by state (decision-needed on top,
+  then working, then done), refreshed on an interval, with inline keys to apply/discard/cancel/
+  follow/review/integrate the selected run. Filter with `--status` / `--needs-review` / `--to <agent>`
+  / `--since`. Non-TTY (or `--once` / `--json`) prints a one-shot snapshot instead, so it stays
+  scriptable. Useful when several delegations are running in parallel.
 - `portico status <run_id>` — show a run's artifacts, changed files, tests, and live progress
   (current phase, whether an agent is still running, last event).
 - `portico review <group_id>` — aggregate a group's children for review (`--ready-only` / `--json` / `--open-diff`).

@@ -10,6 +10,7 @@ import {
 } from "./http.ts";
 import { parseDuration } from "../duration.ts";
 import { printEvent } from "./delegate.ts";
+import { watchCommand } from "./watch.ts";
 import type { CleanupResult, IntegrateResult, Run, RunDetails, RunResult } from "@portico/orchestrator";
 
 export async function runsCommand(args: string[]): Promise<number> {
@@ -22,6 +23,7 @@ export async function runsCommand(args: string[]): Promise<number> {
       flat: { type: "boolean" },
       status: { type: "string" },
       since: { type: "string" },
+      watch: { type: "boolean" },
       url: { type: "string" },
       token: { type: "string" },
     },
@@ -36,10 +38,23 @@ Options:
   --flat                   Flatten the list of runs
   --status <s1,s2>         Only runs with these statuses (comma-separated)
   --since <dur>            Only runs created within this window (e.g. 30m, 2h, 1d)
+  --watch                  Open the live status board (same as: portico watch)
   --url <url>              Daemon URL
   --token <token>          Auth token
   -h, --help               Show this help message`);
     return 0;
+  }
+
+  // `runs --watch` is the equivalent live board, sharing the same filters.
+  if (values.watch) {
+    const watchArgs: string[] = [];
+    if (values.repo) watchArgs.push("--repo", values.repo);
+    if (values.status) watchArgs.push("--status", values.status);
+    if (values.since) watchArgs.push("--since", values.since);
+    if (values.json) watchArgs.push("--json");
+    if (values.url) watchArgs.push("--url", values.url);
+    if (values.token) watchArgs.push("--token", values.token);
+    return watchCommand(watchArgs);
   }
 
   const repo = encodeURIComponent(values.repo ?? process.cwd());
@@ -426,16 +441,20 @@ function printRuns(runs: Run[]): void {
     const status = run.status;
     const mode = (run as Run & { mode?: string }).mode ?? "implement";
 
+    const name = (run as Run & { name?: string }).name;
+
     if (role === "group" && children) {
       const ready = children.filter((c) => c.status === "ready").length;
       const failed = children.filter((c) => c.status === "failed" || c.status === "cancelled").length;
-      console.log(`${run.id}\t${mode}\t${status}${activeTag(run)}\t(${children.length} children: ${ready} ready, ${failed} failed)`);
+      const label = name ? `${name}\t` : "";
+      console.log(`${run.id}\t${label}${mode}\t${status}${activeTag(run)}\t(children ${ready}/${children.length} ready${failed ? `, ${failed} failed` : ""})`);
       for (const child of children) {
         const prefix = child === children[children.length - 1] ? "  └─" : "  ├─";
         console.log(`${prefix} ${child.id}\t${child.targetAgent}\t${child.status}${activeTag(child)}\t${child.label ?? ""}`);
       }
     } else {
-      console.log(`${run.id}\t${status}${activeTag(run)}\t${run.targetAgent}\t${run.createdAt}\t${run.task}`);
+      const label = name ? `${name}\t` : "";
+      console.log(`${run.id}\t${label}${status}${activeTag(run)}\t${run.targetAgent}\t${run.createdAt}\t${run.task}`);
     }
   }
 }
@@ -448,6 +467,7 @@ function activeTag(run: Run): string {
 function printDetails(details: RunDetails): void {
   const { run, artifacts, result, progress } = details;
   console.log(`${run.id}: ${run.status}`);
+  if (run.name) console.log(`name: ${run.name}`);
   if (progress) {
     console.log(`phase: ${progress.phase}${progress.active ? " (agent active)" : ""}`);
     if (progress.lastEvent) console.log(`last event: ${progress.lastEvent.type} at ${progress.lastEvent.at}`);

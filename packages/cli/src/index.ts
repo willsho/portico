@@ -17,7 +17,9 @@ import {
   cleanupCommand,
 } from "./commands/runs.ts";
 import { reviewCommand } from "./commands/review.ts";
+import { watchCommand } from "./commands/watch.ts";
 import { initCommand } from "./commands/init.ts";
+import { notifyWatchCommand } from "./notify.ts";
 
 const USAGE = `Portico — a local Agent runtime bridge.
 
@@ -31,7 +33,8 @@ Usage:
   portico delegate --to a (--task t | --task-file file) [--test cmd]
   portico delegate --mode review --to a --task t
   portico delegate --mode compare --to a --compare-to b --task t
-  portico runs [--repo .]     List delegation runs (--status, --since filters)
+  portico runs [--repo .]     List delegation runs (--status, --since filters; --watch for the board)
+  portico watch [--repo .]    Live status board of runs (grouped, inline apply/discard/follow)
   portico status <run_id>     Show a delegation run
   portico review <run_id>     Aggregate a group's children for review
   portico integrate <grp_id>  Merge a group's ready children into one patch
@@ -72,6 +75,8 @@ async function main(): Promise<number> {
       return delegateCommand(rest);
     case "runs":
       return runsCommand(rest);
+    case "watch":
+      return watchCommand(rest);
     case "status":
       return statusCommand(rest);
     case "review":
@@ -90,6 +95,8 @@ async function main(): Promise<number> {
       return cleanupCommand(rest);
     case "doctor":
       return doctorCommand(rest);
+    case "_notify-watch":
+      return notifyWatchCommand(rest);
     case undefined:
     case "help":
     case "--help":

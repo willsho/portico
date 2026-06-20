@@ -39,6 +39,8 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     const runId = done?.type === "run_done" ? done.runId : "";
     const details = await orchestrator.getRun(repo, runId);
     assert.equal(details.run.status, "ready");
+    // No --name given → run name is a slug derived from the task.
+    assert.equal(details.run.name, "create-delegated-file");
     assert.equal(details.run.isolation.workspace, "worktree");
     assert.equal(details.run.permissionProfile, "auto-edit");
     assert.ok(details.result?.changedFiles.includes("delegated.txt"));
