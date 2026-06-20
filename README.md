@@ -110,9 +110,12 @@ portico delegate --to <agent-a> --repo . --task "<task>" \
 portico delegate --resume <child_id> (--task "fix the failing tests" | --task-file feedback.txt)
 portico delegate --to <agent> --repo . --task "<task>" --allowed "src/**" --apply-on-ready  # auto-apply if guards pass
 portico delegate --to <agent> --repo . --task "<task>" --detach   # exit at run_start, keep running
+portico delegate --to <agent> --repo . --task "<task>" --detach --notify  # OS-notify on terminal state
+portico delegate --to <agent> --repo . --task "<task>" --name dark-mode   # human-readable run name
 portico delegate --to <agent> --repo . --task "<task>" --auto-start  # start loopback daemon if down
 portico delegate --follow <run_id>           # re-attach to a detached run's event log
-portico runs [--repo .] [--flat] [--status failed,cancelled] [--since 2h]
+portico runs [--repo .] [--flat] [--status failed,cancelled] [--since 2h] [--watch]
+portico watch [--repo .] [--needs-review] [--to <agent>] [--status s1,s2] [--once] [--json]
 portico status <run_id> [--repo .]
 portico logs <run_id> [--repo .] [--follow]
 portico review <group_id> [--ready-only] [--open-diff] [--json]
@@ -252,11 +255,26 @@ Delegation controls in the MVP:
 - `--detach` (delegate) returns as soon as the run registers, printing its id; the run keeps
   executing on the daemon. Re-attach with `portico delegate --follow <run_id>` (or
   `portico logs <run_id> --follow`).
+- `--name <slug>` (delegate) sets a human-readable run name shown in `runs` / `watch` (defaults
+  to a slug of the task). Children keep their `--child` label.
+- `--notify` (delegate) fires an OS notification when the run reaches a terminal state
+  (`ready` / `partial` / `conflict` / `failed`). Pairs with `--detach` — a detached background
+  watcher delivers the notification after the foreground process has exited. macOS only for now;
+  a no-op elsewhere.
 - `--auto-start` (delegate) starts a loopback daemon and retries once if none is running.
   Loopback only — LAN/remote daemons are never auto-started.
 - `runs --status <s1,s2>` and `runs --since <dur>` filter the listing server-side; runs with a
-  live agent are tagged `[active]`. `status` also reports live progress (phase, whether an
-  agent is still running, and the last recorded event).
+  live agent are tagged `[active]`, and group rows show `children <ready>/<total> ready`. `status`
+  also reports live progress (phase, whether an agent is still running, and the last recorded event).
+- `watch` (or `runs --watch`) is a live status board: it polls the runs list on an interval and
+  groups runs by state — decision-needed (`ready`/`partial`/`conflict`) on top, then working, then
+  done (older finished runs fold into a `… N more` row; failures stay visible). Select a row and
+  press a key to act on it inline (`a` apply, `d` discard, `c` cancel, `f` follow, `r` review,
+  `i` integrate, `enter` status); `apply` first shows a one-line guard check and asks to confirm.
+  `--needs-review` / `--to <agent>` / `--status` / `--since` filter the board. With no TTY (or
+  `--once` / `--json`) it prints a single snapshot instead, so it stays scriptable. The board is a
+  hand-written ANSI TUI with no extra dependencies, and delegates every action to the existing
+  commands — it never relaxes a gate (`apply` still requires a clean tracked tree).
 - `cleanup` reclaims finished runs: by default it removes only the worktree and keeps
   artifacts (`report.md` / `diff.patch` / `events.ndjson`); `--purge` also deletes artifacts.
   It targets failed + cancelled runs by default (`--status` to override, `--older-than <dur>`

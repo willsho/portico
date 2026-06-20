@@ -2,6 +2,7 @@ export {
   createDelegationOrchestrator,
   encodeDelegationEvent,
   DelegationError,
+  slugifyTask,
 } from "./orchestrator.ts";
 export type { DelegationOrchestrator } from "./orchestrator.ts";
 export type {

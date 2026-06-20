@@ -1985,6 +1985,21 @@ function newRunId(now: string): string {
   return `run_${now.replace(/[-:.TZ]/g, "").slice(0, 14)}_${randomUUID().slice(0, 8)}`;
 }
 
+/** Derive a short, scannable run name from a task: first few words, kebab-cased.
+ *  Zero-cost (pure truncation, no model call) — the plan's chosen naming strategy. */
+export function slugifyTask(task: string): string {
+  const words = task
+    .toLowerCase()
+    .replace(/[`'"]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 6);
+  const slug = words.join("-").slice(0, 48).replace(/-+$/, "");
+  return slug || "task";
+}
+
 function createRun(
   repoPath: string,
   request: DelegateRequest,
@@ -2011,6 +2026,7 @@ function createRun(
     rootAgent: request.from ?? "unknown",
     targetAgent: options.targetAgent,
     task: request.task,
+    name: request.name?.trim() || options.label || slugifyTask(request.task),
     mode: options.mode,
     isolation: options.isolation,
     permissionProfile: options.permissionProfile,
