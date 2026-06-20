@@ -25,17 +25,63 @@ export async function fetchWithRetry(input: string, init?: RequestInit, retries 
   }
 }
 
-export function describeFetchError(err: unknown, url: string): string {
-  if (err instanceof Error) {
-    const cause = (err as Error & { cause?: NodeJS.ErrnoException }).cause;
-    if (cause?.code === "ECONNREFUSED") return `connection refused talking to daemon at ${url}`;
-    if (cause?.code === "ETIMEDOUT") return `request timed out talking to daemon at ${url}`;
-    if (cause?.code === "ENOTFOUND") return `daemon host could not be resolved for ${url}`;
-    if (err.name === "AbortError") return `request aborted talking to daemon at ${url}`;
-    if (err.message === "fetch failed") return `network error talking to daemon at ${url}`;
-    return `${err.message} (${url})`;
+/**
+ * Turn a fetch failure into an actionable diagnosis: a short `message` plus a
+ * `hint` with the recommended next command. Crucially distinguishes "daemon not
+ * running" (ECONNREFUSED) from "sandbox/permission blocked" (EPERM/EACCES) so the
+ * user knows whether to start the daemon or relax their sandbox.
+ */
+export function classifyFetchError(err: unknown, url: string): { message: string; hint: string } {
+  const cause = (err as Error & { cause?: NodeJS.ErrnoException })?.cause;
+  const code = cause?.code;
+  if (code === "ECONNREFUSED") {
+    return {
+      message: `daemon not running at ${url}`,
+      hint: "start it with `portico start` (or pass `--auto-start`), or set PORTICO_URL to a running daemon.",
+    };
   }
-  return `${String(err)} (${url})`;
+  if (code === "EACCES" || code === "EPERM") {
+    return {
+      message: `permission denied reaching daemon at ${url}`,
+      hint: "a sandbox is likely blocking loopback access — grant network access or run outside the sandbox.",
+    };
+  }
+  if (code === "ETIMEDOUT") {
+    return { message: `request timed out talking to daemon at ${url}`, hint: "the daemon may be busy; retry, or check `portico runs`." };
+  }
+  if (code === "ENOTFOUND") {
+    return { message: `daemon host could not be resolved for ${url}`, hint: "check your --url / PORTICO_URL value." };
+  }
+  if (err instanceof Error && err.name === "AbortError") {
+    return { message: `request aborted talking to daemon at ${url}`, hint: "retry the command." };
+  }
+  const base = err instanceof Error ? err.message : String(err);
+  return { message: `${base} (${url})`, hint: "check that the daemon is running with `portico start`." };
+}
+
+/** Print a classified daemon error as two `[portico]` lines (message + hint). */
+export function printDaemonError(err: unknown, url: string): void {
+  const { message, hint } = classifyFetchError(err, url);
+  console.error(`[portico] ${message}`);
+  console.error(`[portico] ${hint}`);
+}
+
+/**
+ * Fetch + JSON-decode with unified daemon-down diagnostics. On a transport
+ * failure it prints the classified message/hint and throws a sentinel the
+ * command can turn into exit code 1 without re-printing.
+ */
+export class DaemonUnreachableError extends Error {}
+
+export async function requestJson<T>(url: string, init: RequestInit, token?: string): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetchWithRetry(url, { ...init, headers: { ...authHeaders(token), ...(init.headers ?? {}) } });
+  } catch (err) {
+    printDaemonError(err, url);
+    throw new DaemonUnreachableError();
+  }
+  return readJson<T>(res);
 }
 
 function isRetryableFetchError(err: unknown): boolean {

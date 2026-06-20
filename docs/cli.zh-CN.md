@@ -26,6 +26,7 @@ portico agents [--json]
 portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
+portico review <run_id> [options]
 portico logs <run_id> [options]
 portico apply <run_id> [options]
 portico cancel <run_id> [options]
@@ -140,10 +141,12 @@ portico delegate \
 | `--judge-instruction <text>` | 覆盖裁判的默认审查指令 |
 | `--resume <child_id>` | 在现有工作树中使用新任务重新运行子项（需要 `--task` 或 `--task-file`） |
 | `--test <cmd>` | 测试命令；可重复 |
+| `--verify <cmd>` | 验证检查，在报告中与测试分开展示（如文档/策略检查）；可重复 |
 | `--allowed <pattern>` | 允许更改的路径模式；可重复 |
 | `--forbidden <pattern>` | 禁止更改的路径模式；可重复 |
 | `--timeout <ms>` | 代理/测试超时时间 |
 | `--json` | 以 JSON 行的形式打印委派事件 |
+| `--review-summary` | 运行结束后打印一键 apply 命令及风险摘要 |
 | `--url <url>` | 守护进程 URL 覆盖 |
 | `--token <token>` | Bearer 令牌 |
 
@@ -239,6 +242,25 @@ portico status <run_id> --json --fields status,changedFiles,telemetry
 人类可读输出包含状态、目标、分支、工作树、报告路径、更改的文件、沙箱逃逸警告、门控警告、遥测以及测试摘要。
 
 `--json` 返回删除了重复嵌套的 `result.run` 和 `result.artifacts` 的 `RunDetails`。`--summary` 为脚本和 LLM 调用者返回一个紧凑的顶级对象。`--fields` 从摘要视图中选择以逗号分隔的字段。
+
+## `portico review`
+
+把一个 group run 的所有子项（或单个 run）汇聚成一个 review 视图，免去逐个打开子项的 status、报告和 diff：
+
+```bash
+portico review <run_id>
+portico review <run_id> --ready-only
+portico review <run_id> --json
+portico review <run_id> --open-diff
+```
+
+每个子项显示 label、状态、改动文件数、test/verify/policy 结果，以及报告和 diff 路径，并给出每个子项的下一步动作（ready 时 `apply --child`，failed 时 `delegate --resume`）。同时高亮**被多个子项同时改动的重叠文件**——这些是需要人工仔细合并的地方。
+
+| 选项 | 说明 |
+| --- | --- |
+| `--ready-only` | 仅显示 ready、可 apply 的子项 |
+| `--json` | 输出结构化汇总（children + overlap） |
+| `--open-diff` | 额外内联打印每个所示子项的完整 diff |
 
 ## `portico logs`
 

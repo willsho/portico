@@ -27,6 +27,7 @@ portico agents [--json]
 portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
+portico review <run_id> [options]
 portico logs <run_id> [options]
 portico apply <run_id> [options]
 portico cancel <run_id> [options]
@@ -143,10 +144,12 @@ Common options:
 | `--judge-instruction <text>` | Override the judge's default review instruction |
 | `--resume <child_id>` | Re-run a child in its existing worktree with a new task (requires `--task` or `--task-file`) |
 | `--test <cmd>` | Test command; repeatable |
+| `--verify <cmd>` | Verification check, reported separately from tests (e.g. doc/policy checks); repeatable |
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
 | `--timeout <ms>` | Agent/test timeout |
 | `--json` | Print delegation events as JSON lines |
+| `--review-summary` | After the run, print a one-click apply command plus a risk summary |
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
 
@@ -251,6 +254,29 @@ sandbox escape warnings, gate warnings, telemetry, and test summaries.
 `--json` returns `RunDetails` with duplicate nested `result.run` and `result.artifacts`
 removed. `--summary` returns a compact top-level object for scripts and LLM callers.
 `--fields` selects comma-separated fields from the summary view.
+
+## `portico review`
+
+Aggregates a group run's children (or a single run) into one review view, so you don't
+have to open each child's status, report, and diff by hand:
+
+```bash
+portico review <run_id>
+portico review <run_id> --ready-only
+portico review <run_id> --json
+portico review <run_id> --open-diff
+```
+
+For each child it shows label, status, changed-file count, test/verify/policy results,
+and the report and diff paths, plus a per-child next action (`apply --child` when ready,
+`delegate --resume` when failed). It also highlights **overlapping files** changed by more
+than one child — the spots that need careful manual merging.
+
+| Option | Description |
+| --- | --- |
+| `--ready-only` | Only show children that are ready to apply |
+| `--json` | Emit the structured aggregation (children + overlap) |
+| `--open-diff` | Also print each shown child's full diff inline |
 
 ## `portico logs`
 

@@ -1,5 +1,13 @@
 import { parseArgs } from "node:util";
-import { authHeaders, daemonUrl, describeFetchError, fetchWithRetry, readDelegationStream, readJson } from "./http.ts";
+import {
+  authHeaders,
+  daemonUrl,
+  DaemonUnreachableError,
+  fetchWithRetry,
+  printDaemonError,
+  readDelegationStream,
+  requestJson,
+} from "./http.ts";
 import { printEvent } from "./delegate.ts";
 import type { Run, RunDetails, RunResult } from "@portico/orchestrator";
 
@@ -31,9 +39,14 @@ Options:
 
   const repo = encodeURIComponent(values.repo ?? process.cwd());
   const flatParam = values.flat ? "&flat=true" : "";
-  const body = await readJson<{ runs: Run[] }>(
-    await fetch(`${daemonUrl(values.url)}/runs?repo=${repo}${flatParam}`, { headers: authHeaders(values.token) }),
-  );
+  const url = `${daemonUrl(values.url)}/runs?repo=${repo}${flatParam}`;
+  let body: { runs: Run[] };
+  try {
+    body = await requestJson<{ runs: Run[] }>(url, {}, values.token);
+  } catch (err) {
+    if (err instanceof DaemonUnreachableError) return 1;
+    throw err;
+  }
   if (values.json) console.log(JSON.stringify(body, null, 2));
   else printRuns(body.runs);
   return 0;
@@ -83,7 +96,7 @@ Options:
     try {
       res = await fetchWithRetry(url, { headers: authHeaders(values.token) });
     } catch (err) {
-      console.error(`[portico] ${describeFetchError(err, url)}`);
+      printDaemonError(err, url);
       return 1;
     }
 
@@ -147,7 +160,13 @@ Options:
     console.error("Usage: portico status <run_id> [--repo .]");
     return 1;
   }
-  const body = await getRun(values.url, values.token, values.repo, id);
+  let body: RunDetails;
+  try {
+    body = await getRun(values.url, values.token, values.repo, id);
+  } catch (err) {
+    if (err instanceof DaemonUnreachableError) return 1;
+    throw err;
+  }
   if (values.json) {
     const printable = values.summary || values.fields ? summarizeDetails(body) : compactDetails(body);
     console.log(JSON.stringify(values.fields ? selectFields(printable, values.fields) : printable, null, 2));
@@ -210,15 +229,18 @@ Options:
   if (action === "apply" && values.all) {
     bodyPayload.all = true;
   }
-  const fetchOpts: RequestInit = {
-    method: "POST",
-    headers: authHeaders(values.token),
-  };
+  const fetchOpts: RequestInit = { method: "POST" };
   if (Object.keys(bodyPayload).length > 0) {
-    fetchOpts.headers = { ...authHeaders(values.token), "Content-Type": "application/json" };
+    fetchOpts.headers = { "Content-Type": "application/json" };
     fetchOpts.body = JSON.stringify(bodyPayload);
   }
-  const body = await readJson<RunDetails>(await fetch(url, fetchOpts));
+  let body: RunDetails;
+  try {
+    body = await requestJson<RunDetails>(url, fetchOpts, values.token);
+  } catch (err) {
+    if (err instanceof DaemonUnreachableError) return 1;
+    throw err;
+  }
   if (values.json) console.log(JSON.stringify(body, null, 2));
   else console.log(`${action} ${body.run.id}: ${body.run.status}`);
   return 0;
@@ -230,11 +252,8 @@ async function getRun(
   repo: string | undefined,
   id: string,
 ): Promise<RunDetails> {
-  return readJson<RunDetails>(
-    await fetch(`${daemonUrl(url)}/runs/${encodeURIComponent(id)}?repo=${encodeURIComponent(repo ?? process.cwd())}`, {
-      headers: authHeaders(token),
-    }),
-  );
+  const target = `${daemonUrl(url)}/runs/${encodeURIComponent(id)}?repo=${encodeURIComponent(repo ?? process.cwd())}`;
+  return requestJson<RunDetails>(target, {}, token);
 }
 
 function printRuns(runs: Run[]): void {

@@ -1,7 +1,15 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { authHeaders, daemonUrl, describeFetchError, fetchWithRetry, readDelegationStream } from "./http.ts";
-import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy } from "@portico/orchestrator";
+import {
+  authHeaders,
+  daemonUrl,
+  DaemonUnreachableError,
+  fetchWithRetry,
+  printDaemonError,
+  readDelegationStream,
+  requestJson,
+} from "./http.ts";
+import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus } from "@portico/orchestrator";
 
 export async function delegateCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -25,10 +33,12 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "judge-instruction": { type: "string" },
       resume: { type: "string" },
       test: { type: "string", multiple: true },
+      verify: { type: "string", multiple: true },
       allowed: { type: "string", multiple: true },
       forbidden: { type: "string", multiple: true },
       timeout: { type: "string" },
       json: { type: "boolean" },
+      "review-summary": { type: "boolean" },
       url: { type: "string" },
       token: { type: "string" },
     },
@@ -55,10 +65,12 @@ Options:
   --judge-instruction <t>  Instruction for the judge
   --resume <run_id>        Resume a child run with a new task
   --test <cmd>             Test command to run (repeatable)
+  --verify <cmd>           Verification check, reported separately from tests (repeatable)
   --allowed <path>         Allowed path (repeatable)
   --forbidden <path>       Forbidden path (repeatable)
   --timeout <ms>           Timeout in milliseconds
   --json                   Output JSON format
+  --review-summary         After the run, print a one-click apply command + risk summary
   --url <url>              Daemon URL
   --token <token>          Auth token
   -h, --help               Show this help message`);
@@ -82,21 +94,10 @@ Options:
         body: JSON.stringify({ task: task.value }),
       });
     } catch (err) {
-      console.error(`[portico] ${describeFetchError(err, url)}`);
+      printDaemonError(err, url);
       return 1;
     }
-    let last: DelegationEvent | undefined;
-    try {
-      for await (const event of readDelegationStream(res)) {
-        last = event;
-        if (values.json) console.log(JSON.stringify(event));
-        else printEvent(event);
-      }
-    } catch (err) {
-      console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
-      return 1;
-    }
-    return last?.type === "run_error" ? 1 : 0;
+    return (await consumeRunStream(res, values.json ?? false)).code;
   }
 
   // Children: parse JSON specs from repeated --child flags.
@@ -142,6 +143,7 @@ Options:
     children,
     fanIn,
     testCommands: values.test,
+    verifyCommands: values.verify,
     allowedPaths: values.allowed,
     forbiddenPaths: values.forbidden,
     timeoutMs: values.timeout ? Number(values.timeout) : undefined,
@@ -157,24 +159,115 @@ Options:
       body: JSON.stringify(request),
     });
   } catch (err) {
-    console.error(`[portico] ${describeFetchError(err, url)}`);
-    console.error("[portico] check `portico start` or set PORTICO_URL to the running daemon.");
+    printDaemonError(err, url);
     return 1;
   }
 
+  const outcome = await consumeRunStream(res, values.json ?? false);
+  if (values["review-summary"] && outcome.runId) {
+    await printReviewSummary(outcome.runId, values.repo ?? process.cwd(), values.url, values.token);
+  }
+  return outcome.code;
+}
+
+/**
+ * After a run finishes, print a copy-paste apply command plus a risk summary
+ * (path policy, tests/verify, gate warnings). Lets an authorized reviewer act in one
+ * step without hand-assembling the apply command or re-reading the report.
+ */
+async function printReviewSummary(runId: string, repo: string, url?: string, token?: string): Promise<void> {
+  const target = `${daemonUrl(url)}/runs/${encodeURIComponent(runId)}?repo=${encodeURIComponent(repo)}`;
+  let details: RunDetails;
+  try {
+    details = await requestJson<RunDetails>(target, {}, token);
+  } catch (err) {
+    if (err instanceof DaemonUnreachableError) return;
+    throw err;
+  }
+
+  const { run, result } = details;
+  const isGroup = (run.role ?? "single") === "group";
+  const risks: string[] = [];
+  if (result?.pathPolicy) {
+    risks.push(`path policy: ${result.pathPolicy.status}`);
+    if (result.pathPolicy.retryAllowed?.length) {
+      risks.push(`  out-of-scope: ${result.pathPolicy.retryAllowed.join(", ")}`);
+    }
+  }
+  const tests = result?.tests ?? [];
+  const verify = result?.verify ?? [];
+  if (tests.length) risks.push(`tests: ${tests.filter((t) => t.status === "passed").length}/${tests.length} passed`);
+  if (verify.length) risks.push(`verify: ${verify.filter((t) => t.status === "passed").length}/${verify.length} passed`);
+  if (result?.sandboxEscaped) risks.push("sandbox escape: DETECTED");
+  for (const w of result?.gateWarnings ?? []) risks.push(`warning: ${w}`);
+
+  console.log("\n── Review summary ──────────────────────────────");
+  console.log(`run ${run.id}: ${run.status}`);
+  console.log(risks.length ? risks.join("\n") : "no risks recorded.");
+  console.log("");
+  if (run.status === "ready") {
+    console.log(isGroup ? `apply: portico apply ${run.id} --all` : `apply: portico apply ${run.id}`);
+  } else if (run.status === "partial" || isGroup) {
+    console.log(`review children: portico review ${run.id}`);
+  } else {
+    console.log(`not ready (${run.status}); inspect: portico status ${run.id}`);
+  }
+  console.log(`discard: portico discard ${run.id}`);
+}
+
+/**
+ * Drive a delegation NDJSON stream to the terminal. Captures the run id from the
+ * first event so that, if the client is interrupted (Ctrl-C) or the connection
+ * drops before `run_done`, we tell the user the run may still be executing on the
+ * daemon and how to track it — instead of leaving them to guess from `[terminated]`.
+ */
+interface StreamOutcome {
+  code: number;
+  runId?: string;
+  status?: RunStatus;
+}
+
+async function consumeRunStream(res: Response, json: boolean): Promise<StreamOutcome> {
   let last: DelegationEvent | undefined;
+  let runId: string | undefined;
+  let status: RunStatus | undefined;
+  let finished = false;
+
+  const trackingHint = () => {
+    if (!runId || finished) return;
+    console.error(`\n[portico] run ${runId} may still be running on the daemon (the client disconnected).`);
+    console.error(`[portico] track it: portico status ${runId} | portico logs ${runId} --follow`);
+  };
+  const onSigint = () => {
+    trackingHint();
+    process.exit(130);
+  };
+  process.on("SIGINT", onSigint);
+
   try {
     for await (const event of readDelegationStream(res)) {
       last = event;
-      if (values.json) console.log(JSON.stringify(event));
+      if ("runId" in event && event.runId) runId = event.runId;
+      if (event.type === "run_done") {
+        finished = true;
+        status = event.status;
+      } else if (event.type === "run_error") {
+        finished = true;
+      }
+      if (json) console.log(JSON.stringify(event));
       else printEvent(event);
     }
   } catch (err) {
     console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
-    return 1;
+    trackingHint();
+    return { code: 1, runId, status };
+  } finally {
+    process.removeListener("SIGINT", onSigint);
   }
 
-  return last?.type === "run_error" ? 1 : 0;
+  // Stream ended cleanly but without a terminal event — the run outlived the client.
+  if (!finished) trackingHint();
+  return { code: last?.type === "run_error" ? 1 : 0, runId, status };
 }
 
 function readTask(task: string | undefined, taskFile: string | undefined): { value: string; error?: undefined } | { error: string } {

@@ -87,6 +87,9 @@ export interface DelegateRequest {
   cleanup?: CleanupPolicy;
   permissionProfile?: PermissionProfile;
   testCommands?: string[];
+  /** Verification commands, semantically distinct from tests (e.g. doc/policy checks).
+   *  Run through the same pipeline; a failure fails the run, but reported separately. */
+  verifyCommands?: string[];
   allowedPaths?: string[];
   forbiddenPaths?: string[];
   timeoutMs?: number;
@@ -151,6 +154,30 @@ export interface OutOfTreeChange {
   raw: string;
 }
 
+/** Raw `git diff` views captured at diff time so the report is a single source of
+ *  truth — no need to re-run `git diff --name-status / --stat / --check` by hand. */
+export interface DiffSummary {
+  /** `git diff --name-status HEAD` — distinguishes added(new) / modified / deleted / renamed. */
+  nameStatus: string;
+  /** `git diff --stat HEAD`. */
+  stat: string;
+  /** `git diff --check HEAD` — trailing whitespace and conflict markers (empty when clean). */
+  check: string;
+}
+
+/** Whether the run's changed files stayed within the `--allowed` / `--forbidden` boundary. */
+export interface PathPolicyResult {
+  status: "passed" | "failed";
+  /** The allowed patterns in effect ([] means all repo paths permitted). */
+  allowed: string[];
+  /** Changed files that hit a forbidden pattern. */
+  forbidden: string[];
+  /** Changed files outside the allowed set. */
+  notAllowed: string[];
+  /** Paths to add to `--allowed` to make a retry pass (forbidden ∪ notAllowed). */
+  retryAllowed?: string[];
+}
+
 export interface UsageTelemetry {
   available: boolean;
   raw?: unknown;
@@ -188,6 +215,8 @@ export interface RunResult {
   artifacts: RunArtifact;
   changedFiles: string[];
   tests: TestResult[];
+  /** Results of `--verify` commands (doc/policy checks), reported separately from tests. */
+  verify?: TestResult[];
   agentEvents: RuntimeEvent[];
   /** Group run: child results (canonical name; supersedes compareResults). */
   childResults?: RunResult[];
@@ -223,6 +252,10 @@ export interface RunResult {
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
   gateWarnings?: string[];
+  /** Grouped diff views (name-status / stat / check) for review without re-running git. */
+  diffSummary?: DiffSummary;
+  /** Allowed/forbidden path-policy outcome, with retry paths when it failed. */
+  pathPolicy?: PathPolicyResult;
   telemetry?: RunTelemetry;
   error?: string;
 }

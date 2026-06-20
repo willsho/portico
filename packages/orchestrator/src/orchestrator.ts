@@ -10,8 +10,10 @@ import type {
   DelegateRequest,
   DelegationEvent,
   DelegationMode,
+  DiffSummary,
   FanInPolicy,
   OrchestratorOptions,
+  PathPolicyResult,
   PermissionProfile,
   OutOfTreeChange,
   RunTelemetry,
@@ -1038,7 +1040,9 @@ async function* resumeChildDelegation(
   deps.activeControllers.set(childId, controller);
   let agentEvents: RuntimeEvent[] = [];
   let tests: TestResult[] = [];
+  let verify: TestResult[] = [];
   let changedFiles: string[] = [];
+  let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
   let agentDurationMs: number | undefined;
   let testDurationMs = 0;
@@ -1081,6 +1085,7 @@ async function* resumeChildDelegation(
     if (details.run.mode !== "review") {
       const diffResult = await generateDiff(workDir);
       changedFiles = diffResult.changedFiles;
+      diffSummary = diffResult.summary;
       await writeFile(details.artifacts.diffPath as string, diffResult.diff);
       enforcePathPolicy(changedFiles, request, deps.defaultForbidden);
       yield await recordEvent(details.artifacts.eventsPath, {
@@ -1107,21 +1112,45 @@ async function* resumeChildDelegation(
           exitCode: result.exitCode,
         });
       }
+      for (const command of request.verifyCommands ?? []) {
+        yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
+        const result = await runTestCommand(workDir, command, request.timeoutMs);
+        verify.push(result);
+        testDurationMs += result.durationMs ?? 0;
+        await appendFile(
+          details.artifacts.testLogPath as string,
+          `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
+        );
+        yield await recordEvent(details.artifacts.eventsPath, {
+          type: "test_done",
+          runId: childId,
+          command,
+          status: result.status,
+          exitCode: result.exitCode,
+        });
+      }
     }
 
-    const failedTest = tests.find((test) => test.status === "failed");
+    const failedTest = [...tests, ...verify].find((check) => check.status === "failed");
     const newStatus = failedTest ? "failed" : "ready";
     const updatedRun = await updateRun(details.run, {
       status: newStatus,
       completedAt: new Date().toISOString(),
     });
 
-    const result = buildRunResult(updatedRun, details.artifacts, changedFiles, tests, agentEvents, [], {
-      totalDurationMs: Date.now() - runStartedMs,
-      agentDurationMs,
-      testDurationMs,
-      usage: extractUsageTelemetry(agentEvents),
-    });
+    const result = attachReviewArtifacts(
+      buildRunResult(updatedRun, details.artifacts, changedFiles, tests, agentEvents, [], {
+        totalDurationMs: Date.now() - runStartedMs,
+        agentDurationMs,
+        testDurationMs,
+        usage: extractUsageTelemetry(agentEvents),
+      }),
+      changedFiles,
+      request,
+      deps.defaultForbidden,
+      diffSummary,
+      verify,
+    );
     await writeJson(details.artifacts.resultPath, result);
     await writeReport(details.artifacts.reportPath, result);
     yield await recordEvent(details.artifacts.eventsPath, {
@@ -1150,12 +1179,19 @@ async function* resumeChildDelegation(
       status: controller.signal.aborted ? "cancelled" : "failed",
       completedAt: new Date().toISOString(),
     });
-    const result = buildRunResult(details.run, details.artifacts, changedFiles, tests, agentEvents, [], {
-      totalDurationMs: Date.now() - runStartedMs,
-      agentDurationMs,
-      testDurationMs,
-      usage: extractUsageTelemetry(agentEvents),
-    }, error);
+    const result = attachReviewArtifacts(
+      buildRunResult(details.run, details.artifacts, changedFiles, tests, agentEvents, [], {
+        totalDurationMs: Date.now() - runStartedMs,
+        agentDurationMs,
+        testDurationMs,
+        usage: extractUsageTelemetry(agentEvents),
+      }, error),
+      changedFiles,
+      request,
+      deps.defaultForbidden,
+      diffSummary,
+      verify,
+    );
     await writeJson(details.artifacts.resultPath, result);
     await writeReport(details.artifacts.reportPath, result);
     yield await recordEvent(details.artifacts.eventsPath, { type: "run_error", runId: childId, error, code });
@@ -1231,7 +1267,9 @@ async function* runSingleDelegation(
   let outOfTreeChanges: OutOfTreeChange[] = [];
   let agentEvents: RuntimeEvent[] = [];
   let tests: TestResult[] = [];
+  let verify: TestResult[] = [];
   let changedFiles: string[] = [];
+  let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
   let agentDurationMs: number | undefined;
   let testDurationMs = 0;
@@ -1364,6 +1402,7 @@ async function* runSingleDelegation(
 
     const diffResult = await generateDiff(workDir);
     changedFiles = diffResult.changedFiles;
+    diffSummary = diffResult.summary;
     await writeFile(artifacts.diffPath as string, diffResult.diff);
     enforcePathPolicy(changedFiles, request, deps.defaultForbidden);
     yield await recordEvent(artifacts.eventsPath, {
@@ -1391,22 +1430,46 @@ async function* runSingleDelegation(
         exitCode: result.exitCode,
       });
     }
+    for (const command of request.verifyCommands ?? []) {
+      yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
+      const result = await runTestCommand(workDir, command, request.timeoutMs);
+      verify.push(result);
+      testDurationMs += result.durationMs ?? 0;
+      await appendFile(
+        artifacts.testLogPath as string,
+        `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
+      );
+      yield await recordEvent(artifacts.eventsPath, {
+        type: "test_done",
+        runId: run.id,
+        command,
+        status: result.status,
+        exitCode: result.exitCode,
+      });
+    }
 
-    const failedTest = tests.find((test) => test.status === "failed");
+    const failedCheck = [...tests, ...verify].find((check) => check.status === "failed");
     run = await updateRun(run, {
-      status: failedTest || outOfTreeChanges.length ? "failed" : "ready",
+      status: failedCheck || outOfTreeChanges.length ? "failed" : "ready",
       completedAt: new Date().toISOString(),
     });
     if (worktreeCreated && shouldCleanupWorktree(isolation.cleanup, run.status, changedFiles)) {
       await removeWorktree(repoPath, worktreePath, deps.worktreeMutex);
       run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
     }
-    const result = buildRunResult(run, artifacts, changedFiles, tests, agentEvents, outOfTreeChanges, {
-      totalDurationMs: Date.now() - runStartedMs,
-      agentDurationMs,
-      testDurationMs,
-      usage: extractUsageTelemetry(agentEvents),
-    });
+    const result = attachReviewArtifacts(
+      buildRunResult(run, artifacts, changedFiles, tests, agentEvents, outOfTreeChanges, {
+        totalDurationMs: Date.now() - runStartedMs,
+        agentDurationMs,
+        testDurationMs,
+        usage: extractUsageTelemetry(agentEvents),
+      }),
+      changedFiles,
+      request,
+      deps.defaultForbidden,
+      diffSummary,
+      verify,
+    );
     await writeJson(artifacts.resultPath, result);
     await writeReport(artifacts.reportPath, result);
     yield await recordEvent(artifacts.eventsPath, {
@@ -1426,20 +1489,27 @@ async function* runSingleDelegation(
         await removeWorktree(repoPath, run.worktreePath, deps.worktreeMutex);
         run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
       }
-      const result = buildRunResult(
-        run,
-        artifacts,
+      const result = attachReviewArtifacts(
+        buildRunResult(
+          run,
+          artifacts,
+          changedFiles,
+          tests,
+          agentEvents,
+          outOfTreeChanges,
+          {
+            totalDurationMs: Date.now() - runStartedMs,
+            agentDurationMs,
+            testDurationMs,
+            usage: extractUsageTelemetry(agentEvents),
+          },
+          error,
+        ),
         changedFiles,
-        tests,
-        agentEvents,
-        outOfTreeChanges,
-        {
-          totalDurationMs: Date.now() - runStartedMs,
-          agentDurationMs,
-          testDurationMs,
-          usage: extractUsageTelemetry(agentEvents),
-        },
-        error,
+        request,
+        deps.defaultForbidden,
+        diffSummary,
+        verify,
       );
       await writeJson(artifacts.resultPath, result);
       await writeReport(artifacts.reportPath, result);
@@ -1494,6 +1564,22 @@ function buildRunResult(
     telemetry,
     ...(error ? { error } : {}),
   };
+}
+
+/** Attach review artifacts (path-policy outcome + grouped diff views) to a result.
+ *  Kept out of buildRunResult so the policy config doesn't have to thread through it. */
+function attachReviewArtifacts(
+  result: RunResult,
+  changedFiles: string[],
+  request: DelegateRequest,
+  defaultForbidden: string[],
+  diffSummary: DiffSummary | undefined,
+  verify: TestResult[],
+): RunResult {
+  result.pathPolicy = evaluatePathPolicy(changedFiles, request, defaultForbidden);
+  if (diffSummary) result.diffSummary = diffSummary;
+  if (verify.length) result.verify = verify;
+  return result;
 }
 
 function extractUsageTelemetry(events: RuntimeEvent[]): RunTelemetry["usage"] {
@@ -1614,18 +1700,47 @@ async function readDefaultTestCommands(repoPath: string): Promise<string[]> {
   return [];
 }
 
+/** Pure evaluation of the path boundary — used both to gate the run and to record
+ *  the outcome (with retry paths) in the result/report. */
+function evaluatePathPolicy(
+  changedFiles: string[],
+  request: DelegateRequest,
+  defaultForbidden: string[],
+): PathPolicyResult {
+  const forbiddenPatterns = [...defaultForbidden, ...(request.forbiddenPaths ?? [])];
+  const forbidden = changedFiles.filter((file) => forbiddenPatterns.some((pattern) => matchesPathPattern(file, pattern)));
+  const notAllowed = request.allowedPaths?.length
+    ? changedFiles.filter((file) => !request.allowedPaths?.some((pattern) => matchesPathPattern(file, pattern)))
+    : [];
+  const retryAllowed = [...new Set([...forbidden, ...notAllowed])];
+  return {
+    status: retryAllowed.length ? "failed" : "passed",
+    allowed: request.allowedPaths ?? [],
+    forbidden,
+    notAllowed,
+    ...(retryAllowed.length ? { retryAllowed } : {}),
+  };
+}
+
 function enforcePathPolicy(changedFiles: string[], request: DelegateRequest, defaultForbidden: string[]): void {
-  const forbidden = [...defaultForbidden, ...(request.forbiddenPaths ?? [])];
-  const forbiddenHit = changedFiles.find((file) => forbidden.some((pattern) => matchesPathPattern(file, pattern)));
-  if (forbiddenHit) {
-    throw new DelegationError("path_forbidden", `Run changed forbidden path "${forbiddenHit}".`);
+  const policy = evaluatePathPolicy(changedFiles, request, defaultForbidden);
+  if (policy.status === "passed") return;
+  if (policy.forbidden.length) {
+    throw new DelegationError("path_forbidden", `Run changed forbidden path(s): ${policy.forbidden.join(", ")}.`);
   }
-  if (request.allowedPaths?.length) {
-    const outsideAllowed = changedFiles.find(
-      (file) => !request.allowedPaths?.some((pattern) => matchesPathPattern(file, pattern)),
-    );
-    if (outsideAllowed) throw new DelegationError("path_not_allowed", `Run changed non-allowed path "${outsideAllowed}".`);
-  }
+  // Out-of-allowed: hand back a copy-paste retry that pre-fills the missing --allowed flags.
+  const retryFlags = policy.notAllowed.map((path) => `--allowed ${path}`).join(" ");
+  const fixtureHint = policy.notAllowed.some(isLikelyTestPath)
+    ? " (test/fixture paths usually need to be allowed explicitly)"
+    : "";
+  throw new DelegationError(
+    "path_not_allowed",
+    `Run changed non-allowed path(s): ${policy.notAllowed.join(", ")}.${fixtureHint} Retry allowing them: re-run with ${retryFlags}.`,
+  );
+}
+
+function isLikelyTestPath(path: string): boolean {
+  return /(^|\/)(tests?|__tests__|fixtures?|__fixtures__)(\/|$)/.test(path) || /\.(test|spec)\./.test(path);
 }
 
 function matchesPathPattern(file: string, pattern: string): boolean {
@@ -1894,9 +2009,14 @@ function buildDelegationPrompt(run: Run, request: DelegateRequest, defaultForbid
   ].join("\n");
 }
 
-async function generateDiff(worktreePath: string): Promise<{ diff: string; changedFiles: string[] }> {
+async function generateDiff(worktreePath: string): Promise<{ diff: string; changedFiles: string[]; summary: DiffSummary }> {
   await capture("git", ["-C", worktreePath, "add", "-N", "."]);
   const nameOnly = await capture("git", ["-C", worktreePath, "diff", "--name-only", "HEAD"]);
+  const nameStatus = await capture("git", ["-C", worktreePath, "diff", "--name-status", "HEAD"]);
+  const stat = await capture("git", ["-C", worktreePath, "diff", "--stat", "HEAD"]);
+  // `--check` exits non-zero when it finds whitespace errors / conflict markers; that
+  // is informational here, so we keep stdout regardless of exit code.
+  const check = await capture("git", ["-C", worktreePath, "diff", "--check", "HEAD"]);
   const diff = await capture("git", ["-C", worktreePath, "diff", "--binary", "HEAD"]);
   if (diff.code !== 0) {
     throw new DelegationError("diff_failed", (diff.stderr || diff.stdout || "git diff failed").trim());
@@ -1907,6 +2027,11 @@ async function generateDiff(worktreePath: string): Promise<{ diff: string; chang
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean),
+    summary: {
+      nameStatus: nameStatus.stdout.trim(),
+      stat: stat.stdout.trim(),
+      check: check.stdout.trim(),
+    },
   };
 }
 
@@ -2017,9 +2142,10 @@ async function readRunDetails(repoPath: string, id: string): Promise<RunDetails>
 async function writeReport(path: string, result: RunResult): Promise<void> {
   const { run, artifacts, changedFiles, tests, error } = result;
   const outOfTreeChanges = result.outOfTreeChanges ?? [];
-  const testLines = tests.length
-    ? tests.map((test) => `Command: ${test.command}\nStatus: ${test.status}\nExit Code: ${test.exitCode ?? "null"}`).join("\n\n")
-    : "No tests configured.";
+  const formatChecks = (checks: TestResult[]) =>
+    checks.map((c) => `Command: ${c.command}\nStatus: ${c.status}\nExit Code: ${c.exitCode ?? "null"}`).join("\n\n");
+  const testLines = tests.length ? formatChecks(tests) : "No tests configured.";
+  const verifyChecks = result.verify ?? [];
   const warningLines = result.gateWarnings?.length
     ? result.gateWarnings.map((warning) => `- ${warning}`).join("\n")
     : "No gate warnings.";
@@ -2043,14 +2169,24 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
       nextActions = `1. Inspect: \`portico status ${run.id}\``;
     }
   } else if (run.role === "group" && childResults?.length) {
-    nextActions = childResults
-      .map((c) => {
-        const recommended = result.judge?.recommendedChildId === c.run.id ? " (recommended)" : "";
-        return c.run.status === "ready"
-          ? `Apply candidate${recommended}: \`portico apply ${run.id} --child ${c.run.id}\``
-          : `Inspect: \`portico status ${c.run.id}\``;
-      })
-      .join("\n");
+    // Partial/mixed group: separate ready children (apply) from failed ones (resume),
+    // and surface each failure reason so the reviewer doesn't treat the whole group as lost.
+    const ready = childResults.filter((c) => c.run.status === "ready");
+    const failed = childResults.filter((c) => c.run.status === "failed" || c.run.status === "cancelled");
+    const other = childResults.filter((c) => !ready.includes(c) && !failed.includes(c));
+    const lines: string[] = [];
+    for (const c of ready) {
+      const recommended = result.judge?.recommendedChildId === c.run.id ? " (recommended)" : "";
+      const label = c.run.label ? ` [${c.run.label}]` : "";
+      lines.push(`Apply ready${recommended}${label}: \`portico apply ${run.id} --child ${c.run.id}\``);
+    }
+    for (const c of failed) {
+      const label = c.run.label ? ` [${c.run.label}]` : "";
+      const reason = c.error ? ` (${firstLine(c.error)})` : "";
+      lines.push(`Re-run failed${label}${reason}: \`portico delegate --resume ${c.run.id} --task "..."\``);
+    }
+    for (const c of other) lines.push(`Inspect: \`portico status ${c.run.id}\``);
+    nextActions = lines.join("\n");
   } else {
     nextActions = `1. Apply: \`portico apply ${run.id}\``;
   }
@@ -2124,9 +2260,17 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     warningLines,
     "",
+    "## Path Policy",
+    "",
+    formatPathPolicy(result.pathPolicy),
+    "",
     "## Worktree Changes",
     "",
-    changedFiles.length ? changedFiles.map((file, index) => `${index + 1}. ${file}`).join("\n") : "No file changes detected.",
+    result.diffSummary
+      ? formatDiffSummary(result.diffSummary, changedFiles)
+      : changedFiles.length
+        ? changedFiles.map((file, index) => `${index + 1}. ${file}`).join("\n")
+        : "No file changes detected.",
     "",
     "## Out-of-Tree Changes",
     "",
@@ -2138,10 +2282,14 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     telemetryLines,
     "",
-    "## Test Result",
+    "## Code Tests",
     "",
     testLines,
     "",
+    verifyChecks.length ? "## Verify Checks" : undefined,
+    verifyChecks.length ? "" : undefined,
+    verifyChecks.length ? formatChecks(verifyChecks) : undefined,
+    verifyChecks.length ? "" : undefined,
     "## Review",
     "",
     `Decision: ${run.status === "ready" ? "approve" : "needs_attention"}`,
@@ -2169,6 +2317,57 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     .filter((line): line is string => line !== undefined)
     .join("\n");
   await writeFile(path, body);
+}
+
+/** First non-empty line of a (possibly multi-line) message, truncated for inline use. */
+function firstLine(text: string): string {
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? text.trim();
+  return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+}
+
+/** Render the path-policy outcome, including a copy-paste retry when it failed. */
+function formatPathPolicy(policy: PathPolicyResult | undefined): string {
+  if (!policy) return "Not evaluated (no diff produced).";
+  const lines = [`Allowed Policy: ${policy.status}`, `Allowed Paths: ${policy.allowed.length ? policy.allowed.join(", ") : "(none — all repo paths permitted)"}`];
+  if (policy.forbidden.length) lines.push(`Forbidden Hits: ${policy.forbidden.join(", ")}`);
+  if (policy.notAllowed.length) lines.push(`Out-of-Scope Changes: ${policy.notAllowed.join(", ")}`);
+  if (policy.retryAllowed?.length) {
+    lines.push("", `Retry allowing them: ${policy.retryAllowed.map((p) => `--allowed ${p}`).join(" ")}`);
+  }
+  return lines.join("\n");
+}
+
+/** Render grouped `git diff --name-status` + diffstat + whitespace check so the report
+ *  is a single source of truth (no need to re-run git diff by hand). */
+function formatDiffSummary(summary: DiffSummary, changedFiles: string[]): string {
+  if (!summary.nameStatus && !changedFiles.length) return "No file changes detected.";
+  const groups: Record<"Added (new)" | "Modified" | "Deleted" | "Renamed" | "Other", string[]> = {
+    "Added (new)": [],
+    Modified: [],
+    Deleted: [],
+    Renamed: [],
+    Other: [],
+  };
+  for (const line of summary.nameStatus.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    const parts = line.split("\t");
+    const code = parts[0] ?? "";
+    const file = parts[parts.length - 1] ?? "";
+    if (code.startsWith("A")) groups["Added (new)"].push(file);
+    else if (code.startsWith("M")) groups.Modified.push(file);
+    else if (code.startsWith("D")) groups.Deleted.push(file);
+    else if (code.startsWith("R")) groups.Renamed.push(`${parts[1] ?? ""} → ${file}`);
+    else groups.Other.push(`${code} ${file}`);
+  }
+  const sections: string[] = [];
+  for (const [label, files] of Object.entries(groups)) {
+    if (files.length) sections.push(`${label}:\n${files.map((f) => `- ${f}`).join("\n")}`);
+  }
+  // Fall back to the raw changed-files list when name-status was empty but files changed.
+  const changes = sections.length ? sections.join("\n\n") : changedFiles.map((f) => `- ${f}`).join("\n");
+  const blocks = [changes];
+  if (summary.stat) blocks.push(`Diffstat:\n\`\`\`\n${summary.stat}\n\`\`\``);
+  blocks.push(`Whitespace/Conflict Check (\`git diff --check\`):\n${summary.check ? `\`\`\`\n${summary.check}\n\`\`\`` : "clean"}`);
+  return blocks.join("\n\n");
 }
 
 function formatTelemetry(telemetry: RunTelemetry | undefined): string {
