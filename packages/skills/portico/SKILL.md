@@ -65,9 +65,12 @@ yourself, or anything where spinning up a separate agent adds no value.
      --test "npm test" \
      --allowed "src/**" --allowed "tests/**"
    ```
-   Useful flags: repeatable `--test`; repeatable `--allowed`/`--forbidden` (path policy);
-   `--base-ref <ref>`; `--cleanup manual|onNoChanges|onSuccess|always`;
-   `--timeout <ms>`; `--json` for machine-readable events.
+   Useful flags: repeatable `--test`; repeatable `--verify` (checks reported separately from
+   tests — use for doc/policy tasks that have no test command); repeatable
+   `--allowed`/`--forbidden` (path policy); `--base-ref <ref>`;
+   `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>`;
+   `--review-summary` (after the run, print a one-click apply command + risk summary);
+   `--json` for machine-readable events.
 
    For a read-only review:
    ```bash
@@ -91,6 +94,9 @@ yourself, or anything where spinning up a separate agent adds no value.
 5. **Read the result, don't trust the stream alone.** The final `run_done` event carries the
    report path. Read `report.md`, and `result.json` for the structured `changedFiles` and
    `tests`. `portico status <run_id>` re-prints a summary (`--json` for structured fields).
+   For a group (compare/split), `portico review <group_id>` aggregates every child
+   (status, changed files, checks, report/diff paths, per-child next action) and highlights
+   files changed by more than one child — the spots that need careful manual merging.
 
 6. **Summarize for the user:** run id and status, changed files, per-command test result, and
    any risks you see in the diff. A run is `ready` when it produced a diff and tests passed;
@@ -146,6 +152,7 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico delegate --resume <child_id> --task "<refinement>"` — iterate on one child in place.
 - `portico runs [--repo .]` — list runs (folded; `--flat` for the legacy flat list).
 - `portico status <run_id>` — show a run's artifacts, changed files, and tests.
+- `portico review <group_id>` — aggregate a group's children for review (`--ready-only` / `--json` / `--open-diff`).
 - `portico apply <run_id>` — apply a ready single run's patch (only with user approval).
 - `portico apply <group_id> --child <child_id>` — apply one compare candidate.
 - `portico apply <group_id> --all` — apply a split group's merged patch.
@@ -154,7 +161,10 @@ yourself, or anything where spinning up a separate agent adds no value.
 
 ## Troubleshooting
 
-- Connection refused → the daemon isn't running: `portico start`.
+- `daemon not running` → start it: `portico start`. A `permission denied` / sandbox variant
+  means loopback access is blocked, not that the daemon is down.
 - `agent_unavailable` → the target isn't found: check `portico agents`; it may not be installed.
 - Test failed → read `.portico/runs/<run_id>/test.log`, refine the task, re-delegate.
+- `path_not_allowed` → the run changed a file outside `--allowed`; the error and report carry a
+  copy-paste retry that pre-fills the missing `--allowed` flags.
 - `working_tree_dirty` on apply → commit or stash the main tree first, then apply.
