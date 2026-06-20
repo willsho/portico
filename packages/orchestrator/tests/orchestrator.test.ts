@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1253,7 +1254,7 @@ test("compare + judge records a ranking and recommendation; apply stays apply-on
 
     // Report highlights the recommendation; apply --all is rejected for compare.
     assert.match(await readFile(group.artifacts.reportPath, "utf8"), /Recommended:/);
-    await assert.rejects(() => orchestrator.apply(repo, groupId, { all: true }), /only applies to split/);
+    await assert.rejects(() => orchestrator.apply(repo, groupId, { all: true }), /does not apply to compare groups/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -1288,6 +1289,219 @@ test("split + judge vets the merged result and records a verdict", async () => {
     assert.equal(group.result?.judge?.verdict, "approve");
     const judgeDone = events.find((e) => e.type === "judge_done");
     assert.equal(judgeDone?.type === "judge_done" ? judgeDone.verdict : "", "approve");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- Feedback P2/P3: integrate, cleanup, listRuns filters, progress ------------------
+
+test("integrate merges a split group's ready children when fan-in merge was disabled", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+  try {
+    for await (const event of orchestrator.delegate(
+      {
+        to: "codex",
+        repo,
+        task: "two complementary parts",
+        mode: "split",
+        fanIn: { merge: "none" },
+        children: [
+          splitChild("codex", "a", { writes: [{ path: "a.txt", content: "A\n" }] }, ["a.txt"]),
+          splitChild("claude", "b", { writes: [{ path: "b.txt", content: "B\n" }] }, ["b.txt"]),
+        ],
+      },
+      { findEntry: (provider) => agentEntry(provider, SPLIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const groupId = groupIdOf(events);
+    // merge=none: the group is ready but never auto-merged, so apply --all has no patch yet.
+    assert.ok(!events.some((e) => e.type === "merge_done"));
+    await assert.rejects(() => orchestrator.apply(repo, groupId, { all: true }), /integrate/);
+
+    // On-demand integrate merges the ready children and records the apply order.
+    const result = await orchestrator.integrate(repo, groupId);
+    assert.equal(result.status, "ready");
+    assert.equal(result.order.length, 2);
+    assert.ok(result.mergedDiffPath && existsSync(result.mergedDiffPath));
+
+    const applied = await orchestrator.apply(repo, groupId, { all: true });
+    assert.equal(applied.run.status, "applied");
+    assert.match(await readFile(join(repo, "a.txt"), "utf8"), /A/);
+    assert.match(await readFile(join(repo, "b.txt"), "utf8"), /B/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("integrate reports conflicts with source child and a review order", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepoWithShared("ALPHA\nmiddle\nOMEGA\n");
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+  try {
+    for await (const event of orchestrator.delegate(
+      {
+        to: "codex",
+        repo,
+        task: "two overlapping edits",
+        mode: "split",
+        fanIn: { merge: "none" },
+        children: [
+          splitChild("codex", "a", { replaces: [{ path: "shared.txt", find: "middle", replace: "MIDDLE-A" }] }, ["shared.txt"]),
+          splitChild("claude", "b", { replaces: [{ path: "shared.txt", find: "middle", replace: "MIDDLE-B" }] }, ["shared.txt"]),
+        ],
+      },
+      { findEntry: (provider) => agentEntry(provider, SPLIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const groupId = groupIdOf(events);
+    const result = await orchestrator.integrate(repo, groupId);
+    assert.equal(result.status, "conflict");
+    assert.ok((result.conflicts?.length ?? 0) >= 1);
+    assert.ok(result.conflicts?.every((c) => typeof c.child === "string" && c.child.length > 0));
+    assert.equal(result.order.length, 2);
+    // A conflicted integration must not leave an appliable merged patch behind.
+    await assert.rejects(() => orchestrator.apply(repo, groupId, { all: true }), /conflict/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("integrate rejects compare groups", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", compareTargets: ["claude"], repo, task: "build a file", mode: "compare" },
+      { findEntry: (provider) => agentEntry(provider, EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const groupId = groupIdOf(events);
+    await assert.rejects(() => orchestrator.integrate(repo, groupId), /compare group/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("cleanup reclaims failed worktrees, keeps artifacts, and skips ready runs", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", EDIT_AGENT);
+  try {
+    // A ready run (passing test) and a failed run (failing test) in the same repo.
+    const readyEvents: DelegationEvent[] = [];
+    for await (const e of orchestrator.delegate(
+      { to: "codex", repo, task: "create file", testCommands: ["test -f delegated.txt"] },
+      { findEntry: () => entry },
+    )) {
+      readyEvents.push(e);
+    }
+    const readyId = groupIdOf(readyEvents);
+
+    const failedEvents: DelegationEvent[] = [];
+    for await (const e of orchestrator.delegate(
+      { to: "codex", repo, task: "create file", testCommands: ["false"] },
+      { findEntry: () => entry },
+    )) {
+      failedEvents.push(e);
+    }
+    const failedId = groupIdOf(failedEvents);
+
+    const failed = await orchestrator.getRun(repo, failedId);
+    assert.equal(failed.run.status, "failed");
+    assert.ok(existsSync(failed.run.worktreePath));
+
+    // --older-than guards against reclaiming a just-finished run.
+    const noop = await orchestrator.cleanup(repo, { failed: true, olderThanMs: 3_600_000 });
+    assert.equal(noop.cleaned.length, 0);
+
+    // Default cleanup removes the worktree but keeps the artifacts for inspection.
+    const result = await orchestrator.cleanup(repo, { failed: true });
+    assert.equal(result.cleaned.length, 1);
+    assert.equal(result.cleaned[0]?.id, failedId);
+    assert.equal(result.cleaned[0]?.worktreeRemoved, true);
+    assert.equal(result.cleaned[0]?.purged, false);
+    assert.ok(!existsSync(failed.run.worktreePath));
+    assert.ok(existsSync(failed.artifacts.resultPath));
+
+    // The ready run is never touched.
+    const ready = await orchestrator.getRun(repo, readyId);
+    assert.equal(ready.run.status, "ready");
+    assert.ok(existsSync(ready.run.worktreePath));
+
+    // --purge deletes the whole run directory.
+    const purged = await orchestrator.cleanup(repo, { failed: true, purge: true });
+    assert.equal(purged.cleaned.length, 1);
+    assert.ok(!existsSync(dirname(failed.artifacts.resultPath)));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("listRuns filters by status and since", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", EDIT_AGENT);
+  try {
+    for await (const _ of orchestrator.delegate(
+      { to: "codex", repo, task: "ok", testCommands: ["test -f delegated.txt"] },
+      { findEntry: () => entry },
+    )) {
+      // drain
+    }
+    for await (const _ of orchestrator.delegate(
+      { to: "codex", repo, task: "bad", testCommands: ["false"] },
+      { findEntry: () => entry },
+    )) {
+      // drain
+    }
+
+    const failedOnly = await orchestrator.listRuns(repo, { flat: true, status: ["failed"] });
+    assert.ok(failedOnly.length >= 1);
+    assert.ok(failedOnly.every((r) => r.status === "failed"));
+
+    const recent = await orchestrator.listRuns(repo, { flat: true, sinceMs: 60_000 });
+    assert.ok(recent.length >= 2);
+
+    const ancient = await orchestrator.listRuns(repo, { flat: true, sinceMs: 1 });
+    assert.equal(ancient.length, 0);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("getRun attaches progress (phase, inactive, last event) for a finished run", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", EDIT_AGENT);
+  const events: DelegationEvent[] = [];
+  try {
+    for await (const e of orchestrator.delegate(
+      { to: "codex", repo, task: "create file" },
+      { findEntry: () => entry },
+    )) {
+      events.push(e);
+    }
+    const id = groupIdOf(events);
+    const details = await orchestrator.getRun(repo, id);
+    assert.equal(details.progress?.phase, details.run.status);
+    assert.equal(details.progress?.active, false);
+    assert.equal(details.progress?.lastEvent?.type, "run_done");
+    assert.ok(details.progress?.lastEvent?.at);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

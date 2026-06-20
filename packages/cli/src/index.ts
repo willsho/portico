@@ -6,7 +6,16 @@ import { stopCommand } from "./commands/stop.ts";
 import { agentsCommand } from "./commands/agents.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { delegateCommand } from "./commands/delegate.ts";
-import { runsCommand, statusCommand, applyCommand, cancelCommand, discardCommand, logsCommand } from "./commands/runs.ts";
+import {
+  runsCommand,
+  statusCommand,
+  applyCommand,
+  cancelCommand,
+  discardCommand,
+  logsCommand,
+  integrateCommand,
+  cleanupCommand,
+} from "./commands/runs.ts";
 import { reviewCommand } from "./commands/review.ts";
 import { initCommand } from "./commands/init.ts";
 
@@ -22,13 +31,15 @@ Usage:
   portico delegate --to a (--task t | --task-file file) [--test cmd]
   portico delegate --mode review --to a --task t
   portico delegate --mode compare --to a --compare-to b --task t
-  portico runs [--repo .]     List delegation runs
+  portico runs [--repo .]     List delegation runs (--status, --since filters)
   portico status <run_id>     Show a delegation run
   portico review <run_id>     Aggregate a group's children for review
+  portico integrate <grp_id>  Merge a group's ready children into one patch
   portico logs <run_id>       Stream or follow a run's event log
   portico cancel <run_id>     Cancel a delegation run
   portico apply <run_id>      Apply a ready run patch
   portico discard <run_id>    Remove a run worktree and keep artifacts
+  portico cleanup [--failed]  Reclaim finished run worktrees (--purge for artifacts)
   portico doctor [--config p] Diagnose discovery, config, ports and security
 
 start options:
@@ -65,6 +76,8 @@ async function main(): Promise<number> {
       return statusCommand(rest);
     case "review":
       return reviewCommand(rest);
+    case "integrate":
+      return integrateCommand(rest);
     case "logs":
       return logsCommand(rest);
     case "apply":
@@ -73,6 +86,8 @@ async function main(): Promise<number> {
       return cancelCommand(rest);
     case "discard":
       return discardCommand(rest);
+    case "cleanup":
+      return cleanupCommand(rest);
     case "doctor":
       return doctorCommand(rest);
     case undefined:

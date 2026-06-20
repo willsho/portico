@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -6,16 +6,21 @@ import { capture, encodeEvent, runAgent } from "@portico/core";
 import type { AgentEntry, ChatRequest, RuntimeEvent } from "@portico/core";
 import type {
   ChildSpec,
+  CleanupOptions,
   CleanupPolicy,
+  CleanupResult,
   DelegateRequest,
   DelegationEvent,
   DelegationMode,
   DiffSummary,
   FanInPolicy,
+  IntegrateResult,
+  ListRunsOptions,
   OrchestratorOptions,
   PathPolicyResult,
   PermissionProfile,
   OutOfTreeChange,
+  RunProgress,
   RunTelemetry,
   Run,
   RunArtifact,
@@ -61,11 +66,15 @@ export interface DelegationOrchestrator {
     request: DelegateRequest,
     context: { findEntry(provider: string): AgentEntry | undefined },
   ): AsyncIterable<DelegationEvent>;
-  listRuns(repo: string, opts?: { flat?: boolean }): Promise<Run[]>;
+  listRuns(repo: string, opts?: ListRunsOptions): Promise<Run[]>;
   getRun(repo: string, id: string): Promise<RunDetails>;
   readEvents(repo: string, id: string): Promise<DelegationEvent[]>;
   cancel(repo: string, id: string): Promise<RunDetails>;
   apply(repo: string, id: string, opts?: { child?: string; all?: boolean }): Promise<RunDetails>;
+  /** On-demand merge of a group's ready children into an integration worktree. */
+  integrate(repo: string, id: string): Promise<IntegrateResult>;
+  /** Reclaim finished runs: remove worktrees (and, with purge, artifacts). */
+  cleanup(repo: string, opts?: CleanupOptions): Promise<CleanupResult>;
   discard(repo: string, id: string): Promise<RunDetails>;
   resumeChild(repo: string, id: string, task: string, context: { findEntry(provider: string): AgentEntry | undefined }): AsyncIterable<DelegationEvent>;
 }
@@ -130,21 +139,28 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
 
     async listRuns(repo, opts) {
       const repoPath = await resolveRepo(repo);
-      const dir = join(repoPath, ".portico", "runs");
-      if (!existsSync(dir)) return [];
-      const entries = await readdir(dir, { withFileTypes: true });
-      const runs = await Promise.all(
-        entries
-          .filter((entry) => entry.isDirectory())
-          .map(async (entry) => readJson<Run>(join(dir, entry.name, "run.json")).catch(() => undefined)),
-      );
-      const all = runs.filter((run): run is Run => !!run).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      if (opts?.flat) return all;
-      return foldRuns(all);
+      let all = await readAllRuns(repoPath);
+      if (opts?.status?.length) {
+        const wanted = new Set(opts.status);
+        all = all.filter((run) => wanted.has(run.status));
+      }
+      if (opts?.sinceMs !== undefined) {
+        const cutoff = Date.now() - opts.sinceMs;
+        all = all.filter((run) => Date.parse(run.createdAt) >= cutoff);
+      }
+      const annotate = (run: Run) => markActive(run, activeControllers);
+      if (opts?.flat) return all.map(annotate);
+      return foldRuns(all).map((group) => {
+        const children = (group as unknown as Record<string, unknown>)["_children"] as Run[] | undefined;
+        if (children) (group as unknown as Record<string, unknown>)["_children"] = children.map(annotate);
+        return annotate(group);
+      });
     },
 
     async getRun(repo, id) {
-      return readRunDetails(await resolveRepo(repo), id);
+      const repoPath = await resolveRepo(repo);
+      const details = await readRunDetails(repoPath, id);
+      return { ...details, progress: await computeProgress(details, activeControllers) };
     },
 
     async readEvents(repo, id) {
@@ -222,6 +238,14 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
       const run = await updateRun(details.run, { status: "applied", completedAt: new Date().toISOString() });
       await writeJson(details.artifacts.resultPath, { ...details.result, run });
       return readRunDetails(repoPath, id);
+    },
+
+    async integrate(repo, id) {
+      return integrateGroup(await resolveRepo(repo), id, deps);
+    },
+
+    async cleanup(repo, opts) {
+      return cleanupRuns(await resolveRepo(repo), opts ?? {}, deps);
     },
 
     async discard(repo, id) {
@@ -753,6 +777,122 @@ async function* remergeSplitGroupIfNeeded(
   await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome });
 }
 
+/** Ready children of a group, in apply order (createdAt), with a usable diff. */
+async function readyChildrenInOrder(repoPath: string, groupId: string): Promise<Run[]> {
+  let group: Run;
+  try {
+    group = await readJson<Run>(join(repoPath, ".portico", "runs", groupId, "run.json"));
+  } catch {
+    return [];
+  }
+  const ready: Run[] = [];
+  for (const id of group.childRunIds ?? []) {
+    try {
+      const child = await readJson<Run>(join(repoPath, ".portico", "runs", id, "run.json"));
+      const diffPath = artifactPaths(repoPath, id).diffPath as string;
+      if (child.status === "ready" && existsSync(diffPath)) ready.push(child);
+    } catch {
+      // Skip unreadable children.
+    }
+  }
+  return ready.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * On-demand merge of a group's *ready* children into a fresh integration worktree.
+ *
+ * Reuses the split fan-in three-way merge (`mergeSplitChildren`), but unlike the
+ * automatic fan-in it does not require every child to be ready — so a partial group
+ * (some children failed/cancelled, some resumed to ready) can still be combined. Compare
+ * groups are rejected: their children are competing implementations of the same task, so
+ * merging them conflicts by design (review with `portico review`, apply one with --child).
+ */
+async function integrateGroup(repoPath: string, groupId: string, deps: DelegationDeps): Promise<IntegrateResult> {
+  const details = await readRunDetails(repoPath, groupId);
+  if ((details.run.role ?? "single") !== "group") {
+    throw new DelegationError("not_a_group", `Run ${groupId} is not a group run; nothing to integrate.`);
+  }
+  if (details.run.mode === "compare") {
+    throw new DelegationError(
+      "integrate_unsupported",
+      `Group ${groupId} is a compare group — its children are competing implementations of one task and overlap by design. Review with \`portico review ${groupId}\` and apply one with \`portico apply ${groupId} --child <child_id>\`.`,
+    );
+  }
+
+  const ready = await readyChildrenInOrder(repoPath, groupId);
+  if (ready.length === 0) {
+    throw new DelegationError("no_ready_children", `Group ${groupId} has no ready children to integrate.`);
+  }
+
+  const eventsPath = artifactPaths(repoPath, groupId).eventsPath;
+  await recordEvent(eventsPath, { type: "fanin_start", runId: groupId, strategy: "merge" });
+  const outcome = await mergeSplitChildren(repoPath, groupId, deps, details.run.isolation.baseRef, "integration");
+  await recordEvent(eventsPath, {
+    type: "merge_done",
+    runId: groupId,
+    status: outcome.status,
+    ...(outcome.conflicts?.length ? { conflicts: outcome.conflicts.map((c) => c.file) } : {}),
+  });
+
+  const expected = details.run.childRunIds?.length ?? ready.length;
+  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome });
+
+  const order = ready.map((child) => ({ id: child.id, ...(child.label ? { label: child.label } : {}) }));
+  return {
+    details: await readRunDetails(repoPath, groupId),
+    status: outcome.status,
+    order,
+    ...(outcome.conflicts?.length ? { conflicts: outcome.conflicts } : {}),
+    ...(outcome.mergedDiffPath ? { mergedDiffPath: outcome.mergedDiffPath } : {}),
+  };
+}
+
+/** Statuses cleanup must never touch — a clean, applicable, or in-flight run. */
+const CLEANUP_PROTECTED: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  "ready",
+  "applied",
+  "created",
+  "planning",
+  "running",
+  "testing",
+  "reviewing",
+]);
+
+/**
+ * Reclaim finished runs. By default this removes only the worktree and keeps artifacts
+ * (report/diff/events) for post-hoc inspection; `purge` removes the whole run directory.
+ * ready/applied runs and anything still in-flight are always skipped.
+ */
+async function cleanupRuns(repoPath: string, opts: CleanupOptions, deps: DelegationDeps): Promise<CleanupResult> {
+  const all = await readAllRuns(repoPath);
+  const wanted = new Set<RunStatus>(opts.status?.length ? opts.status : ["failed", "cancelled"]);
+  const cutoff = opts.olderThanMs !== undefined ? Date.now() - opts.olderThanMs : undefined;
+
+  const cleaned: CleanupResult["cleaned"] = [];
+  for (const run of all) {
+    if (CLEANUP_PROTECTED.has(run.status)) continue;
+    if (!wanted.has(run.status)) continue;
+    if (isRunActive(run, deps.activeControllers)) continue;
+    if (cutoff !== undefined) {
+      const ts = Date.parse(run.completedAt ?? run.updatedAt ?? run.createdAt);
+      if (Number.isNaN(ts) || ts > cutoff) continue;
+    }
+
+    let worktreeRemoved = false;
+    if (run.worktreePath && existsSync(run.worktreePath)) {
+      await removeWorktree(repoPath, run.worktreePath, deps.worktreeMutex);
+      worktreeRemoved = true;
+    }
+    if (opts.purge) {
+      await rm(join(repoPath, ".portico", "runs", run.id), { recursive: true, force: true });
+    } else if (worktreeRemoved) {
+      await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
+    }
+    cleaned.push({ id: run.id, status: run.status, worktreeRemoved, purged: !!opts.purge });
+  }
+  return { cleaned, skipped: all.length - cleaned.length };
+}
+
 /** Run the judge as a read-only review run over the candidate / merged diffs. */
 async function* runJudgeChild(
   request: DelegateRequest,
@@ -950,27 +1090,36 @@ async function applyChild(repoPath: string, groupId: string, childId: string): P
   return readRunDetails(repoPath, childId);
 }
 
-/** Apply a split group's merged patch (apply-all): lands every child's contribution. */
+/** Apply a group's merged patch (apply-all): lands every ready child's contribution.
+ *  Works for split groups (auto-merged at fan-in) and any group merged on demand via
+ *  `portico integrate`. Compare groups are rejected — pick one candidate with --child. */
 async function applyGroupMerged(repoPath: string, groupId: string): Promise<RunDetails> {
   const group = await readRunDetails(repoPath, groupId);
-  if (group.run.mode !== "split") {
+  if (group.run.mode === "compare") {
     throw new DelegationError(
       "invalid_mode",
-      `apply --all only applies to split groups; group ${groupId} is ${group.run.mode}. Use --child to apply one candidate.`,
+      `apply --all does not apply to compare groups; group ${groupId}'s children are competing implementations. Use --child to apply one candidate.`,
     );
   }
-  if (group.run.status === "conflict") {
+  const mergeReady = group.result?.merge?.status === "ready";
+  if (group.run.status === "conflict" || group.result?.merge?.status === "conflict") {
     throw new DelegationError(
       "merge_conflict",
-      `Split group ${groupId} has unresolved merge conflicts. Resolve them (resume a child to shrink its changes, then re-merge) before apply --all.`,
+      `Group ${groupId} has unresolved merge conflicts. Resolve them (resume a child to shrink its changes, then re-run \`portico integrate ${groupId}\`) before apply --all.`,
     );
   }
-  if (group.run.status !== "ready") {
-    throw new DelegationError("invalid_status", `Split group ${groupId} is ${group.run.status}, not ready.`);
+  if (group.run.status !== "ready" && !mergeReady) {
+    throw new DelegationError(
+      "invalid_status",
+      `Group ${groupId} is ${group.run.status} and has no merged patch. Run \`portico integrate ${groupId}\` to merge its ready children first.`,
+    );
   }
   const diffPath = group.artifacts.diffPath;
   if (!diffPath || !existsSync(diffPath)) {
-    throw new DelegationError("missing_diff", `Split group ${groupId} does not have a merged diff.patch artifact.`);
+    throw new DelegationError(
+      "missing_diff",
+      `Group ${groupId} does not have a merged diff.patch artifact. Run \`portico integrate ${groupId}\` first.`,
+    );
   }
 
   await assertTrackedTreeClean(repoPath);
@@ -1205,6 +1354,61 @@ async function* resumeChildDelegation(
 }
 
 // ---- Run helpers (shared) -----------------------------------------------------------
+
+/** Read and date-sort every persisted run.json under .portico/runs. */
+async function readAllRuns(repoPath: string): Promise<Run[]> {
+  const dir = join(repoPath, ".portico", "runs");
+  if (!existsSync(dir)) return [];
+  const entries = await readdir(dir, { withFileTypes: true });
+  const runs = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readJson<Run>(join(dir, entry.name, "run.json")).catch(() => undefined)),
+  );
+  return runs.filter((run): run is Run => !!run).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+const ACTIVE_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  "created",
+  "planning",
+  "running",
+  "testing",
+  "reviewing",
+]);
+
+/** True when a run has a live agent controller (or, for a group, any child does). */
+function isRunActive(run: Run, controllers: Map<string, AbortController>): boolean {
+  if (controllers.has(run.id)) return true;
+  return (run.childRunIds ?? []).some((childId) => controllers.has(childId));
+}
+
+/** Attach a transient `_active` flag (parallels foldRuns' `_children`) for the runs listing. */
+function markActive(run: Run, controllers: Map<string, AbortController>): Run {
+  (run as unknown as Record<string, unknown>)["_active"] = isRunActive(run, controllers);
+  return run;
+}
+
+/** Compute live progress (phase, active, last event) for a single run details record. */
+async function computeProgress(
+  details: RunDetails,
+  controllers: Map<string, AbortController>,
+): Promise<RunProgress> {
+  const { run, artifacts } = details;
+  const active = isRunActive(run, controllers) || ACTIVE_STATUSES.has(run.status);
+  let lastEvent: RunProgress["lastEvent"];
+  try {
+    const text = await readFile(artifacts.eventsPath, "utf8");
+    const last = text.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+    if (last) {
+      const parsed = JSON.parse(last) as DelegationEvent;
+      const at = (await stat(artifacts.eventsPath)).mtime.toISOString();
+      lastEvent = { type: parsed.type, at };
+    }
+  } catch {
+    // No event log yet (or unreadable) — omit lastEvent.
+  }
+  return { phase: run.status, active, ...(lastEvent ? { lastEvent } : {}) };
+}
 
 function foldRuns(runs: Run[]): Run[] {
   const groupMap = new Map<string, Run>();

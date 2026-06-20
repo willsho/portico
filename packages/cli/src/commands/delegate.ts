@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
   authHeaders,
+  autoStartDaemon,
   daemonUrl,
   DaemonUnreachableError,
   fetchWithRetry,
@@ -9,7 +10,8 @@ import {
   readDelegationStream,
   requestJson,
 } from "./http.ts";
-import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus } from "@portico/orchestrator";
+import { logsCommand } from "./runs.ts";
+import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
 
 export async function delegateCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -39,6 +41,10 @@ export async function delegateCommand(args: string[]): Promise<number> {
       timeout: { type: "string" },
       json: { type: "boolean" },
       "review-summary": { type: "boolean" },
+      "apply-on-ready": { type: "boolean" },
+      "auto-start": { type: "boolean" },
+      detach: { type: "boolean" },
+      follow: { type: "string" },
       url: { type: "string" },
       token: { type: "string" },
     },
@@ -71,10 +77,24 @@ Options:
   --timeout <ms>           Timeout in milliseconds
   --json                   Output JSON format
   --review-summary         After the run, print a one-click apply command + risk summary
+  --apply-on-ready         Auto-apply a ready single run when all safety guards pass (opt-in)
+  --auto-start             If the loopback daemon isn't running, start it and retry once
+  --detach                 Exit as soon as the run starts, printing its id (run continues)
+  --follow <run_id>        Re-attach to a run's event log (same as logs --follow)
   --url <url>              Daemon URL
   --token <token>          Auth token
   -h, --help               Show this help message`);
     return 0;
+  }
+
+  // Re-attach to an already-running (e.g. detached) run's event log.
+  if (values.follow) {
+    const followArgs = ["--follow", values.follow];
+    if (values.repo) followArgs.push("--repo", values.repo);
+    if (values.url) followArgs.push("--url", values.url);
+    if (values.token) followArgs.push("--token", values.token);
+    if (values.json) followArgs.push("--json");
+    return logsCommand(followArgs);
   }
 
   const task = readTask(values.task, values["task-file"]);
@@ -85,19 +105,21 @@ Options:
 
   // Resume mode: resume a child run with a new task.
   if (values.resume) {
-    const url = `${daemonUrl(values.url)}/runs/${encodeURIComponent(values.resume)}/resume`;
-    let res: Response;
-    try {
-      res = await fetchWithRetry(url, {
+    const base = daemonUrl(values.url);
+    const url = `${base}/runs/${encodeURIComponent(values.resume)}/resume`;
+    const res = await postDelegationStream(
+      url,
+      {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(values.token) },
         body: JSON.stringify({ task: task.value }),
-      });
-    } catch (err) {
-      printDaemonError(err, url);
-      return 1;
-    }
-    return (await consumeRunStream(res, values.json ?? false)).code;
+      },
+      base,
+      values["auto-start"] ?? false,
+      values.token,
+    );
+    if (!res) return 1;
+    return (await consumeRunStream(res, values.json ?? false, values.detach ?? false)).code;
   }
 
   // Children: parse JSON specs from repeated --child flags.
@@ -150,24 +172,116 @@ Options:
     depth: Number(process.env["PORTICO_DELEGATION_DEPTH"] ?? "0"),
   };
 
-  const url = `${daemonUrl(values.url)}/delegate`;
-  let res: Response;
-  try {
-    res = await fetchWithRetry(url, {
+  const base = daemonUrl(values.url);
+  const url = `${base}/delegate`;
+  const res = await postDelegationStream(
+    url,
+    {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders(values.token) },
       body: JSON.stringify(request),
-    });
-  } catch (err) {
-    printDaemonError(err, url);
-    return 1;
-  }
+    },
+    base,
+    values["auto-start"] ?? false,
+    values.token,
+  );
+  if (!res) return 1;
 
-  const outcome = await consumeRunStream(res, values.json ?? false);
-  if (values["review-summary"] && outcome.runId) {
+  const outcome = await consumeRunStream(res, values.json ?? false, values.detach ?? false);
+  if (outcome.detached) return outcome.code;
+  if (values["apply-on-ready"] && outcome.runId) {
+    await maybeApplyOnReady(outcome, request, values.repo ?? process.cwd(), values.url, values.token);
+  } else if (values["review-summary"] && outcome.runId) {
     await printReviewSummary(outcome.runId, values.repo ?? process.cwd(), values.url, values.token);
   }
   return outcome.code;
+}
+
+/**
+ * POST a delegation request, with optional auto-start: if the initial request fails to
+ * reach the daemon and `--auto-start` is set, start a loopback daemon and retry once.
+ * Returns null (after printing a diagnosis) when the daemon stays unreachable.
+ */
+async function postDelegationStream(
+  endpoint: string,
+  init: RequestInit,
+  base: string,
+  autoStart: boolean,
+  token?: string,
+): Promise<Response | null> {
+  try {
+    return await fetchWithRetry(endpoint, init);
+  } catch (err) {
+    if (autoStart && (await autoStartDaemon(base, token))) {
+      try {
+        return await fetchWithRetry(endpoint, init);
+      } catch (retryErr) {
+        printDaemonError(retryErr, endpoint);
+        return null;
+      }
+    }
+    printDaemonError(err, endpoint);
+    return null;
+  }
+}
+
+/**
+ * `--apply-on-ready` gate (opt-in): auto-apply a *single* ready run only when every safety
+ * guard holds — an explicit `--allowed` boundary, path policy passed, no sandbox escape, and
+ * all tests + verify checks green. Apply itself enforces the clean-tracked-tree guard. When a
+ * guard is unmet we never apply; we print the unmet items and the review summary instead.
+ */
+async function maybeApplyOnReady(
+  outcome: StreamOutcome,
+  request: DelegateRequest,
+  repo: string,
+  url?: string,
+  token?: string,
+): Promise<void> {
+  const runId = outcome.runId as string;
+  const target = `${daemonUrl(url)}/runs/${encodeURIComponent(runId)}?repo=${encodeURIComponent(repo)}`;
+  let details: RunDetails;
+  try {
+    details = await requestJson<RunDetails>(target, {}, token);
+  } catch (err) {
+    if (err instanceof DaemonUnreachableError) return;
+    throw err;
+  }
+
+  const { run, result } = details;
+  console.log("\n── apply-on-ready ──────────────────────────────");
+  if ((run.role ?? "single") === "group") {
+    console.log("group runs aren't auto-applied; review children first.");
+    await printReviewSummary(runId, repo, url, token);
+    return;
+  }
+
+  const unmet: string[] = [];
+  if (!request.allowedPaths?.length) unmet.push("no --allowed path boundary (required for auto-apply)");
+  if (run.status !== "ready") unmet.push(`run is ${run.status}, not ready`);
+  if (result?.pathPolicy && result.pathPolicy.status !== "passed") unmet.push("path policy failed");
+  if (result?.sandboxEscaped) unmet.push("sandbox escape detected");
+  const failed = (checks: TestResult[] | undefined) => (checks ?? []).some((c) => c.status === "failed");
+  if (failed(result?.tests)) unmet.push("one or more tests failed");
+  if (failed(result?.verify)) unmet.push("one or more verify checks failed");
+  for (const w of result?.gateWarnings ?? []) unmet.push(`gate warning: ${w}`);
+
+  if (unmet.length) {
+    console.log("not auto-applying — unmet guards:");
+    for (const item of unmet) console.log(`  - ${item}`);
+    await printReviewSummary(runId, repo, url, token);
+    return;
+  }
+
+  const applyUrl = `${daemonUrl(url)}/runs/${encodeURIComponent(runId)}/apply?repo=${encodeURIComponent(repo)}`;
+  try {
+    const applied = await requestJson<RunDetails>(applyUrl, { method: "POST" }, token);
+    console.log(`all guards passed — auto-applied: ${applied.run.id} (${applied.run.status})`);
+  } catch (err) {
+    if (err instanceof DaemonUnreachableError) return;
+    console.log(`auto-apply failed: ${err instanceof Error ? err.message : String(err)}`);
+    await printReviewSummary(runId, repo, url, token);
+  }
 }
 
 /**
@@ -225,13 +339,16 @@ interface StreamOutcome {
   code: number;
   runId?: string;
   status?: RunStatus;
+  /** True when --detach returned early; the run continues on the daemon. */
+  detached?: boolean;
 }
 
-async function consumeRunStream(res: Response, json: boolean): Promise<StreamOutcome> {
+async function consumeRunStream(res: Response, json: boolean, detach = false): Promise<StreamOutcome> {
   let last: DelegationEvent | undefined;
   let runId: string | undefined;
   let status: RunStatus | undefined;
   let finished = false;
+  let detached = false;
 
   const trackingHint = () => {
     if (!runId || finished) return;
@@ -256,6 +373,13 @@ async function consumeRunStream(res: Response, json: boolean): Promise<StreamOut
       }
       if (json) console.log(JSON.stringify(event));
       else printEvent(event);
+      // --detach: leave as soon as the run is registered. handleDelegate does not abort on
+      // client disconnect, so the run keeps executing on the daemon.
+      if (detach && runId && event.type === "run_start") {
+        detached = true;
+        console.log(`[${runId}] detached — track it: portico logs ${runId} --follow | portico status ${runId}`);
+        break;
+      }
     }
   } catch (err) {
     console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
@@ -263,8 +387,10 @@ async function consumeRunStream(res: Response, json: boolean): Promise<StreamOut
     return { code: 1, runId, status };
   } finally {
     process.removeListener("SIGINT", onSigint);
+    if (detached) await res.body?.cancel().catch(() => {});
   }
 
+  if (detached) return { code: 0, runId, status, detached: true };
   // Stream ended cleanly but without a terminal event — the run outlived the client.
   if (!finished) trackingHint();
   return { code: last?.type === "run_error" ? 1 : 0, runId, status };

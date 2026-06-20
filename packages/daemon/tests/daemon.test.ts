@@ -191,6 +191,59 @@ test("CORS allows localhost and rejects unlisted origins", async () => {
   assert.equal(blocked.status, 403);
 });
 
+test("GET /runs filters by status; GET /runs/:id includes progress; POST /cleanup reclaims", async () => {
+  const repo = await createRepo();
+  const d = createDaemon({
+    config: { port: 0, reloadIntervalMs: 0 },
+    env: { ...process.env, PORTICO_CODEX_PATH: EDIT_AGENT },
+    logger: () => {},
+  });
+  const info = await d.start();
+  try {
+    // One ready run, one failed run.
+    await fetch(`${info.url}/delegate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: "codex", repo, task: "create file", testCommands: ["test -f delegated.txt"] }),
+    }).then((r) => r.text());
+    const failedText = await fetch(`${info.url}/delegate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: "codex", repo, task: "create file", testCommands: ["false"] }),
+    }).then((r) => r.text());
+    const failedDone = parseDelegationNdjson(failedText).at(-1);
+    const failedId = failedDone?.type === "run_done" ? failedDone.runId : "";
+
+    // Status filter returns only failed runs.
+    const filtered = (await (
+      await fetch(`${info.url}/runs?repo=${encodeURIComponent(repo)}&flat=true&status=failed`)
+    ).json()) as { runs: { status: string }[] };
+    assert.ok(filtered.runs.length >= 1);
+    assert.ok(filtered.runs.every((r) => r.status === "failed"));
+
+    // getRun carries live progress.
+    const details = (await (
+      await fetch(`${info.url}/runs/${failedId}?repo=${encodeURIComponent(repo)}`)
+    ).json()) as RunDetails & { progress?: { phase: string; active: boolean; lastEvent?: { type: string } } };
+    assert.equal(details.progress?.phase, "failed");
+    assert.equal(details.progress?.active, false);
+
+    // Cleanup reclaims the failed run's worktree, keeps it skipping the ready one.
+    const cleaned = (await (
+      await fetch(`${info.url}/cleanup?repo=${encodeURIComponent(repo)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ failed: true }),
+      })
+    ).json()) as { cleaned: { id: string }[]; skipped: number };
+    assert.equal(cleaned.cleaned.length, 1);
+    assert.equal(cleaned.cleaned[0]?.id, failedId);
+  } finally {
+    await d.stop();
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 async function createRepo(): Promise<string> {
   const repo = await mkdtemp(join(tmpdir(), "portico-daemon-delegate-"));
   await git(repo, "init");

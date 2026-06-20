@@ -70,7 +70,16 @@ yourself, or anything where spinning up a separate agent adds no value.
    `--allowed`/`--forbidden` (path policy); `--base-ref <ref>`;
    `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>`;
    `--review-summary` (after the run, print a one-click apply command + risk summary);
+   `--auto-start` (start a loopback daemon and retry once if it isn't running);
+   `--detach` (exit as soon as the run registers, printing its id; the run keeps going on the
+   daemon — re-attach later with `portico delegate --follow <run_id>` or `portico logs <run_id> --follow`);
    `--json` for machine-readable events.
+
+   `--apply-on-ready` is an explicit opt-in that auto-applies a **single** ready run only when
+   every safety guard holds — you passed `--allowed` (a path boundary), the tracked tree is
+   clean, path policy passed, no sandbox escape, and all tests + verify checks are green. If
+   any guard is unmet it does **not** apply; it prints the unmet items and the review summary.
+   Still requires the user's go-ahead to use; never add it on your own initiative.
 
    For a read-only review:
    ```bash
@@ -128,6 +137,11 @@ yourself, or anything where spinning up a separate agent adds no value.
   merges the children's patches; apply the merged result with `portico apply <group_id> --all`.
   Overlapping edits produce a `conflict` group (never force-merged) — narrow one child with
   `--resume` and Portico re-merges automatically.
+- For a `partial` split group (some children ready, some failed), `portico integrate <group_id>`
+  merges just the **ready** children on demand into one patch you can `apply --all`. On a
+  conflict it lists the conflicting files, their source child, and a suggested review order;
+  narrow a child with `--resume` and run `integrate` again. Compare groups are not integrated —
+  their children are competing implementations, so you pick one with `apply --child`.
 - An optional `--judge-to <agent>` adds a read-only judge: it ranks compare candidates or
   vets a split merge, but never changes apply semantics — you and the user still decide.
 - Don't chain delegations: if you are yourself a delegate running inside a Portico worktree,
@@ -150,19 +164,29 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" [--judge-to <agent>]` — run candidate implementations for comparison.
 - `portico delegate --mode split --to <agent> --repo . --task "<task>" --child '{…,"task":"…"}' --child '{…}'` — split into complementary sub-tasks and merge.
 - `portico delegate --resume <child_id> --task "<refinement>"` — iterate on one child in place.
-- `portico runs [--repo .]` — list runs (folded; `--flat` for the legacy flat list).
-- `portico status <run_id>` — show a run's artifacts, changed files, and tests.
+- `portico delegate --follow <run_id>` — re-attach to a run's event log (e.g. after `--detach`).
+- `portico runs [--repo .]` — list runs (folded; `--flat` for the legacy flat list). Filter with
+  `--status <s1,s2>` and `--since <dur>` (e.g. `30m`, `2h`, `1d`); active runs are tagged `[active]`.
+- `portico status <run_id>` — show a run's artifacts, changed files, tests, and live progress
+  (current phase, whether an agent is still running, last event).
 - `portico review <group_id>` — aggregate a group's children for review (`--ready-only` / `--json` / `--open-diff`).
+- `portico integrate <group_id>` — merge an implement/split group's ready children into one patch (not for compare groups).
 - `portico apply <run_id>` — apply a ready single run's patch (only with user approval).
 - `portico apply <group_id> --child <child_id>` — apply one compare candidate.
-- `portico apply <group_id> --all` — apply a split group's merged patch.
+- `portico apply <group_id> --all` — apply a split/integrated group's merged patch.
 - `portico discard <run_id>` — remove a run's worktree (artifacts kept).
 - `portico cancel <run_id>` — cancel an in-flight run.
+- `portico cleanup [--failed] [--older-than <dur>] [--purge]` — reclaim finished run worktrees
+  (default keeps artifacts; `--purge` removes them too). Never touches ready/applied or in-flight runs.
 
 ## Troubleshooting
 
-- `daemon not running` → start it: `portico start`. A `permission denied` / sandbox variant
-  means loopback access is blocked, not that the daemon is down.
+- `daemon not running` → start it: `portico start`, or pass `--auto-start` to `portico delegate`
+  to have it start a loopback daemon and retry once. A `permission denied` / sandbox variant
+  means loopback access is blocked, not that the daemon is down. If `portico start` warns that
+  the pidfile or `.portico`/`.git` dirs aren't writable, a sandbox is blocking writes — grant
+  write access or run outside the sandbox (the daemon may still be usable, but `stop`/discovery
+  and delegations will be limited).
 - `agent_unavailable` → the target isn't found: check `portico agents`; it may not be installed.
 - Test failed → read `.portico/runs/<run_id>/test.log`, refine the task, re-delegate.
 - `path_not_allowed` → the run changed a file outside `--allowed`; the error and report carry a

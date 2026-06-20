@@ -324,9 +324,20 @@ Lists delegation runs for a repository. By default returns a folded view
 ```bash
 curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)"
 curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)&flat=true"
+curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)&status=failed,cancelled"
+curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)&since=7200000"
 ```
 
-Response:
+Query parameters:
+
+| Param | Meaning |
+| --- | --- |
+| `repo` | Repository path (default: daemon cwd) |
+| `flat` | `true` for the flat listing (no group folding) |
+| `status` | Comma-separated status allow-list (server-side filter) |
+| `since` | Only runs created within the last N **milliseconds** |
+
+Response (runs with a live agent carry a transient `_active: true`):
 
 ```json
 {
@@ -350,6 +361,12 @@ interface RunDetails {
   run: Run;
   artifacts: RunArtifact;
   result?: RunResult;
+  // Live progress computed at query time (not persisted).
+  progress?: {
+    phase: RunStatus;            // mirrors run.status
+    active: boolean;             // a live agent controller exists (group: any child)
+    lastEvent?: { type: string; at: string };
+  };
 }
 ```
 
@@ -457,7 +474,34 @@ curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/apply?repo=$(pwd)" \
 ```
 
 A single run must be `implement`. A compare group apply without `child` returns an error; an
-`all` apply against a non-split group, or a split group still in `conflict`, is refused.
+`all` apply against a compare group, or a group still in `conflict` / without a merged patch,
+is refused (run `integrate` first for non-split groups).
+
+## `POST /runs/:id/integrate?repo=<path>`
+
+Merges a group's **ready** children into one patch on demand (implement/split groups; compare
+groups are rejected). Reuses the split three-way merge into a fresh integration worktree, and
+does not require every child to be ready — so a `partial` group can be combined.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/integrate?repo=$(pwd)"
+```
+
+Response (`IntegrateResult`):
+
+```ts
+interface IntegrateResult {
+  details: RunDetails;
+  status: "ready" | "conflict";
+  order: Array<{ id: string; label?: string }>;   // children merged, in apply order
+  conflicts?: Array<{ file: string; child: string }>;  // only on conflict
+  mergedDiffPath?: string;                         // only on a clean merge
+}
+```
+
+On `ready`, apply with `POST /runs/:id/apply` + `{ "all": true }`. On `conflict`, no merged
+patch is produced; narrow a child via `resume` and integrate again. Errors: `not_a_group`,
+`integrate_unsupported` (compare group), `no_ready_children`.
 
 ## `POST /runs/:id/discard?repo=<path>`
 
@@ -490,6 +534,37 @@ curl -N "http://127.0.0.1:8787/runs/<child_id>/resume?repo=$(pwd)" \
 Streams `DelegationEvent` NDJSON. Regenerates the diff, re-runs tests, refreshes
 `report.md` / `result.json`, and recomputes the parent group's status. For a split group it
 also re-runs the fan-in merge, so narrowing a child can clear a prior `conflict`.
+
+## `POST /cleanup?repo=<path>`
+
+Reclaims finished runs. By default removes only the worktree and keeps artifacts; ready /
+applied and in-flight runs are never touched.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8787/cleanup?repo=$(pwd)" \
+  -H 'Content-Type: application/json' \
+  -d '{"failed": true, "olderThanMs": 604800000, "purge": false}'
+```
+
+Request body (all optional):
+
+```ts
+interface CleanupBody {
+  failed?: boolean;        // target failed + cancelled (default when no status given)
+  status?: RunStatus[];    // explicit allow-list; overrides failed
+  olderThanMs?: number;    // only runs finished more than this many ms ago
+  purge?: boolean;         // also delete artifacts, not just the worktree
+}
+```
+
+Response (`CleanupResult`):
+
+```ts
+interface CleanupResult {
+  cleaned: Array<{ id: string; status: RunStatus; worktreeRemoved: boolean; purged: boolean }>;
+  skipped: number;         // runs examined but left untouched
+}
+```
 
 ## CORS
 
