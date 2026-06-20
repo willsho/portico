@@ -1040,6 +1040,7 @@ async function* resumeChildDelegation(
   deps.activeControllers.set(childId, controller);
   let agentEvents: RuntimeEvent[] = [];
   let tests: TestResult[] = [];
+  let verify: TestResult[] = [];
   let changedFiles: string[] = [];
   let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
@@ -1111,9 +1112,26 @@ async function* resumeChildDelegation(
           exitCode: result.exitCode,
         });
       }
+      for (const command of request.verifyCommands ?? []) {
+        yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
+        const result = await runTestCommand(workDir, command, request.timeoutMs);
+        verify.push(result);
+        testDurationMs += result.durationMs ?? 0;
+        await appendFile(
+          details.artifacts.testLogPath as string,
+          `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
+        );
+        yield await recordEvent(details.artifacts.eventsPath, {
+          type: "test_done",
+          runId: childId,
+          command,
+          status: result.status,
+          exitCode: result.exitCode,
+        });
+      }
     }
 
-    const failedTest = tests.find((test) => test.status === "failed");
+    const failedTest = [...tests, ...verify].find((check) => check.status === "failed");
     const newStatus = failedTest ? "failed" : "ready";
     const updatedRun = await updateRun(details.run, {
       status: newStatus,
@@ -1131,6 +1149,7 @@ async function* resumeChildDelegation(
       request,
       deps.defaultForbidden,
       diffSummary,
+      verify,
     );
     await writeJson(details.artifacts.resultPath, result);
     await writeReport(details.artifacts.reportPath, result);
@@ -1171,6 +1190,7 @@ async function* resumeChildDelegation(
       request,
       deps.defaultForbidden,
       diffSummary,
+      verify,
     );
     await writeJson(details.artifacts.resultPath, result);
     await writeReport(details.artifacts.reportPath, result);
@@ -1247,6 +1267,7 @@ async function* runSingleDelegation(
   let outOfTreeChanges: OutOfTreeChange[] = [];
   let agentEvents: RuntimeEvent[] = [];
   let tests: TestResult[] = [];
+  let verify: TestResult[] = [];
   let changedFiles: string[] = [];
   let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
@@ -1409,10 +1430,27 @@ async function* runSingleDelegation(
         exitCode: result.exitCode,
       });
     }
+    for (const command of request.verifyCommands ?? []) {
+      yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
+      const result = await runTestCommand(workDir, command, request.timeoutMs);
+      verify.push(result);
+      testDurationMs += result.durationMs ?? 0;
+      await appendFile(
+        artifacts.testLogPath as string,
+        `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
+      );
+      yield await recordEvent(artifacts.eventsPath, {
+        type: "test_done",
+        runId: run.id,
+        command,
+        status: result.status,
+        exitCode: result.exitCode,
+      });
+    }
 
-    const failedTest = tests.find((test) => test.status === "failed");
+    const failedCheck = [...tests, ...verify].find((check) => check.status === "failed");
     run = await updateRun(run, {
-      status: failedTest || outOfTreeChanges.length ? "failed" : "ready",
+      status: failedCheck || outOfTreeChanges.length ? "failed" : "ready",
       completedAt: new Date().toISOString(),
     });
     if (worktreeCreated && shouldCleanupWorktree(isolation.cleanup, run.status, changedFiles)) {
@@ -1430,6 +1468,7 @@ async function* runSingleDelegation(
       request,
       deps.defaultForbidden,
       diffSummary,
+      verify,
     );
     await writeJson(artifacts.resultPath, result);
     await writeReport(artifacts.reportPath, result);
@@ -1470,6 +1509,7 @@ async function* runSingleDelegation(
         request,
         deps.defaultForbidden,
         diffSummary,
+        verify,
       );
       await writeJson(artifacts.resultPath, result);
       await writeReport(artifacts.reportPath, result);
@@ -1534,9 +1574,11 @@ function attachReviewArtifacts(
   request: DelegateRequest,
   defaultForbidden: string[],
   diffSummary: DiffSummary | undefined,
+  verify: TestResult[],
 ): RunResult {
   result.pathPolicy = evaluatePathPolicy(changedFiles, request, defaultForbidden);
   if (diffSummary) result.diffSummary = diffSummary;
+  if (verify.length) result.verify = verify;
   return result;
 }
 
@@ -2100,9 +2142,10 @@ async function readRunDetails(repoPath: string, id: string): Promise<RunDetails>
 async function writeReport(path: string, result: RunResult): Promise<void> {
   const { run, artifacts, changedFiles, tests, error } = result;
   const outOfTreeChanges = result.outOfTreeChanges ?? [];
-  const testLines = tests.length
-    ? tests.map((test) => `Command: ${test.command}\nStatus: ${test.status}\nExit Code: ${test.exitCode ?? "null"}`).join("\n\n")
-    : "No tests configured.";
+  const formatChecks = (checks: TestResult[]) =>
+    checks.map((c) => `Command: ${c.command}\nStatus: ${c.status}\nExit Code: ${c.exitCode ?? "null"}`).join("\n\n");
+  const testLines = tests.length ? formatChecks(tests) : "No tests configured.";
+  const verifyChecks = result.verify ?? [];
   const warningLines = result.gateWarnings?.length
     ? result.gateWarnings.map((warning) => `- ${warning}`).join("\n")
     : "No gate warnings.";
@@ -2126,14 +2169,24 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
       nextActions = `1. Inspect: \`portico status ${run.id}\``;
     }
   } else if (run.role === "group" && childResults?.length) {
-    nextActions = childResults
-      .map((c) => {
-        const recommended = result.judge?.recommendedChildId === c.run.id ? " (recommended)" : "";
-        return c.run.status === "ready"
-          ? `Apply candidate${recommended}: \`portico apply ${run.id} --child ${c.run.id}\``
-          : `Inspect: \`portico status ${c.run.id}\``;
-      })
-      .join("\n");
+    // Partial/mixed group: separate ready children (apply) from failed ones (resume),
+    // and surface each failure reason so the reviewer doesn't treat the whole group as lost.
+    const ready = childResults.filter((c) => c.run.status === "ready");
+    const failed = childResults.filter((c) => c.run.status === "failed" || c.run.status === "cancelled");
+    const other = childResults.filter((c) => !ready.includes(c) && !failed.includes(c));
+    const lines: string[] = [];
+    for (const c of ready) {
+      const recommended = result.judge?.recommendedChildId === c.run.id ? " (recommended)" : "";
+      const label = c.run.label ? ` [${c.run.label}]` : "";
+      lines.push(`Apply ready${recommended}${label}: \`portico apply ${run.id} --child ${c.run.id}\``);
+    }
+    for (const c of failed) {
+      const label = c.run.label ? ` [${c.run.label}]` : "";
+      const reason = c.error ? ` (${firstLine(c.error)})` : "";
+      lines.push(`Re-run failed${label}${reason}: \`portico delegate --resume ${c.run.id} --task "..."\``);
+    }
+    for (const c of other) lines.push(`Inspect: \`portico status ${c.run.id}\``);
+    nextActions = lines.join("\n");
   } else {
     nextActions = `1. Apply: \`portico apply ${run.id}\``;
   }
@@ -2229,10 +2282,14 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     telemetryLines,
     "",
-    "## Test Result",
+    "## Code Tests",
     "",
     testLines,
     "",
+    verifyChecks.length ? "## Verify Checks" : undefined,
+    verifyChecks.length ? "" : undefined,
+    verifyChecks.length ? formatChecks(verifyChecks) : undefined,
+    verifyChecks.length ? "" : undefined,
     "## Review",
     "",
     `Decision: ${run.status === "ready" ? "approve" : "needs_attention"}`,
@@ -2260,6 +2317,12 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     .filter((line): line is string => line !== undefined)
     .join("\n");
   await writeFile(path, body);
+}
+
+/** First non-empty line of a (possibly multi-line) message, truncated for inline use. */
+function firstLine(text: string): string {
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? text.trim();
+  return line.length > 120 ? `${line.slice(0, 117)}...` : line;
 }
 
 /** Render the path-policy outcome, including a copy-paste retry when it failed. */

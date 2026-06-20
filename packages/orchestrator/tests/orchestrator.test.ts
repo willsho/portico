@@ -536,6 +536,10 @@ test("aggregate status: mixed ready and failed → group partial", async () => {
     assert.equal(group.result!.groupSummary!.total, 2);
     assert.equal(group.result!.groupSummary!.ready, 1);
     assert.equal(group.result!.groupSummary!.failed, 1);
+    // Partial group report gives concrete next actions: apply the ready child, resume the failed one.
+    const report = await readFile(group.artifacts.reportPath, "utf8");
+    assert.match(report, /Apply ready.*--child/);
+    assert.match(report, /Re-run failed.*--resume/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -571,6 +575,63 @@ test("path policy failure records out-of-scope paths and a copy-paste retry", as
     const report = await readFile(details.artifacts.reportPath, "utf8");
     assert.match(report, /Allowed Policy: failed/);
     assert.match(report, /Retry allowing them: --allowed delegated\.txt/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("--verify checks run separately from tests and report under Verify Checks", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      {
+        to: "codex",
+        repo,
+        task: "create delegated file",
+        testCommands: ["test -f delegated.txt"],
+        verifyCommands: ["test -f delegated.txt", "grep -q edit-agent delegated.txt"],
+      },
+      { findEntry: () => agentEntry("codex", EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const done = events.at(-1);
+    assert.equal(done?.type === "run_done" ? done.status : "", "ready");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.result?.verify?.length, 2);
+    assert.ok(details.result?.verify?.every((v) => v.status === "passed"));
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /## Code Tests/);
+    assert.match(report, /## Verify Checks/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("a failing --verify check fails the run", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", verifyCommands: ["test -f never-created.txt"] },
+      { findEntry: () => agentEntry("codex", EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.run.status, "failed");
+    assert.equal(details.result?.verify?.[0]?.status, "failed");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

@@ -87,6 +87,9 @@ export interface DelegateRequest {
   cleanup?: CleanupPolicy;
   permissionProfile?: PermissionProfile;
   testCommands?: string[];
+  /** Verification commands, semantically distinct from tests (e.g. doc/policy checks).
+   *  Run through the same pipeline; a failure fails the run, but reported separately. */
+  verifyCommands?: string[];
   allowedPaths?: string[];
   forbiddenPaths?: string[];
   timeoutMs?: number;
@@ -212,6 +215,8 @@ export interface RunResult {
   artifacts: RunArtifact;
   changedFiles: string[];
   tests: TestResult[];
+  /** Results of `--verify` commands (doc/policy checks), reported separately from tests. */
+  verify?: TestResult[];
   agentEvents: RuntimeEvent[];
   /** Group run: child results (canonical name; supersedes compareResults). */
   childResults?: RunResult[];

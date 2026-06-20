@@ -7,6 +7,7 @@ import { agentsCommand } from "./commands/agents.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { delegateCommand } from "./commands/delegate.ts";
 import { runsCommand, statusCommand, applyCommand, cancelCommand, discardCommand, logsCommand } from "./commands/runs.ts";
+import { reviewCommand } from "./commands/review.ts";
 import { initCommand } from "./commands/init.ts";
 
 const USAGE = `Portico — a local Agent runtime bridge.
@@ -23,6 +24,7 @@ Usage:
   portico delegate --mode compare --to a --compare-to b --task t
   portico runs [--repo .]     List delegation runs
   portico status <run_id>     Show a delegation run
+  portico review <run_id>     Aggregate a group's children for review
   portico logs <run_id>       Stream or follow a run's event log
   portico cancel <run_id>     Cancel a delegation run
   portico apply <run_id>      Apply a ready run patch
@@ -61,6 +63,8 @@ async function main(): Promise<number> {
       return runsCommand(rest);
     case "status":
       return statusCommand(rest);
+    case "review":
+      return reviewCommand(rest);
     case "logs":
       return logsCommand(rest);
     case "apply":
