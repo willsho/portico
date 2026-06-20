@@ -13,7 +13,13 @@ export const claudeProvider: AgentProvider = {
   commandNames: ["claude"],
   envPathNames: ["PORTICO_CLAUDE_PATH"],
   protocols: ["stream-json", "generic-cli"],
-  defaultArgs: ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+  defaultArgs: ["-p", "--output-format", "stream-json", "--verbose"],
+  capabilityProbe: {
+    args: ["-p", "--help"],
+    flags: {
+      "--include-partial-messages": "partialMessages",
+    },
+  },
   // Granted only on `options.autoEdit` (delegation in a throwaway worktree). `acceptEdits`
   // auto-approves file edits non-interactively; widen to `bypassPermissions` if the agent
   // also needs Bash. Version-sensitive — overridable per setup.

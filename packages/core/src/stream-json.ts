@@ -171,6 +171,9 @@ export async function* runStreamJson(
   const resumeArgs =
     context.resumeSessionId && provider.resumeArgs ? provider.resumeArgs(context.resumeSessionId) : [];
   const args = [...baseArgs, ...editArgs, ...resumeArgs];
+  if (entry.capabilities?.partialMessages) {
+    args.push("--include-partial-messages");
+  }
   const partial = args.includes("--include-partial-messages");
 
   const toolNames = new Map<string, string>();

@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import { once } from "node:events";
+import { writeFileSync } from "node:fs";
 
 // A fake Agent CLI used by tests and examples. It mimics the generic-cli contract:
 //   --version            print a semver and exit 0
+//   --help               print a help blurb listing supported flags and exit 0
+//   --touch-cwd <name>   write <name> into the process cwd, print a semver, exit 0
 //   --echo-argv          print the received argv as JSON and exit 0
+//   --echo-argv-json     emit the argv as a Codex-style NDJSON content+done trace
 //   --echo-argv-stdin    print argv and stdin as JSON and exit 0
 //   --cli-error-ok       write a TTY-flavored CLI error to stderr and exit 0
 //   --fail               write to stderr and exit 1
@@ -20,10 +24,44 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 
+// Help text for capability probes: lists a couple of flags so a probe can detect
+// which ones this build supports by scanning the output.
+if (args.includes("--help")) {
+  process.stdout.write(
+    [
+      "Usage: fake-agent [options]",
+      "  --include-partial-messages   stream token-level deltas",
+      "  --output-format <fmt>        set the output format",
+    ].join("\n") + "\n",
+  );
+  process.exit(0);
+}
+
+// Write a marker file into the current working directory so a test can assert which
+// cwd a read-only probe ran in (probes should default to a temp dir, not the repo).
+const touchIdx = args.indexOf("--touch-cwd");
+if (touchIdx !== -1) {
+  const name = args[touchIdx + 1] ?? "cwd-marker";
+  writeFileSync(name, "x");
+  process.stdout.write("fake-agent 1.4.2\n");
+  process.exit(0);
+}
+
 // Echo the received argv as a JSON array so tests can assert how the engine assembled
 // the command line (e.g. that autoEdit appended the provider's autoEditArgs).
 if (args.includes("--echo-argv")) {
   process.stdout.write(JSON.stringify(args) + "\n");
+  process.exit(0);
+}
+
+// Same idea, but framed as a real `codex exec --json` trace (agent_message + turn.completed)
+// so the codex JSON adapter surfaces the argv through a `content` event (used to assert
+// autoEdit arg assembly).
+if (args.includes("--echo-argv-json")) {
+  process.stdout.write(
+    JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: JSON.stringify(args) } }) + "\n",
+  );
+  process.stdout.write(JSON.stringify({ type: "turn.completed", usage: {} }) + "\n");
   process.exit(0);
 }
 

@@ -15,6 +15,8 @@ import type {
   RuntimeEvent,
 } from "./types.ts";
 
+export const MAX_ARG_PROMPT_BYTES = 128 * 1024;
+
 /** Wrap a provider's static metadata into a generic-cli AgentAdapter. */
 export function createGenericCliAdapter(provider: AgentProvider): AgentAdapter {
   return {
@@ -49,6 +51,16 @@ export async function* runGenericCli(
   const prompt = renderPrompt(request);
   const editArgs = request.options?.autoEdit ? (provider.autoEditArgs ?? []) : [];
   const promptMode = provider.promptMode ?? "stdin";
+
+  if (promptMode === "argument" && Buffer.byteLength(prompt, "utf8") > MAX_ARG_PROMPT_BYTES) {
+    yield {
+      type: "error",
+      error: `Prompt exceeds maximum argument size. Please use a provider that supports stdin.`,
+      code: "prompt_too_long",
+    };
+    return;
+  }
+
   const args = [...(provider.defaultArgs ?? []), ...editArgs];
   if (promptMode === "argument") args.push(prompt);
 
