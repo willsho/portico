@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { DelegationEvent } from "@portico/orchestrator";
 
 export interface HttpOptions {
@@ -7,6 +9,50 @@ export interface HttpOptions {
 
 export function daemonUrl(url?: string): string {
   return (url ?? process.env["PORTICO_URL"] ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+}
+
+/** Only loopback daemons may be auto-started — LAN/remote daemons must be started explicitly. */
+export function isLoopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1" || hostname === "[::1]";
+}
+
+/**
+ * Best-effort auto-start of a loopback daemon: spawn `portico start` detached, then poll
+ * `/health` until it answers (or a short deadline passes). Returns true when the daemon is
+ * reachable afterward. Refuses non-loopback URLs so we never silently launch a process for
+ * what should be a remote daemon (plan decision: auto-start is loopback-only).
+ */
+export async function autoStartDaemon(url: string, token?: string): Promise<boolean> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (!isLoopbackHost(parsed.hostname)) return false;
+
+  console.error("[portico] daemon not running — auto-starting it (`portico start`)…");
+  const cliEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
+  const startArgs = ["start", "--host", parsed.hostname, "--port", parsed.port || "8787"];
+  if (token) startArgs.push("--token", token);
+  const child = spawn(process.execPath, [...process.execArgv, cliEntry, ...startArgs], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+
+  const healthUrl = `${url.replace(/\/$/, "")}/health`;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(healthUrl, { headers: authHeaders(token) });
+      if (res.ok) return true;
+    } catch {
+      // not up yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return false;
 }
 
 export function authHeaders(token?: string): Record<string, string> {

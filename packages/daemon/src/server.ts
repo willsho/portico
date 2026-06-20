@@ -20,9 +20,11 @@ import {
   handleDeleteSession,
   handleDelegate,
   handleListRuns,
+  handleCleanup,
   handleGetRun,
   handleRunEvents,
   handleApplyRun,
+  handleIntegrateRun,
   handleCancelRun,
   handleDiscardRun,
   handleResumeRun,
@@ -172,6 +174,7 @@ async function handleRequest(
       if (req.method === "GET" && !action) return await handleGetRun(req, res, ctx, id);
       if (req.method === "GET" && action === "events") return await handleRunEvents(req, res, ctx, id);
       if (req.method === "POST" && action === "apply") return await handleApplyRun(req, res, ctx, id);
+      if (req.method === "POST" && action === "integrate") return await handleIntegrateRun(req, res, ctx, id);
       if (req.method === "POST" && action === "cancel") return await handleCancelRun(req, res, ctx, id);
       if (req.method === "POST" && action === "discard") return await handleDiscardRun(req, res, ctx, id);
       if (req.method === "POST" && action === "resume") return await handleResumeRun(req, res, ctx, id);
@@ -184,6 +187,8 @@ async function handleRequest(
         return handleAgents(req, res, ctx);
       case "GET /runs":
         return await handleListRuns(req, res, ctx);
+      case "POST /cleanup":
+        return await handleCleanup(req, res, ctx);
       case "GET /sessions":
         return handleListSessions(req, res, ctx);
       case "POST /delegate":

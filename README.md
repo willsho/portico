@@ -108,14 +108,21 @@ portico delegate --to <agent-a> --repo . --task "<task>" \
   --child '{"to":"codex","permissionProfile":"auto-edit"}' \
   --child '{"to":"claude","model":"sonnet"}'
 portico delegate --resume <child_id> (--task "fix the failing tests" | --task-file feedback.txt)
-portico runs [--repo .]
+portico delegate --to <agent> --repo . --task "<task>" --allowed "src/**" --apply-on-ready  # auto-apply if guards pass
+portico delegate --to <agent> --repo . --task "<task>" --detach   # exit at run_start, keep running
+portico delegate --to <agent> --repo . --task "<task>" --auto-start  # start loopback daemon if down
+portico delegate --follow <run_id>           # re-attach to a detached run's event log
+portico runs [--repo .] [--flat] [--status failed,cancelled] [--since 2h]
 portico status <run_id> [--repo .]
 portico logs <run_id> [--repo .] [--follow]
+portico review <group_id> [--ready-only] [--open-diff] [--json]
+portico integrate <group_id> [--repo .]      # merge a group's ready children into one patch
 portico cancel <run_id> [--repo .]
 portico apply <run_id> [--repo .]            # single run
 portico apply <group_id> --child <child_id>  # compare: pick one candidate
-portico apply <group_id> --all               # split: apply the merged patch
+portico apply <group_id> --all               # split/integrated: apply the merged patch
 portico discard <run_id> [--repo .]
+portico cleanup [--repo .] [--failed] [--older-than 7d] [--purge]  # reclaim finished worktrees
 portico doctor [--config path]
 ```
 
@@ -162,11 +169,14 @@ Inspect and decide:
 ```bash
 portico runs
 portico runs --flat
+portico runs --status failed,cancelled --since 2h
 portico status run_20260617143454_65d33c76
 portico logs run_20260617143454_65d33c76 --follow
 portico apply run_20260617143454_65d33c76
 portico apply <group_id> --child <child_id>
+portico integrate <group_id>
 portico discard run_20260617143454_65d33c76
+portico cleanup --failed --older-than 7d
 ```
 
 Each run writes artifacts under `.portico/runs/<run_id>/`:
@@ -230,6 +240,27 @@ Delegation controls in the MVP:
   and cost fields.
 - `apply` requires an explicit command, only applies implement runs, and refuses to run
   when tracked files in the main worktree are dirty.
+- `integrate <group_id>` merges an implement/split group's **ready** children into one patch
+  on demand — useful for a `partial` group (some children failed, some ready) that did not
+  auto-merge. On a conflict it records the conflicting files, their source child, and a
+  suggested review order; apply the merged result with `apply <group_id> --all`. Compare
+  groups are rejected (their children are competing implementations — pick one with `--child`).
+- `--apply-on-ready` (delegate) auto-applies a single ready run only when every guard holds:
+  an explicit `--allowed` boundary, a clean tracked tree, path policy passed, no sandbox
+  escape, and all tests + verify checks green. Otherwise it prints the unmet guards and the
+  review summary and applies nothing.
+- `--detach` (delegate) returns as soon as the run registers, printing its id; the run keeps
+  executing on the daemon. Re-attach with `portico delegate --follow <run_id>` (or
+  `portico logs <run_id> --follow`).
+- `--auto-start` (delegate) starts a loopback daemon and retries once if none is running.
+  Loopback only — LAN/remote daemons are never auto-started.
+- `runs --status <s1,s2>` and `runs --since <dur>` filter the listing server-side; runs with a
+  live agent are tagged `[active]`. `status` also reports live progress (phase, whether an
+  agent is still running, and the last recorded event).
+- `cleanup` reclaims finished runs: by default it removes only the worktree and keeps
+  artifacts (`report.md` / `diff.patch` / `events.ndjson`); `--purge` also deletes artifacts.
+  It targets failed + cancelled runs by default (`--status` to override, `--older-than <dur>`
+  to bound by age) and never touches `ready` / `applied` or in-flight runs.
 
 ## Skills
 

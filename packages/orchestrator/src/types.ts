@@ -260,10 +260,63 @@ export interface RunResult {
   error?: string;
 }
 
+/** Live progress for a run, computed at query time (not persisted): the current phase,
+ *  whether an agent process is still executing, and the last recorded event. */
+export interface RunProgress {
+  /** Current lifecycle phase (mirrors run.status). */
+  phase: RunStatus;
+  /** True when this run (or, for a group, any child) has a live agent controller. */
+  active: boolean;
+  /** Last event recorded to the run's event log, with the log's last-write time. */
+  lastEvent?: { type: string; at: string };
+}
+
 export interface RunDetails {
   run: Run;
   artifacts: RunArtifact;
   result?: RunResult;
+  /** Live progress (phase / active / last event), attached by getRun. */
+  progress?: RunProgress;
+}
+
+/** Filters for listRuns, applied server-side before folding. */
+export interface ListRunsOptions {
+  /** Return the flat list (no group folding). */
+  flat?: boolean;
+  /** Keep only runs whose status is in this set. */
+  status?: RunStatus[];
+  /** Keep only runs created within the last `sinceMs` milliseconds. */
+  sinceMs?: number;
+}
+
+/** Options for cleanup: which runs to reclaim and how aggressively. */
+export interface CleanupOptions {
+  /** Target failed + cancelled runs (the default when no explicit status is given). */
+  failed?: boolean;
+  /** Explicit status allow-list; overrides `failed`. ready/applied are never touched. */
+  status?: RunStatus[];
+  /** Only reclaim runs completed/updated more than this many ms ago. */
+  olderThanMs?: number;
+  /** Also delete artifacts (report/diff/events), not just the worktree. */
+  purge?: boolean;
+}
+
+export interface CleanupResult {
+  cleaned: Array<{ id: string; status: RunStatus; worktreeRemoved: boolean; purged: boolean }>;
+  /** Runs examined but left untouched (protected status, filtered out, or in-flight). */
+  skipped: number;
+}
+
+/** Outcome of an on-demand `integrate`: the merge result over a group's ready children. */
+export interface IntegrateResult {
+  details: RunDetails;
+  status: "ready" | "conflict";
+  /** Children merged, in apply order. */
+  order: Array<{ id: string; label?: string }>;
+  /** Per-file conflicts with their source child (only when status=conflict). */
+  conflicts?: Array<{ file: string; child: string }>;
+  /** Merged patch path (only on a clean merge). */
+  mergedDiffPath?: string;
 }
 
 export interface OrchestratorOptions {

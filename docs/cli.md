@@ -28,10 +28,12 @@ portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
 portico review <run_id> [options]
+portico integrate <group_id> [options]
 portico logs <run_id> [options]
 portico apply <run_id> [options]
 portico cancel <run_id> [options]
 portico discard <run_id> [options]
+portico cleanup [options]
 portico doctor [--config <path>] [options]
 ```
 
@@ -86,6 +88,13 @@ Portico refuses LAN exposure without a token.
 
 If a daemon is already recorded and still running, `portico start` prints
 `daemon already running (pid ..., port ..., ...)` and exits successfully.
+
+Before binding, `start` runs a preflight that surfaces sandbox/permission problems early
+instead of letting the first `delegate` fail. If the pidfile location isn't writable the
+daemon still starts and serves requests, but `portico stop` and discovery are limited (it
+prints a warning saying so). If the current repo's `.portico` / `.git` directories aren't
+writable it warns that delegations there will fail to create worktrees, with a hint to grant
+write access or run outside the sandbox.
 
 ## `portico stop`
 
@@ -150,8 +159,18 @@ Common options:
 | `--timeout <ms>` | Agent/test timeout |
 | `--json` | Print delegation events as JSON lines |
 | `--review-summary` | After the run, print a one-click apply command plus a risk summary |
+| `--apply-on-ready` | Auto-apply a single ready run when all safety guards pass (opt-in; see below) |
+| `--auto-start` | If the loopback daemon isn't running, start it and retry the request once |
+| `--detach` | Exit as soon as the run registers, printing its id; the run keeps running on the daemon |
+| `--follow <run_id>` | Re-attach to a run's event log (same as `logs --follow`); ignores other run flags |
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
+
+`--apply-on-ready` only applies a **single** ready run, and only when every guard holds: you
+passed `--allowed` (a path boundary), the main tree's tracked files are clean, path policy
+passed, no sandbox escape was detected, and all tests + verify checks passed. If any guard is
+unmet it applies nothing and prints the unmet items plus the review summary. `--auto-start` is
+loopback-only — LAN/remote daemons are never auto-started.
 
 Isolation options:
 
@@ -218,6 +237,8 @@ portico runs
 portico runs --repo .
 portico runs --json
 portico runs --flat
+portico runs --status failed,cancelled
+portico runs --since 2h
 ```
 
 By default `runs` shows a folded view with group runs and their children nested:
@@ -237,6 +258,13 @@ run_id    status    target_agent    created_at    task
 
 `--flat` returns the legacy flat list with every run (groups and children) on its own row.
 
+| Option | Meaning |
+| --- | --- |
+| `--status <s1,s2>` | Keep only runs whose status is in this comma-separated set |
+| `--since <dur>` | Keep only runs created within the window (`90s`, `30m`, `2h`, `1d`; a bare number is seconds) |
+
+Runs with a live agent process are tagged `[active]` in the human output.
+
 ## `portico status`
 
 Shows details for a run:
@@ -248,12 +276,14 @@ portico status <run_id> --json --summary
 portico status <run_id> --json --fields status,changedFiles,telemetry
 ```
 
-Human output includes status, target, branch, worktree, report path, changed files,
-sandbox escape warnings, gate warnings, telemetry, and test summaries.
+Human output includes status, live progress (current phase, whether an agent is still
+running, and the last recorded event with its time), target, branch, worktree, report /
+events / diff paths, changed files, sandbox escape warnings, gate warnings, telemetry, and
+test summaries.
 
-`--json` returns `RunDetails` with duplicate nested `result.run` and `result.artifacts`
-removed. `--summary` returns a compact top-level object for scripts and LLM callers.
-`--fields` selects comma-separated fields from the summary view.
+`--json` returns `RunDetails` (including a `progress` object) with duplicate nested
+`result.run` and `result.artifacts` removed. `--summary` returns a compact top-level object
+for scripts and LLM callers. `--fields` selects comma-separated fields from the summary view.
 
 ## `portico review`
 
@@ -277,6 +307,29 @@ than one child — the spots that need careful manual merging.
 | `--ready-only` | Only show children that are ready to apply |
 | `--json` | Emit the structured aggregation (children + overlap) |
 | `--open-diff` | Also print each shown child's full diff inline |
+
+## `portico integrate`
+
+Merges a group's **ready** children into one patch on demand:
+
+```bash
+portico integrate <group_id>
+portico integrate <group_id> --json
+```
+
+Unlike the automatic split fan-in, `integrate` does not require every child to be ready, so
+it can combine a `partial` group (some children failed/cancelled, some resumed to ready) or a
+group created with `--merge none`. It reuses the split three-way merge into a fresh
+integration worktree:
+
+- On a clean merge it writes the merged group `diff.patch` and reports the apply order; apply
+  it with `portico apply <group_id> --all`.
+- On a conflict it lists the conflicting files, their source child, and a suggested review
+  order, and leaves no appliable merged patch. Narrow a child with `delegate --resume`, then
+  run `integrate` again.
+
+Compare groups are rejected (`integrate_unsupported`) — their children are competing
+implementations of the same task, so pick one with `apply <group_id> --child <child_id>`.
 
 ## `portico logs`
 
@@ -314,9 +367,10 @@ Options:
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
 
-A single run must be `implement`. A compare group requires `--child`; a split group uses
-`--all` (refused while the group is in `conflict`). `apply` requires the main worktree's
-tracked files to be clean.
+A single run must be `implement`. A compare group requires `--child`; a split or integrated
+group uses `--all` (refused while the group is in `conflict` or has no merged patch — run
+`portico integrate <group_id>` first). `apply` requires the main worktree's tracked files to
+be clean.
 
 ## `portico discard`
 
@@ -340,6 +394,28 @@ portico cancel <run_id>
 
 Cancellation aborts the tracked process when the run is still active and marks the run
 `cancelled`. For a group run, cancel cascades to every active child; it is idempotent.
+
+## `portico cleanup`
+
+Reclaims finished runs:
+
+```bash
+portico cleanup --failed
+portico cleanup --failed --older-than 7d
+portico cleanup --status failed,cancelled --purge
+```
+
+By default `cleanup` removes only the worktree and **keeps** each run's artifacts
+(`report.md` / `diff.patch` / `events.ndjson`) for post-hoc inspection. `ready` / `applied`
+runs and anything still in-flight are never touched.
+
+| Option | Meaning |
+| --- | --- |
+| `--failed` | Target failed + cancelled runs (the default when no `--status` is given) |
+| `--status <s1,s2>` | Explicit statuses to reclaim; overrides `--failed` (ready/applied still protected) |
+| `--older-than <dur>` | Only runs finished more than this ago (`1h`, `7d`; bare number is seconds) |
+| `--purge` | Also delete artifacts, not just the worktree |
+| `--json` | Emit the structured `{ cleaned, skipped }` result |
 
 ## `portico doctor`
 

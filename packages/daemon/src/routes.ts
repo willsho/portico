@@ -12,7 +12,7 @@ import type {
   SessionStore,
 } from "@portico/core";
 import { DelegationError, encodeDelegationEvent } from "@portico/orchestrator";
-import type { DelegateRequest, DelegationOrchestrator } from "@portico/orchestrator";
+import type { DelegateRequest, DelegationOrchestrator, RunStatus } from "@portico/orchestrator";
 import type { DaemonConfig } from "./config.ts";
 
 export interface DaemonContext {
@@ -196,8 +196,53 @@ export async function handleListRuns(
   const url = new URL(req.url ?? "/", "http://localhost");
   const repo = url.searchParams.get("repo") ?? process.cwd();
   const flat = url.searchParams.get("flat") === "true";
+  const statusParam = url.searchParams.get("status");
+  const sinceParam = url.searchParams.get("since");
+  const status = statusParam
+    ? (statusParam.split(",").map((s) => s.trim()).filter(Boolean) as RunStatus[])
+    : undefined;
+  const sinceMs = sinceParam ? Number(sinceParam) : undefined;
   try {
-    writeJson(res, 200, { runs: await ctx.delegation.listRuns(repo, { flat }) });
+    writeJson(res, 200, {
+      runs: await ctx.delegation.listRuns(repo, {
+        flat,
+        ...(status?.length ? { status } : {}),
+        ...(sinceMs !== undefined && Number.isFinite(sinceMs) ? { sinceMs } : {}),
+      }),
+    });
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
+export async function handleCleanup(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+): Promise<void> {
+  let body: { failed?: boolean; status?: RunStatus[]; olderThanMs?: number; purge?: boolean } = {};
+  if (req.method === "POST") {
+    try {
+      body = await readJsonBody<typeof body>(req);
+    } catch {
+      // No body — fall back to defaults (failed + cancelled).
+    }
+  }
+  try {
+    writeJson(res, 200, await ctx.delegation.cleanup(repoFromUrl(req), body));
+  } catch (err) {
+    writeDelegationError(res, err);
+  }
+}
+
+export async function handleIntegrateRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  try {
+    writeJson(res, 200, await ctx.delegation.integrate(repoFromUrl(req), id));
   } catch (err) {
     writeDelegationError(res, err);
   }
@@ -352,13 +397,18 @@ const BAD_REQUEST_CODES = new Set([
   "mode_unsupported",
   "split_requires_children",
   "split_child_task_required",
+  "not_a_group",
+  "integrate_unsupported",
 ]);
 const CONFLICT_CODES = new Set([
   "invalid_status",
+  "invalid_mode",
   "apply_requires_child",
   "apply_requires_all",
   "merge_conflict",
   "working_tree_dirty",
+  "no_ready_children",
+  "missing_diff",
 ]);
 
 function writeDelegationError(res: ServerResponse, err: unknown): void {
