@@ -160,6 +160,8 @@ yourself, or anything where spinning up a separate agent adds no value.
 
 ## Command reference
 
+- `portico init` — create Portico repo metadata and refresh the generated Portico Skill files
+  under `.claude/skills/portico/` and `.agents/skills/portico/`.
 - `portico agents [--json]` — list local agents you can delegate to.
 - `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation.
 - `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
@@ -196,6 +198,8 @@ yourself, or anything where spinning up a separate agent adds no value.
   write access or run outside the sandbox (the daemon may still be usable, but `stop`/discovery
   and delegations will be limited).
 - `agent_unavailable` → the target isn't found: check `portico agents`; it may not be installed.
+- Stale generated Skill → rerun `portico init` in the repo. It refreshes Portico's generated
+  Skill files without touching other project-level skills.
 - Test failed → read `.portico/runs/<run_id>/test.log`, refine the task, re-delegate.
 - `path_not_allowed` → the run changed a file outside `--allowed`; the error and report carry a
   copy-paste retry that pre-fills the missing `--allowed` flags.

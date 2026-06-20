@@ -135,7 +135,9 @@ the CORS/LAN security posture.
 
 `portico init` creates `.portico/config.json`, `.portico/runs`,
 `.portico/worktrees`, and local Portico Skill files for Claude Code and Codex-compatible
-agent runtimes.
+agent runtimes. Re-running it refreshes those Portico-managed Skill files from the
+canonical bundled Skill without overwriting an existing `.portico/config.json` or touching
+other project-level skills.
 
 ## Delegation
 
@@ -289,6 +291,10 @@ There is a single canonical Skill, [`packages/skills/portico/SKILL.md`](packages
   `allowed-tools` frontmatter.
 - `.agents/skills/portico/SKILL.md` — the same Skill with the `allowed-tools` line removed
   for Codex-style loaders.
+
+Re-running `portico init` refreshes these two Portico-managed output files from the
+canonical Skill. Keep project-specific guidance in separate project-level skills rather
+than editing the generated Portico files directly.
 
 The Skill does not hard-code a single direction such as Claude → Codex. It tells the
 current agent how to write a self-contained delegated task, choose an explicit

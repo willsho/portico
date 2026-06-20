@@ -57,7 +57,9 @@ Creates:
 .agents/skills/portico/SKILL.md
 ```
 
-`init` must run inside a git repository. Existing skill files are not overwritten.
+`init` must run inside a git repository. Existing `.portico/config.json` files are not
+overwritten. Portico-managed skill files at the paths above are refreshed from the
+canonical bundled Skill on every run; other project-level skills are not touched.
 
 ## `portico start`
 

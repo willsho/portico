@@ -21,7 +21,8 @@ Inside the current git repository, Portico writes:
 .agents/skills/portico/SKILL.md
 ```
 
-Existing skill files are not overwritten.
+The Portico-managed skill files at those exact paths are refreshed from the canonical
+bundled Skill on every `init` run. Other project-level skills are not touched.
 
 ## Canonical Source
 
@@ -130,11 +131,12 @@ Edit the canonical file:
 packages/skills/portico/SKILL.md
 ```
 
-Then rerun `portico init` in a repository that does not already have generated skill files,
-or update the generated files intentionally.
+Then rerun `portico init` in each repository that should receive the updated generated
+Skill files.
 
-Because `init` does not overwrite existing skill files, teams can customize project-local
-skills after generation.
+Because `init` refreshes Portico's managed output files, put project-specific guidance in
+separate project-level skills instead of editing `.claude/skills/portico/SKILL.md` or
+`.agents/skills/portico/SKILL.md` directly.
 
 ## When Not to Use the Skill
 
@@ -144,4 +146,3 @@ Do not use the Portico skill for:
 - tiny edits the current agent should make itself;
 - workflows where another agent adds no value;
 - chaining delegation from inside a Portico worktree.
-

@@ -41,6 +41,5 @@ Options:
 
 async function writeSkill(path: string, content: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  if (existsSync(path)) return;
   await writeFile(path, content);
 }
