@@ -49,6 +49,14 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     const report = await readFile(details.artifacts.reportPath, "utf8");
     assert.match(report, /Portico Run Report/);
     assert.match(report, /## Telemetry/);
+    // Path policy + grouped diff views land in the report so review needs no manual git diff.
+    assert.match(report, /## Path Policy/);
+    assert.match(report, /Allowed Policy: passed/);
+    assert.match(report, /Added \(new\):/);
+    assert.match(report, /- delegated\.txt/);
+    assert.match(report, /Whitespace\/Conflict Check/);
+    assert.equal(details.result?.pathPolicy?.status, "passed");
+    assert.ok(details.result?.diffSummary?.nameStatus.includes("delegated.txt"));
 
     const applied = await orchestrator.apply(repo, runId);
     assert.equal(applied.run.status, "applied");
@@ -528,6 +536,41 @@ test("aggregate status: mixed ready and failed → group partial", async () => {
     assert.equal(group.result!.groupSummary!.total, 2);
     assert.equal(group.result!.groupSummary!.ready, 1);
     assert.equal(group.result!.groupSummary!.failed, 1);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("path policy failure records out-of-scope paths and a copy-paste retry", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    // edit-agent writes delegated.txt, which is outside the allowed src/** boundary.
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", allowedPaths: ["src/**"] },
+      { findEntry: () => agentEntry("codex", EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const last = events.at(-1);
+    assert.equal(last?.type, "run_error");
+    const error = last?.type === "run_error" ? last.error : "";
+    assert.match(error, /non-allowed path\(s\): delegated\.txt/);
+    assert.match(error, /--allowed delegated\.txt/);
+    assert.equal(last?.type === "run_error" ? last.code : "", "path_not_allowed");
+
+    const runId = events.find((e) => "runId" in e && e.runId)?.runId as string;
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.result?.pathPolicy?.status, "failed");
+    assert.deepEqual(details.result?.pathPolicy?.notAllowed, ["delegated.txt"]);
+    assert.deepEqual(details.result?.pathPolicy?.retryAllowed, ["delegated.txt"]);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Allowed Policy: failed/);
+    assert.match(report, /Retry allowing them: --allowed delegated\.txt/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

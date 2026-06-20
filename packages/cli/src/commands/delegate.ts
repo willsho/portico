@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { authHeaders, daemonUrl, describeFetchError, fetchWithRetry, readDelegationStream } from "./http.ts";
+import { authHeaders, daemonUrl, fetchWithRetry, printDaemonError, readDelegationStream } from "./http.ts";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy } from "@portico/orchestrator";
 
 export async function delegateCommand(args: string[]): Promise<number> {
@@ -82,21 +82,10 @@ Options:
         body: JSON.stringify({ task: task.value }),
       });
     } catch (err) {
-      console.error(`[portico] ${describeFetchError(err, url)}`);
+      printDaemonError(err, url);
       return 1;
     }
-    let last: DelegationEvent | undefined;
-    try {
-      for await (const event of readDelegationStream(res)) {
-        last = event;
-        if (values.json) console.log(JSON.stringify(event));
-        else printEvent(event);
-      }
-    } catch (err) {
-      console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
-      return 1;
-    }
-    return last?.type === "run_error" ? 1 : 0;
+    return consumeRunStream(res, values.json ?? false);
   }
 
   // Children: parse JSON specs from repeated --child flags.
@@ -157,23 +146,53 @@ Options:
       body: JSON.stringify(request),
     });
   } catch (err) {
-    console.error(`[portico] ${describeFetchError(err, url)}`);
-    console.error("[portico] check `portico start` or set PORTICO_URL to the running daemon.");
+    printDaemonError(err, url);
     return 1;
   }
 
+  return consumeRunStream(res, values.json ?? false);
+}
+
+/**
+ * Drive a delegation NDJSON stream to the terminal. Captures the run id from the
+ * first event so that, if the client is interrupted (Ctrl-C) or the connection
+ * drops before `run_done`, we tell the user the run may still be executing on the
+ * daemon and how to track it — instead of leaving them to guess from `[terminated]`.
+ */
+async function consumeRunStream(res: Response, json: boolean): Promise<number> {
   let last: DelegationEvent | undefined;
+  let runId: string | undefined;
+  let finished = false;
+
+  const trackingHint = () => {
+    if (!runId || finished) return;
+    console.error(`\n[portico] run ${runId} may still be running on the daemon (the client disconnected).`);
+    console.error(`[portico] track it: portico status ${runId} | portico logs ${runId} --follow`);
+  };
+  const onSigint = () => {
+    trackingHint();
+    process.exit(130);
+  };
+  process.on("SIGINT", onSigint);
+
   try {
     for await (const event of readDelegationStream(res)) {
       last = event;
-      if (values.json) console.log(JSON.stringify(event));
+      if ("runId" in event && event.runId) runId = event.runId;
+      if (event.type === "run_done" || event.type === "run_error") finished = true;
+      if (json) console.log(JSON.stringify(event));
       else printEvent(event);
     }
   } catch (err) {
     console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
+    trackingHint();
     return 1;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
   }
 
+  // Stream ended cleanly but without a terminal event — the run outlived the client.
+  if (!finished) trackingHint();
   return last?.type === "run_error" ? 1 : 0;
 }
 

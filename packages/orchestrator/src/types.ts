@@ -151,6 +151,30 @@ export interface OutOfTreeChange {
   raw: string;
 }
 
+/** Raw `git diff` views captured at diff time so the report is a single source of
+ *  truth — no need to re-run `git diff --name-status / --stat / --check` by hand. */
+export interface DiffSummary {
+  /** `git diff --name-status HEAD` — distinguishes added(new) / modified / deleted / renamed. */
+  nameStatus: string;
+  /** `git diff --stat HEAD`. */
+  stat: string;
+  /** `git diff --check HEAD` — trailing whitespace and conflict markers (empty when clean). */
+  check: string;
+}
+
+/** Whether the run's changed files stayed within the `--allowed` / `--forbidden` boundary. */
+export interface PathPolicyResult {
+  status: "passed" | "failed";
+  /** The allowed patterns in effect ([] means all repo paths permitted). */
+  allowed: string[];
+  /** Changed files that hit a forbidden pattern. */
+  forbidden: string[];
+  /** Changed files outside the allowed set. */
+  notAllowed: string[];
+  /** Paths to add to `--allowed` to make a retry pass (forbidden ∪ notAllowed). */
+  retryAllowed?: string[];
+}
+
 export interface UsageTelemetry {
   available: boolean;
   raw?: unknown;
@@ -223,6 +247,10 @@ export interface RunResult {
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
   gateWarnings?: string[];
+  /** Grouped diff views (name-status / stat / check) for review without re-running git. */
+  diffSummary?: DiffSummary;
+  /** Allowed/forbidden path-policy outcome, with retry paths when it failed. */
+  pathPolicy?: PathPolicyResult;
   telemetry?: RunTelemetry;
   error?: string;
 }
