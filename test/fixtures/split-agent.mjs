@@ -70,5 +70,10 @@ for (const replace of directive.replaces ?? []) {
   await writeFile(target, body.split(replace.find).join(replace.replace));
 }
 
+if (directive.fail) {
+  process.stderr.write("split-agent failed\n");
+  process.exit(1);
+}
+
 process.stdout.write("split-agent done\n");
 process.exit(0);

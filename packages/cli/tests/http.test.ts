@@ -15,7 +15,8 @@ function fetchError(code: string): Error {
 const url = "http://127.0.0.1:8787";
 
 test("ECONNREFUSED is reported as a daemon that is not running, with a start hint", () => {
-  const { message, hint } = classifyFetchError(fetchError("ECONNREFUSED"), url);
+  const env = { PORTICO_PID_FILE: join(tmpdir(), "nonexistent-pid-file.pid") };
+  const { message, hint } = classifyFetchError(fetchError("ECONNREFUSED"), url, env);
   assert.match(message, /daemon not running/);
   assert.match(hint, /portico start/);
 });
@@ -38,15 +39,17 @@ test("ECONNREFUSED with a live daemon running elsewhere gives a custom hint", ()
 });
 
 test("EACCES/EPERM is distinguished as a sandbox/permission block", () => {
+  const env = { PORTICO_PID_FILE: join(tmpdir(), "nonexistent-pid-file.pid") };
   for (const code of ["EACCES", "EPERM"]) {
-    const { message, hint } = classifyFetchError(fetchError(code), url);
+    const { message, hint } = classifyFetchError(fetchError(code), url, env);
     assert.match(message, /permission denied/);
     assert.match(hint, /sandbox/);
   }
 });
 
 test("unknown transport failures still suggest checking the daemon", () => {
-  const { hint } = classifyFetchError(new Error("boom"), url);
+  const env = { PORTICO_PID_FILE: join(tmpdir(), "nonexistent-pid-file.pid") };
+  const { hint } = classifyFetchError(new Error("boom"), url, env);
   assert.match(hint, /portico start/);
 });
 

@@ -19,6 +19,8 @@ import {
 import { logsCommand } from "./runs.ts";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
 
+export const EXIT_CLIENT_DISCONNECTED = 3;
+
 export async function delegateCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -99,7 +101,13 @@ Options:
   --follow <run_id>        Re-attach to a run's event log (same as logs --follow)
   --url <url>              Daemon URL
   --token <token>          Auth token
-  -h, --help               Show this help message`);
+  -h, --help               Show this help message
+
+Exit codes:
+  0    Success (run completed / ready, or --detach registered the run)
+  1    Run failed or errored
+  3    Client disconnected; the run may still be executing on the daemon
+  130  Interrupted (Ctrl-C)`);
     return 0;
   }
 
@@ -433,7 +441,7 @@ async function consumeRunStream(res: Response, json: boolean, detach = false): P
   } catch (err) {
     console.error(`[portico] ${err instanceof Error ? err.message : String(err)}`);
     trackingHint();
-    return { code: 1, runId, status };
+    return { code: runId ? EXIT_CLIENT_DISCONNECTED : 1, runId, status };
   } finally {
     process.removeListener("SIGINT", onSigint);
     if (detached) await res.body?.cancel().catch(() => {});
@@ -442,7 +450,7 @@ async function consumeRunStream(res: Response, json: boolean, detach = false): P
   if (detached) return { code: 0, runId, status, detached: true };
   // Stream ended cleanly but without a terminal event — the run outlived the client.
   if (!finished) trackingHint();
-  return { code: last?.type === "run_error" ? 1 : 0, runId, status };
+  return { code: last?.type === "run_error" ? 1 : (!finished && runId ? EXIT_CLIENT_DISCONNECTED : 0), runId, status };
 }
 
 /**
@@ -502,6 +510,7 @@ async function printPreflightAndConfirm(request: DelegateRequest, base: string, 
   console.error(`  repo:          ${request.repo}`);
   console.error(`  base ref:      ${request.baseRef ?? "HEAD (default)"}`);
   console.error(`  worktree root: ${worktreeRoot}`);
+  console.error(`  timeout:       ${request.timeoutMs ? `${request.timeoutMs}ms` : "daemon default"}`);
   console.error(`  ${count === 1 ? "agent" : `agents (${count})`}:`);
   for (const line of lines) console.error(line);
 

@@ -1490,7 +1490,19 @@ async function* resumeChildDelegation(
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     const code = err instanceof DelegationError ? err.code : "internal";
-    await updateRun(details.run, {
+    if (details.run.mode !== "review") {
+      try {
+        const diffStartedMs = Date.now();
+        const diffResult = await generateDiff(workDir);
+        diffMs = Date.now() - diffStartedMs;
+        changedFiles = diffResult.changedFiles;
+        diffSummary = diffResult.summary;
+        await writeFile(details.artifacts.diffPath as string, diffResult.diff);
+      } catch (diffErr) {
+        // ignore diff error on failure path
+      }
+    }
+    details.run = await updateRun(details.run, {
       status: controller.signal.aborted ? "cancelled" : "failed",
       completedAt: new Date().toISOString(),
     });
@@ -1887,7 +1899,20 @@ async function* runSingleDelegation(
     if (run && artifacts) {
       const status = controller?.signal.aborted ? "cancelled" : "failed";
       run = await updateRun(run, { status, completedAt: new Date().toISOString() });
-      if (worktreeCreated && shouldCleanupWorktree(run.isolation.cleanup, run.status, [])) {
+      if (run.mode !== "review") {
+        try {
+          const diffStartedMs = Date.now();
+          const workDir = run.isolation.workspace === "worktree" ? run.worktreePath : repoPath;
+          const diffResult = await generateDiff(workDir);
+          diffMs = Date.now() - diffStartedMs;
+          changedFiles = diffResult.changedFiles;
+          diffSummary = diffResult.summary;
+          await writeFile(artifacts.diffPath as string, diffResult.diff);
+        } catch (diffErr) {
+          // ignore diff error on failure path
+        }
+      }
+      if (worktreeCreated && shouldCleanupWorktree(run.isolation.cleanup, run.status, changedFiles)) {
         await removeWorktree(repoPath, run.worktreePath, deps.worktreeMutex);
         run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
       }
@@ -1961,6 +1986,9 @@ function buildRunResult(
   const coverageGap = !!coverage && run.mode === "implement" && run.status === "ready" && coverage.untouched.length > 0;
   if (coverageGap) {
     gateWarnings.push(`Coverage gap: expected path(s) not changed: ${coverage.untouched.join(", ")}.`);
+  }
+  if (error && changedFiles.length > 0) {
+    gateWarnings.push(`Agent errored/timed out but left ${changedFiles.length} uncommitted file(s) in the worktree (partial work — review or resume).`);
   }
   // Portico's own verdict, derived from observed facts rather than the agent's self-report:
   // not-ready or ready-but-suspect (a flagged no-change run / coverage gap) → needs_attention.

@@ -135,11 +135,17 @@ test("delegate prints a preflight echo with the resolved absolute repo before la
       { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
     );
   try {
-    const code = await delegateCommand(["--to", "agent", "--task", "x", "--repo", ".", "--url", "http://127.0.0.1:1"]);
+    let code = await delegateCommand(["--to", "agent", "--task", "x", "--repo", ".", "--url", "http://127.0.0.1:1"]);
     assert.equal(code, 0);
     assert.match(errOut, /preflight:/);
     // A relative `--repo .` is echoed as an absolute path — the wrong-repo guard.
     assert.ok(errOut.includes(`repo:`) && errOut.includes(process.cwd()));
+    assert.match(errOut, /timeout:\s+daemon default/);
+    
+    errOut = "";
+    code = await delegateCommand(["--to", "agent", "--task", "x", "--timeout", "5000", "--url", "http://127.0.0.1:1"]);
+    assert.equal(code, 0);
+    assert.match(errOut, /timeout:\s+5000ms/);
   } finally {
     globalThis.fetch = originalFetch;
     console.error = originalError;
@@ -175,5 +181,49 @@ test("delegate preflight lists every fan-out child with its agent", async () => 
     globalThis.fetch = originalFetch;
     console.error = originalError;
     console.log = originalLog;
+  }
+});
+
+test("delegate returns 3 when the stream drops mid-run but the run has a runId", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  
+  globalThis.fetch = async () => new Response(
+    `${JSON.stringify({ type: "run_start", runId: "r1" })}\n${JSON.stringify({ type: "agent_start", runId: "r1", agent: "foo" })}\n`,
+    { status: 200, headers: { "Content-Type": "application/x-ndjson" } }
+  );
+
+  try {
+    const code = await delegateCommand(["--to", "agent", "--task", "x", "--url", "http://127.0.0.1:1"]);
+    assert.equal(code, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+test("delegate returns 1 on run_error", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  
+  globalThis.fetch = async () => new Response(
+    `${JSON.stringify({ type: "run_error", runId: "r1", error: "boom", code: "failed" })}\n`,
+    { status: 200, headers: { "Content-Type": "application/x-ndjson" } }
+  );
+
+  try {
+    const code = await delegateCommand(["--to", "agent", "--task", "x", "--url", "http://127.0.0.1:1"]);
+    assert.equal(code, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
   }
 });

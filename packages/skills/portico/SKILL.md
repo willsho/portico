@@ -69,7 +69,7 @@ yourself, or anything where spinning up a separate agent adds no value.
    to a slug of the task); repeatable `--test`; repeatable `--verify` (checks reported
    separately from tests — use for doc/policy tasks that have no test command); repeatable
    `--allowed`/`--forbidden` (path policy); `--base-ref <ref>`;
-   `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>`;
+   `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>` (total task duration, independent of the idle watchdog that stops stalled agents);
    `--expect-no-changes` (declare that producing no edits is an acceptable outcome — suppresses
    the implement-mode no-change warning and keeps the review decision `approve`; use for
    check/audit tasks run in implement mode);
@@ -87,7 +87,7 @@ yourself, or anything where spinning up a separate agent adds no value.
 
    Before launching, `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
    **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can't retarget the
-   daemon's cwd), the base ref, the worktree root, and the agents about to run. Read it back to
+   daemon's cwd), the base ref, the worktree root, the effective timeout, and the agents about to run. Read it back to
    confirm the run is pointed at the repo you intended before agents start working.
 
    `--apply-on-ready` is an explicit opt-in that auto-applies a **single** ready run only when
@@ -204,8 +204,8 @@ yourself, or anything where spinning up a separate agent adds no value.
 
 - `portico init` — create Portico repo metadata and refresh the generated Portico Skill files
   under `.claude/skills/portico/` and `.agents/skills/portico/`.
-- `portico agents [--json]` — list local agents you can delegate to.
-- `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation.
+- `portico agents [--url <url>] [--token <token>] [--json]` — list local agents you can delegate to (does not require a running daemon).
+- `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation (exit 0 success, 1 fail, 3 client disconnected).
 - `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
 - `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" [--judge-to <agent>]` — run candidate implementations for comparison.
 - `portico delegate --mode split --to <agent> --repo . --task "<task>" --child '{…,"task":"…"}' --child '{…}'` — split into complementary sub-tasks and merge.
@@ -235,7 +235,7 @@ yourself, or anything where spinning up a separate agent adds no value.
 ## Troubleshooting
 
 - `daemon not running` → start it: `portico start`, or pass `--auto-start` to `portico delegate`
-  to have it start a loopback daemon and retry once. A `permission denied` / sandbox variant
+  to have it start a loopback daemon and retry once. If a daemon is running elsewhere, Portico will suggest its URL. A `permission denied` / sandbox variant
   means loopback access is blocked, not that the daemon is down. If `portico start` warns that
   the pidfile or `.portico`/`.git` dirs aren't writable, a sandbox is blocking writes — grant
   write access or run outside the sandbox (the daemon may still be usable, but `stop`/discovery
@@ -243,7 +243,7 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `agent_unavailable` → the target isn't found: check `portico agents`; it may not be installed.
 - Stale generated Skill → rerun `portico init` in the repo. It refreshes Portico's generated
   Skill files without touching other project-level skills.
-- Test failed → read `.portico/runs/<run_id>/test.log`, refine the task, re-delegate.
+- Agent stalled, timed out, or test failed → read the report and `.portico/runs/<run_id>/test.log`. A stalled or erroring agent may still leave partial edits in the worktree (captured in the diff); you can review the partial work or resume the run, refine the task, or re-delegate.
 - `path_not_allowed` → the run changed a file outside `--allowed`; the error and report carry a
   copy-paste retry that pre-fills the missing `--allowed` flags.
 - `working_tree_dirty` on apply → commit or stash the main tree first, then apply.
