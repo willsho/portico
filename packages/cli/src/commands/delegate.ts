@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { notifyRunTerminal } from "../notify.ts";
@@ -12,6 +14,7 @@ import {
   printDaemonError,
   readDelegationStream,
   requestJson,
+  resolveRepoArg,
 } from "./http.ts";
 import { logsCommand } from "./runs.ts";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
@@ -49,6 +52,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "auto-start": { type: "boolean" },
       detach: { type: "boolean" },
       notify: { type: "boolean" },
+      yes: { type: "boolean", short: "y" },
       follow: { type: "string" },
       url: { type: "string" },
       token: { type: "string" },
@@ -87,6 +91,7 @@ Options:
   --auto-start             If the loopback daemon isn't running, start it and retry once
   --detach                 Exit as soon as the run starts, printing its id (run continues)
   --notify                 Fire an OS notification when the run reaches a terminal state (macOS)
+  -y, --yes                Skip the fan-out preflight confirmation prompt
   --follow <run_id>        Re-attach to a run's event log (same as logs --follow)
   --url <url>              Daemon URL
   --token <token>          Auth token
@@ -113,7 +118,10 @@ Options:
   // Resume mode: resume a child run with a new task.
   if (values.resume) {
     const base = daemonUrl(values.url);
-    const url = `${base}/runs/${encodeURIComponent(values.resume)}/resume`;
+    // Forward the resolved repo just like status/apply — without it the daemon falls back to
+    // its own cwd (`repoFromUrl` → `process.cwd()`) and resumes against the wrong run store.
+    const repo = encodeURIComponent(resolveRepoArg(values.repo));
+    const url = `${base}/runs/${encodeURIComponent(values.resume)}/resume?repo=${repo}`;
     const res = await postDelegationStream(
       url,
       {
@@ -161,7 +169,7 @@ Options:
   const request: DelegateRequest = {
     to: values.to,
     from: values.from,
-    repo: values.repo ?? process.cwd(),
+    repo: resolveRepoArg(values.repo),
     task: task.value,
     name: values.name,
     mode: values.mode as DelegateRequest["mode"],
@@ -181,6 +189,16 @@ Options:
   };
 
   const base = daemonUrl(values.url);
+
+  // Preflight: echo the resolved facts *before* any agent launches, so a wrong repo / base ref
+  // is caught up front instead of after N fan-out agents have already burned time. For a
+  // multi-agent fan-out at an interactive terminal, also require confirmation (skip with
+  // --yes / non-TTY so agent-driven and scripted use never blocks).
+  if (!(await printPreflightAndConfirm(request, base, values.yes ?? false))) {
+    console.error("[portico] aborted before launch (no agents started).");
+    return 0;
+  }
+
   const url = `${base}/delegate`;
   const res = await postDelegationStream(
     url,
@@ -196,7 +214,7 @@ Options:
   if (!res) return 1;
 
   const outcome = await consumeRunStream(res, values.json ?? false, values.detach ?? false);
-  const repoPath = values.repo ?? process.cwd();
+  const repoPath = resolveRepoArg(values.repo);
   if (outcome.detached) {
     if (values.notify && outcome.runId) {
       spawnDetachedNotifyWatch(outcome.runId, repoPath, values.url, values.token);
@@ -207,9 +225,9 @@ Options:
     await notifyRunTerminal(outcome.runId, repoPath, values.url, values.token);
   }
   if (values["apply-on-ready"] && outcome.runId) {
-    await maybeApplyOnReady(outcome, request, values.repo ?? process.cwd(), values.url, values.token);
+    await maybeApplyOnReady(outcome, request, repoPath, values.url, values.token);
   } else if (values["review-summary"] && outcome.runId) {
-    await printReviewSummary(outcome.runId, values.repo ?? process.cwd(), values.url, values.token);
+    await printReviewSummary(outcome.runId, repoPath, values.url, values.token);
   }
   return outcome.code;
 }
@@ -429,6 +447,64 @@ function spawnDetachedNotifyWatch(runId: string, repo: string, url?: string, tok
   });
   child.on("error", () => {});
   child.unref();
+}
+
+/**
+ * Enumerate the agents a request will launch, so the preflight shows exactly what is about to
+ * run. Children take precedence (heterogeneous fan-out), then compare targets, else a single
+ * target.
+ */
+function describeTargets(request: DelegateRequest): { count: number; lines: string[] } {
+  if (request.children?.length) {
+    return {
+      count: request.children.length,
+      lines: request.children.map((c, i) => `  - ${c.label ?? `c${i + 1}`}: ${c.to}${c.task ? ` — ${snippet(c.task)}` : ""}`),
+    };
+  }
+  if (request.compareTargets?.length) {
+    const all = [request.to, ...request.compareTargets];
+    return { count: all.length, lines: all.map((a, i) => `  - candidate ${i + 1}: ${a}`) };
+  }
+  return { count: 1, lines: [`  - ${request.to}`] };
+}
+
+function snippet(text: string): string {
+  const line = text.split("\n")[0]?.trim() ?? "";
+  return line.length > 60 ? `${line.slice(0, 57)}…` : line;
+}
+
+/**
+ * Print the resolved repo / base ref / worktree root / daemon URL and the agents about to run,
+ * then — only for a multi-agent fan-out at an interactive TTY — ask for confirmation. Returns
+ * false when the user declines. The echo goes to stderr so it never corrupts a `--json` stdout
+ * stream, and confirmation is skipped for `--yes` and non-interactive (agent-driven / scripted)
+ * use so automation never blocks.
+ */
+async function printPreflightAndConfirm(request: DelegateRequest, base: string, skipConfirm: boolean): Promise<boolean> {
+  const { count, lines } = describeTargets(request);
+  const worktreeRoot = join(request.repo, ".portico", "worktrees");
+  console.error("[portico] preflight:");
+  console.error(`  daemon:        ${base}`);
+  console.error(`  repo:          ${request.repo}`);
+  console.error(`  base ref:      ${request.baseRef ?? "HEAD (default)"}`);
+  console.error(`  worktree root: ${worktreeRoot}`);
+  console.error(`  ${count === 1 ? "agent" : `agents (${count})`}:`);
+  for (const line of lines) console.error(line);
+
+  const isFanout = count > 1;
+  const interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+  if (!isFanout || skipConfirm || !interactive) return true;
+  return confirm(`Launch ${count} agents in ${request.repo}? [y/N] `);
+}
+
+function confirm(prompt: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve) => {
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
 }
 
 function readTask(task: string | undefined, taskFile: string | undefined): { value: string; error?: undefined } | { error: string } {

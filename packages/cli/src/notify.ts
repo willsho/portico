@@ -10,6 +10,7 @@ import {
   daemonUrl,
   fetchWithRetry,
   readDelegationStream,
+  resolveRepoArg,
 } from "./commands/http.ts";
 import type { DelegationEvent, RunDetails } from "@portico/orchestrator";
 
@@ -108,6 +109,6 @@ export async function notifyWatchCommand(args: string[]): Promise<number> {
   });
   const runId = positionals[0];
   if (!runId) return 1;
-  await watchAndNotify(runId, values.repo ?? process.cwd(), values.url, values.token);
+  await watchAndNotify(runId, resolveRepoArg(values.repo), values.url, values.token);
   return 0;
 }

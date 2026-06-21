@@ -113,6 +113,7 @@ portico delegate --to <agent> --repo . --task "<task>" --detach   # exit at run_
 portico delegate --to <agent> --repo . --task "<task>" --detach --notify  # OS-notify on terminal state
 portico delegate --to <agent> --repo . --task "<task>" --name dark-mode   # human-readable run name
 portico delegate --to <agent> --repo . --task "<task>" --auto-start  # start loopback daemon if down
+portico delegate --mode split --to <agent> --repo . --task "<task>" --child '{...}' --child '{...}' -y  # skip fan-out confirm
 portico delegate --follow <run_id>           # re-attach to a detached run's event log
 portico runs [--repo .] [--flat] [--status failed,cancelled] [--since 2h] [--watch]
 portico watch [--repo .] [--needs-review] [--to <agent>] [--status s1,s2] [--once] [--json]
@@ -250,6 +251,11 @@ Delegation controls in the MVP:
   auto-merge. On a conflict it records the conflicting files, their source child, and a
   suggested review order; apply the merged result with `apply <group_id> --all`. Compare
   groups are rejected (their children are competing implementations — pick one with `--child`).
+- Before launching, `delegate` prints a **preflight** to stderr — resolved daemon URL,
+  **absolute** repo path (a relative `--repo .` is resolved CLI-side so it can't retarget the
+  daemon's cwd), base ref, worktree root, and the agents about to run — and, for a multi-agent
+  fan-out at an interactive terminal, asks for confirmation. `-y` / `--yes` skips the prompt;
+  it is also skipped for non-interactive (agent-driven / scripted) use.
 - `--apply-on-ready` (delegate) auto-applies a single ready run only when every guard holds:
   an explicit `--allowed` boundary, a clean tracked tree, path policy passed, no sandbox
   escape, and all tests + verify checks green. Otherwise it prints the unmet guards and the

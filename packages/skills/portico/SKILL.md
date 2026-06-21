@@ -75,7 +75,14 @@ yourself, or anything where spinning up a separate agent adds no value.
    `--detach` (exit as soon as the run registers, printing its id; the run keeps going on the
    daemon — re-attach later with `portico delegate --follow <run_id>` or `portico logs <run_id> --follow`);
    `--notify` (fire an OS notification when the run reaches a terminal state — pairs with
-   `--detach`; macOS only for now); `--json` for machine-readable events.
+   `--detach`; macOS only for now); `--json` for machine-readable events;
+   `-y`/`--yes` (skip the fan-out confirmation prompt — confirmation is interactive-only, so
+   agent-driven runs never block).
+
+   Before launching, `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
+   **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can't retarget the
+   daemon's cwd), the base ref, the worktree root, and the agents about to run. Read it back to
+   confirm the run is pointed at the repo you intended before agents start working.
 
    `--apply-on-ready` is an explicit opt-in that auto-applies a **single** ready run only when
    every safety guard holds — you passed `--allowed` (a path boundary), the tracked tree is
@@ -137,13 +144,18 @@ yourself, or anything where spinning up a separate agent adds no value.
   compare parent.
 - To divide a large task, prefer `--mode split` with a `--child` per sub-task. Portico
   merges the children's patches; apply the merged result with `portico apply <group_id> --all`.
-  Overlapping edits produce a `conflict` group (never force-merged) — narrow one child with
-  `--resume` and Portico re-merges automatically.
+  A `conflict` group (never force-merged) reports a `Conflict Kind`: `overlap` means two
+  children edited the same region — narrow one with `--resume` and Portico re-merges
+  automatically; `apply_failure` means a single child's own patch did not apply to the group
+  base (drifted context / malformed diff), so re-run *that* child rather than narrowing.
+  The report's `Git Reason` line and `conflicts.json` (`reason`, `failingChild`, first failing
+  `file:line`) tell you which case you're in.
 - For a `partial` split group (some children ready, some failed), `portico integrate <group_id>`
   merges just the **ready** children on demand into one patch you can `apply --all`. On a
-  conflict it lists the conflicting files, their source child, and a suggested review order;
-  narrow a child with `--resume` and run `integrate` again. Compare groups are not integrated —
-  their children are competing implementations, so you pick one with `apply --child`.
+  conflict it lists the conflicting files, their source child, the conflict kind, the underlying
+  `git apply` reason, and a suggested review order; narrow or re-run the child and run
+  `integrate` again. Compare groups are not integrated — their children are competing
+  implementations, so you pick one with `apply --child`.
 - An optional `--judge-to <agent>` adds a read-only judge: it ranks compare candidates or
   vets a split merge, but never changes apply semantics — you and the user still decide.
 - Don't chain delegations: if you are yourself a delegate running inside a Portico worktree,

@@ -1139,11 +1139,25 @@ test("split merge with overlapping edits enters conflict and refuses apply --all
     assert.equal(merge?.type === "merge_done" ? merge.status : "", "conflict");
     assert.ok(merge?.type === "merge_done" && merge.conflicts?.includes("shared.txt"));
 
-    // conflicts.json records the conflicting file and its source child.
+    // Two children editing the same region is an overlap conflict, classified as such with a
+    // git reason (not a bare patch-apply failure).
+    assert.equal(group.result?.merge?.conflictKind, "overlap");
+    assert.ok((group.result?.merge?.conflictReason?.length ?? 0) > 0);
+
+    // conflicts.json records the conflicting file, its source child, the kind, the failing
+    // child, and the underlying git reason.
     const conflictsJson = JSON.parse(
       await readFile(join(repo, ".portico", "runs", groupId, "conflicts.json"), "utf8"),
-    ) as { conflicts: Array<{ file: string; child: string }> };
-    assert.ok(conflictsJson.conflicts.some((c) => c.file === "shared.txt"));
+    ) as {
+      kind: string;
+      failingChild: string;
+      reason: string;
+      conflicts: Array<{ file: string; child: string; kind?: string }>;
+    };
+    assert.equal(conflictsJson.kind, "overlap");
+    assert.ok(conflictsJson.failingChild.length > 0);
+    assert.ok(conflictsJson.reason.length > 0);
+    assert.ok(conflictsJson.conflicts.some((c) => c.file === "shared.txt" && c.kind === "overlap"));
     assert.equal(group.result?.conflicts?.length, conflictsJson.conflicts.length);
 
     // apply --all is rejected on conflict.

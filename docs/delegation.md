@@ -192,12 +192,25 @@ or `integration`. It defaults to `integration` for split and `none` for compare.
 
 ### Merge conflicts
 
-When two children edit the same region, Portico **never force-merges**. It aborts, records
-the conflicting files and their source child to `conflicts.json`, leaves the conflict
-markers in the integration worktree, and moves the group to a `conflict` status. `apply
---all` is refused while a group is in `conflict`.
+When a child's patch cannot be merged, Portico **never force-merges**. It aborts, records the
+conflict to `conflicts.json`, leaves any conflict markers in the integration worktree, and
+moves the group to a `conflict` status. `apply --all` is refused while a group is in
+`conflict`.
 
-To resolve, narrow one child and let Portico re-merge automatically:
+The report and `conflicts.json` classify the failure so you know how to fix it:
+
+- **`overlap`** — two children edited the same region (a real three-way merge conflict).
+  Narrow one child with `--resume`; Portico re-merges automatically.
+- **`apply_failure`** — a single child's *own* patch did not apply to the group base at all
+  (drifted context or a malformed diff), even on a file no other child touched. This is why a
+  non-overlapping child can still conflict. Re-run that child rather than narrowing it.
+
+`conflicts.json` carries the `kind`, the `failingChild`, the underlying `git apply` `reason`,
+the group/child base refs, and the conflicting files (with the first failing `file:line` for
+an apply failure). The `report.md` Fan-in Merge section shows the same `Conflict Kind` and
+`Git Reason`.
+
+To resolve an `overlap`, narrow one child and let Portico re-merge automatically:
 
 ```bash
 portico delegate --resume <child_id> --task "stop touching auth.ts; only change the route file"
@@ -250,11 +263,12 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 | `test.log` | Output from configured test commands |
 | `report.md` | Human-readable summary, warnings, telemetry, and next actions |
 | `result.json` | Stable machine-readable result with changed files, warnings, and telemetry |
-| `conflicts.json` | Split groups only, on a merge conflict: the conflicting files and their source child |
+| `conflicts.json` | Split groups only, on a merge conflict: the conflict `kind` (`overlap`/`apply_failure`), `failingChild`, `git apply` `reason`, base refs, and the conflicting files |
 
 For split groups, `diff.patch` holds the **merged** patch (present only when the merge is
-clean), and `result.json` additionally carries `merge` (strategy + status), `conflicts`, and
-`judge`. The final `run_done` event includes the `reportPath` and `resultPath`.
+clean), and `result.json` additionally carries `merge` (strategy + status, plus
+`conflictKind`/`conflictReason` on a conflict), `conflicts`, and `judge`. The final
+`run_done` event includes the `reportPath` and `resultPath`.
 
 ## Gate Warnings and Telemetry
 

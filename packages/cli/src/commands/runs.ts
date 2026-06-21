@@ -7,6 +7,7 @@ import {
   printDaemonError,
   readDelegationStream,
   requestJson,
+  resolveRepoArg,
 } from "./http.ts";
 import { parseDuration } from "../duration.ts";
 import { printEvent } from "./delegate.ts";
@@ -57,7 +58,7 @@ Options:
     return watchCommand(watchArgs);
   }
 
-  const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const repo = encodeURIComponent(resolveRepoArg(values.repo));
   const params = [`repo=${repo}`];
   if (values.flat) params.push("flat=true");
   if (values.status) params.push(`status=${encodeURIComponent(values.status)}`);
@@ -115,7 +116,7 @@ Options:
     return 1;
   }
 
-  const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const repo = encodeURIComponent(resolveRepoArg(values.repo));
   const url = `${daemonUrl(values.url)}/runs/${encodeURIComponent(id)}/events?repo=${repo}`;
   let offset = 0;
   let done = false;
@@ -250,7 +251,7 @@ Options:
     console.error(`Usage: portico ${action} <run_id> [--repo .]${action === "apply" ? " [--child <child_id> | --all]" : ""}`);
     return 1;
   }
-  const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const repo = encodeURIComponent(resolveRepoArg(values.repo));
   const url = `${daemonUrl(values.url)}/runs/${encodeURIComponent(id)}/${action}?repo=${repo}`;
   const bodyPayload: Record<string, unknown> = {};
   if (action === "apply" && values.child) {
@@ -308,7 +309,7 @@ Options:
     console.error("Usage: portico integrate <group_id> [--repo .]");
     return 1;
   }
-  const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const repo = encodeURIComponent(resolveRepoArg(values.repo));
   const url = `${daemonUrl(values.url)}/runs/${encodeURIComponent(id)}/integrate?repo=${repo}`;
   let body: IntegrateResult;
   try {
@@ -392,7 +393,7 @@ Options:
     payload.olderThanMs = ms;
   }
 
-  const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const repo = encodeURIComponent(resolveRepoArg(values.repo));
   const url = `${daemonUrl(values.url)}/cleanup?repo=${repo}`;
   let body: CleanupResult;
   try {
@@ -426,7 +427,7 @@ async function getRun(
   repo: string | undefined,
   id: string,
 ): Promise<RunDetails> {
-  const target = `${daemonUrl(url)}/runs/${encodeURIComponent(id)}?repo=${encodeURIComponent(repo ?? process.cwd())}`;
+  const target = `${daemonUrl(url)}/runs/${encodeURIComponent(id)}?repo=${encodeURIComponent(resolveRepoArg(repo))}`;
   return requestJson<RunDetails>(target, {}, token);
 }
 

@@ -1,10 +1,23 @@
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DelegationEvent } from "@portico/orchestrator";
 
 export interface HttpOptions {
   url?: string;
   token?: string;
+}
+
+/**
+ * Resolve a `--repo` argument to an absolute path against the *CLI's* cwd before it travels
+ * to the daemon. A relative value like `.` must never be sent as-is: the daemon resolves the
+ * repo against its *own* cwd (orchestrator `resolveRepo` → `resolve()`), so a relative arg
+ * silently retargets the run at whatever directory the daemon was started in — the
+ * "ran in the wrong repo" failure. An absolute path is returned unchanged; an unset value
+ * defaults to the CLI's cwd (already absolute).
+ */
+export function resolveRepoArg(repo?: string): string {
+  return repo ? resolve(repo) : process.cwd();
 }
 
 export function daemonUrl(url?: string): string {

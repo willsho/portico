@@ -5,7 +5,7 @@
 // a one-shot snapshot so the command stays scriptable.
 
 import { parseArgs } from "node:util";
-import { authHeaders, daemonUrl, fetchWithRetry } from "./http.ts";
+import { authHeaders, daemonUrl, fetchWithRetry, resolveRepoArg } from "./http.ts";
 import { applyCommand, cancelCommand, discardCommand, integrateCommand, logsCommand, statusCommand } from "./runs.ts";
 import { reviewCommand } from "./review.ts";
 import { notify } from "../notify.ts";
@@ -75,7 +75,7 @@ Options:
   }
 
   const interval = values.interval ? Math.max(250, Number(values.interval)) : 2000;
-  const repo = values.repo ?? process.cwd();
+  const repo = resolveRepoArg(values.repo);
   const ctx: WatchCtx = { repo, url: values.url, token: values.token };
   const fetchOpts = { statusFilter, sinceMs, to: values.to };
 
