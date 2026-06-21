@@ -1,6 +1,6 @@
 # Portico 路线图 (Roadmap)
 
-Portico 当前发布内容及未来计划的状态快照。完整设计位于 [`agent-runtime-library-plan.zh-CN.md`](../plan/agent-runtime-library-plan.zh-CN.md)（第 18 节 里程碑，第 23 节 MVP）和 [`session-management-plan.zh-CN.md`](../plan/session-management-plan.zh-CN.md)。
+Portico 当前发布内容及未来计划的状态快照。完整设计位于 [`agent-runtime-library-plan.md`](agent-runtime-library-plan.md)（第 18 节 里程碑，第 23 节 MVP）和 [`session-management-plan.md`](session-management-plan.md)。
 
 **当前状态：** MVP（计划第 23 节）已完成并经过验证——核心（core）+ 守护进程（daemon）+ 客户端（client）+ 适配器（adapters）+ 命令行界面（cli），包含 generic-cli 和 stream-json 引擎、结构化的 Claude 流传输以及内存中的会话恢复。63 个测试通过；`npm run typecheck` 干净无错。没有构建步骤（Node 原生类型剥离）。
 
@@ -79,7 +79,7 @@ Portico 当前发布内容及未来计划的状态快照。完整设计位于 [`
 ### M5 — LAN 和安全增强 🟡 → ⬜
 
 - ✅ `--lan` 模式、bearer token、`--allow-origin`。
-- ⬜ 配对码流程（初版）— 无需手动复制令牌即可更轻松地进行 LAN 设备配对。
+- ⬜ 配词码流程（初版）— 无需手动复制令牌即可更轻松地进行 LAN 设备配对。
 
 ### 会话持久化与人体工程学 ⬜
 
@@ -90,9 +90,9 @@ Portico 当前发布内容及未来计划的状态快照。完整设计位于 [`
 
 把现有的 `compare` 模式（同一 task、N 个 agent、各自独立 worktree、串行执行）扩展为完整的 fan-out 能力。分三阶段推进，各有独立的开发计划文档：
 
-- **Phase 1 — 并行执行与并发池 (Phase 1 — Parallel execution and concurrency pool)** ✅ — 见 [`fanout-phase-1-parallel-execution-plan.zh-CN.md`](../plan/fanout-phase-1-parallel-execution-plan.zh-CN.md)。`mergeAsyncIterables` 事件多路复用、`maxConcurrentAgentProcesses` 并发上限、worktree 操作串行化，把 `compare` 从串行改为有界并行；对外行为不变，只是更快。已并入 orchestrator 并有单测 + 并行/并发上限集成测试覆盖。
-- **Phase 2 — Group Run 模型与生命周期 (Phase 2 — Group Run model and lifecycle)** ✅ — 见 [`fanout-phase-2-group-runs-plan.zh-CN.md`](../plan/fanout-phase-2-group-runs-plan.zh-CN.md)。Group Run + lineage（`role`/`groupId`/`parentRunId`）、`partial` 聚合状态、`ChildSpec`异构配置（不同 agent/权限/模型）、`apply`(apply-one)/`cancel`/`discard`/`runs` 理解 group、子 run 个体 resume（迭代修复）。
-- **Phase 3 — 任务分治与 Fan-in 合并 (Phase 3 — Task split and Fan-in merge)** ✅ — 见 [`fanout-phase-3-split-and-fan-in-plan.zh-CN.md`](../plan/fanout-phase-3-split-and-fan-in-plan.zh-CN.md)。`split` 模式、patch 合并（互斥叠加 + integration worktree 三方合并）、`conflict` 状态、apply-all、可选 judge 评审（用 Portico 自己的 review child，保持 agent-agnostic）。冲突一律中止上报、子 run resume 自动重新合并。
+- **Phase 1 — 并行执行与并发池 (Phase 1 — Parallel execution and concurrency pool)** ✅ — 见 [`fanout-phase-1-parallel-execution-plan.md`](../plan/fanout-phase-1-parallel-execution-plan.md)。`mergeAsyncIterables` 事件多路复用、`maxConcurrentAgentProcesses` 并发上限、worktree 操作串行化，把 `compare` 从串行改为有界并行；对外行为不变，只是更快。已并入 orchestrator 并有单测 + 并行/并发上限集成测试覆盖。
+- **Phase 2 — Group Run 模型与生命周期 (Phase 2 — Group Run model and lifecycle)** ✅ — 见 [`fanout-phase-2-group-runs-plan.md`](../plan/fanout-phase-2-group-runs-plan.md)。Group Run + lineage（`role`/`groupId`/`parentRunId`）、`partial` 聚合状态、`ChildSpec`异构配置（不同 agent/权限/模型）、`apply`(apply-one)/`cancel`/`discard`/`runs` 理解 group、子 run 个体 resume（迭代修复）。
+- **Phase 3 — 任务分治与 Fan-in 合并 (Phase 3 — Task split and Fan-in merge)** ✅ — 见 [`fanout-phase-3-split-and-fan-in-plan.md`](../plan/fanout-phase-3-split-and-fan-in-plan.md)。`split` 模式、patch 合并（互斥叠加 + integration worktree 三方合并）、`conflict` 状态、apply-all、可选 judge 评审（用 Portico 自己的 review child，保持 agent-agnostic）。冲突一律中止上报、子 run resume 自动重新合并。
 
 定位：Portico fan-out 覆盖**写侧 / 产 patch / worktree 隔离**的重型并行，与 Claude Agent SDK subagent / Workflow 的**读侧 / 产文本 / 进程内**轻量 fan-out 互补，可组合使用。
 
@@ -117,7 +117,7 @@ Portico 当前发布内容及未来计划的状态快照。完整设计位于 [`
 | M2 守护进程 | start、health/agents/chat/reload、CORS、超时 | ✅ 已完成 |
 | M3 客户端 SDK | 客户端、类型化错误、异步 `chat()`、进程内 | ✅ 已完成 |
 | M4 适配器 | generic-cli、stream-json (Claude)、仅检测 | 🟡 剩余 Codex 结构化/恢复 |
-| M5 LAN 与安全 | 令牌 + 拒绝 LAN 已完成；配对码 | 🟡 剩余配对 |
+| M5 LAN 与安全 | 令牌 + 拒绝 LAN 已完成；配词码 | 🟡 剩余配对 |
 | 会话 (Sessions) | 内存恢复已完成；文件存储 + 辅助函数 | 🟡 剩余持久化 |
 | Fan-out P1 | 并行 compare、并发池、事件合并 | ✅ 已完成 |
 | Fan-out P2 | group 运行、血统、异构子项、恢复 | ✅ 已完成 |
