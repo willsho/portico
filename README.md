@@ -120,6 +120,7 @@ portico watch [--repo .] [--needs-review] [--to <agent>] [--status s1,s2] [--onc
 portico status <run_id> [--repo .]
 portico logs <run_id> [--repo .] [--follow]
 portico review <group_id> [--ready-only] [--open-diff] [--json]
+portico patch-stack <run_id> <run_id>...  # read-only file overlap & apply-order summary
 portico integrate <group_id> [--repo .]      # merge a group's ready children into one patch
 portico cancel <run_id> [--repo .]
 portico apply <run_id> [--repo .]            # single run

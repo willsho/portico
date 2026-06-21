@@ -28,6 +28,7 @@ portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
 portico review <run_id> [options]
+portico patch-stack <run_id> <run_id>... [options]
 portico integrate <group_id> [options]
 portico logs <run_id> [options]
 portico apply <run_id> [options]
@@ -178,6 +179,7 @@ Common options:
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
 | `--expected-change <pattern>` | Path expected to be changed; adds a Coverage section and warns (→ `needs_attention`) on an untouched expected path; repeatable |
+| `--coverage-manifest <path>` | JSON manifest file supplying expected-change paths |
 | `--timeout <ms>` | Agent run timeout (total task wall-clock). Test/verify commands use their own, shorter timeout; a separate **idle watchdog** also stops an agent that produces no output for too long. Defaults come from the daemon's `defaultAgentTimeoutMs` / `defaultTimeoutMs` / `idleTimeoutMs` limits |
 | `--expect-no-changes` | Treat a no-change result as acceptable: suppress the implement-mode no-change warning and keep the review decision `approve` |
 | `--json` | Print delegation events as JSON lines |
@@ -413,6 +415,21 @@ time. A failing child prints the underlying `git apply` reason.
 | `--ready-only` | Only show children that are ready to apply |
 | `--json` | Emit the structured aggregation (children + overlap + applyCheck) |
 | `--open-diff` | Also print each shown child's full diff inline |
+
+## `portico patch-stack`
+
+Reads file changes from two or more runs to summarize overlap and suggest an apply order without applying anything:
+
+```bash
+portico patch-stack <run_id> <run_id> [run_id...]
+```
+
+Options:
+
+| Option | Description |
+| --- | --- |
+| `--repo <path>` | Repository path |
+| `--json` | Output JSON format |
 
 ## `portico integrate`
 

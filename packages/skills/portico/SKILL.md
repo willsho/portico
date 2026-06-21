@@ -76,6 +76,7 @@ yourself, or anything where spinning up a separate agent adds no value.
    `--expected-change <pattern>` (repeatable; declare paths you expect to change — the report
    adds a Coverage section and an untouched expected path becomes a coverage gap → the run is
    `needs_attention`, catching a task that silently skipped part of its scope);
+   `--coverage-manifest <path>` (supply expected-change paths from a JSON file);
    `--review-summary` (after the run, print a one-click apply command + risk summary);
    `--auto-start` (start a loopback daemon and retry once if it isn't running);
    `--detach` (exit as soon as the run registers, printing its id; the run keeps going on the
@@ -180,6 +181,8 @@ yourself, or anything where spinning up a separate agent adds no value.
   base (drifted context / malformed diff), so re-run *that* child rather than narrowing.
   The report's `Git Reason` line and `conflicts.json` (`reason`, `failingChild`, first failing
   `file:line`) tell you which case you're in.
+- For multiple ready/independent runs you want to apply in order, use `portico patch-stack <run_id> <run_id>...`.
+  It computes file overlap (manual-merge hot spots) and suggests an apply-order without applying anything.
 - For a `partial` split group (some children ready, some failed), `portico integrate <group_id>`
   merges just the **ready** children on demand into one patch you can `apply --all`. On a
   conflict it lists the conflicting files, their source child, the conflict kind, the underlying
@@ -223,10 +226,11 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico status <run_id>` — show a run's artifacts, changed files, tests, and live progress
   (current phase, whether an agent is still running, last event).
 - `portico review <group_id>` — aggregate a group's children for review, with cross-child file overlap and a per-child apply check against the group base (`--ready-only` / `--json` / `--open-diff`).
+- `portico patch-stack <run_id> <run_id>...` — read-only summary of file overlap and apply-order across runs.
 - `portico integrate <group_id>` — merge an implement/split group's ready children into one patch (not for compare groups).
 - `portico apply <run_id>` — apply a ready single run's patch (only with user approval).
 - `portico apply <group_id> --child <child_id>` — apply one compare candidate.
-- `portico apply <group_id> --all` — apply a split/integrated group's merged patch.
+- `portico apply <group_id> --all` — apply a split/integrated group's merged patch. Tip: apply the group's merged patch first, then run/apply any small follow-up fixes as separate patches.
 - `portico discard <run_id>` — remove a run's worktree (artifacts kept).
 - `portico cancel <run_id>` — cancel an in-flight run.
 - `portico cleanup [--failed] [--older-than <dur>] [--purge]` — reclaim finished run worktrees

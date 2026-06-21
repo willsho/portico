@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { delegateCommand } from "../src/commands/delegate.ts";
+import { delegateCommand, parseCoverageManifest } from "../src/commands/delegate.ts";
 
 async function captureError(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
   const originalError = console.error;
@@ -141,7 +141,7 @@ test("delegate prints a preflight echo with the resolved absolute repo before la
     // A relative `--repo .` is echoed as an absolute path — the wrong-repo guard.
     assert.ok(errOut.includes(`repo:`) && errOut.includes(process.cwd()));
     assert.match(errOut, /timeout:\s+daemon default/);
-    
+
     errOut = "";
     code = await delegateCommand(["--to", "agent", "--task", "x", "--timeout", "5000", "--url", "http://127.0.0.1:1"]);
     assert.equal(code, 0);
@@ -190,7 +190,7 @@ test("delegate returns 3 when the stream drops mid-run but the run has a runId",
   const originalError = console.error;
   console.log = () => {};
   console.error = () => {};
-  
+
   globalThis.fetch = async () => new Response(
     `${JSON.stringify({ type: "run_start", runId: "r1" })}\n${JSON.stringify({ type: "agent_start", runId: "r1", agent: "foo" })}\n`,
     { status: 200, headers: { "Content-Type": "application/x-ndjson" } }
@@ -212,7 +212,7 @@ test("delegate returns 1 on run_error", async () => {
   const originalError = console.error;
   console.log = () => {};
   console.error = () => {};
-  
+
   globalThis.fetch = async () => new Response(
     `${JSON.stringify({ type: "run_error", runId: "r1", error: "boom", code: "failed" })}\n`,
     { status: 200, headers: { "Content-Type": "application/x-ndjson" } }
@@ -226,4 +226,14 @@ test("delegate returns 1 on run_error", async () => {
     console.log = originalLog;
     console.error = originalError;
   }
+});
+
+test("parseCoverageManifest extracts string paths from varied manifest shapes", () => {
+  assert.deepEqual(parseCoverageManifest('{"expectedChange": ["a.ts", "b.ts"]}'), ["a.ts", "b.ts"]);
+  assert.deepEqual(parseCoverageManifest('{"expectedChangePaths": ["c.ts"]}'), ["c.ts"]);
+  assert.deepEqual(parseCoverageManifest('["d.ts", "e.ts"]'), ["d.ts", "e.ts"]);
+  assert.deepEqual(parseCoverageManifest('["f.ts", 123, null, "g.ts"]'), ["f.ts", "g.ts"]);
+  assert.deepEqual(parseCoverageManifest('{}'), []);
+  assert.deepEqual(parseCoverageManifest('{"other": ["a.ts"]}'), []);
+  assert.deepEqual(parseCoverageManifest('invalid json'), []);
 });
