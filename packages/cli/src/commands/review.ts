@@ -126,7 +126,7 @@ function countChecks(checks: { status: "passed" | "failed" }[]): { passed: numbe
 }
 
 /** Files changed by more than one child — the manual-merge hot spots (feedback: overlap). */
-function computeOverlap(children: ChildReview[]): Array<{ file: string; children: string[] }> {
+export function computeOverlap(children: { id: string; label?: string; changedFiles: string[] }[]): Array<{ file: string; children: string[] }> {
   const byFile = new Map<string, string[]>();
   for (const child of children) {
     for (const file of child.changedFiles) {

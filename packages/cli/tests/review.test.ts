@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reviewCommand } from "../src/commands/review.ts";
+import { reviewCommand, computeOverlap } from "../src/commands/review.ts";
 
 function childResult(
   id: string,
@@ -149,4 +149,17 @@ test("review --json emits structured aggregation with overlap", async () => {
     globalThis.fetch = originalFetch;
     console.log = originalLog;
   }
+});
+
+test("computeOverlap computes files changed by more than one run", () => {
+  const children = [
+    { id: "r1", label: "l1", changedFiles: ["a", "b"] },
+    { id: "r2", label: "l2", changedFiles: ["b", "c"] },
+    { id: "r3", changedFiles: ["a", "c", "d"] },
+  ];
+  assert.deepEqual(computeOverlap(children), [
+    { file: "a", children: ["l1", "r3"] },
+    { file: "b", children: ["l1", "l2"] },
+    { file: "c", children: ["l2", "r3"] },
+  ]);
 });

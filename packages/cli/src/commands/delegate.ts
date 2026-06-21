@@ -19,6 +19,24 @@ import {
 import { logsCommand } from "./runs.ts";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
 
+export function parseCoverageManifest(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    let paths: unknown;
+    if (Array.isArray(parsed)) {
+      paths = parsed;
+    } else if (parsed && typeof parsed === "object") {
+      paths = (parsed as Record<string, unknown>).expectedChange || (parsed as Record<string, unknown>).expectedChangePaths;
+    }
+    if (!Array.isArray(paths)) {
+      return [];
+    }
+    return paths.filter((p) => typeof p === "string");
+  } catch {
+    return [];
+  }
+}
+
 export async function delegateCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -46,6 +64,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       allowed: { type: "string", multiple: true },
       forbidden: { type: "string", multiple: true },
       "expected-change": { type: "string", multiple: true },
+      "coverage-manifest": { type: "string" },
       timeout: { type: "string" },
       "expect-no-changes": { type: "boolean" },
       json: { type: "boolean" },
@@ -87,6 +106,7 @@ Options:
   --allowed <path>         Allowed path (repeatable)
   --forbidden <path>       Forbidden path (repeatable)
   --expected-change <path> Path expected to be changed; reports coverage + warns on a gap (repeatable)
+  --coverage-manifest <path> Manifest file with expected-change paths
   --timeout <ms>           Timeout in milliseconds
   --expect-no-changes      Treat a no-change result as acceptable (skip the no-change warning)
   --json                   Output JSON format
@@ -170,6 +190,29 @@ Options:
     }
   }
 
+  let expectedChangePaths = values["expected-change"] ? [...values["expected-change"]] : undefined;
+  if (values["coverage-manifest"]) {
+    try {
+      const content = readFileSync(values["coverage-manifest"], "utf8");
+      const manifestPaths = parseCoverageManifest(content);
+      if (manifestPaths.length === 0) {
+        console.error(`[portico] Error: coverage manifest '${values["coverage-manifest"]}' has no usable string paths`);
+        return 1;
+      }
+      if (!expectedChangePaths) expectedChangePaths = [];
+      const seen = new Set(expectedChangePaths);
+      for (const p of manifestPaths) {
+        if (!seen.has(p)) {
+          expectedChangePaths.push(p);
+          seen.add(p);
+        }
+      }
+    } catch (err) {
+      console.error(`[portico] Error reading coverage manifest '${values["coverage-manifest"]}': ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+  }
+
   const request: DelegateRequest = {
     to: values.to,
     from: values.from,
@@ -188,7 +231,7 @@ Options:
     verifyCommands: values.verify,
     allowedPaths: values.allowed,
     forbiddenPaths: values.forbidden,
-    expectedChangePaths: values["expected-change"],
+    expectedChangePaths: expectedChangePaths,
     timeoutMs: values.timeout ? Number(values.timeout) : undefined,
     expectNoChanges: values["expect-no-changes"],
     depth: Number(process.env["PORTICO_DELEGATION_DEPTH"] ?? "0"),
