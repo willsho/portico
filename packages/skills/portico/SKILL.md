@@ -70,6 +70,9 @@ yourself, or anything where spinning up a separate agent adds no value.
    separately from tests — use for doc/policy tasks that have no test command); repeatable
    `--allowed`/`--forbidden` (path policy); `--base-ref <ref>`;
    `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>`;
+   `--expect-no-changes` (declare that producing no edits is an acceptable outcome — suppresses
+   the implement-mode no-change warning and keeps the review decision `approve`; use for
+   check/audit tasks run in implement mode);
    `--review-summary` (after the run, print a one-click apply command + risk summary);
    `--auto-start` (start a loopback daemon and retry once if it isn't running);
    `--detach` (exit as soon as the run registers, printing its id; the run keeps going on the
@@ -112,13 +115,23 @@ yourself, or anything where spinning up a separate agent adds no value.
 5. **Read the result, don't trust the stream alone.** The final `run_done` event carries the
    report path. Read `report.md`, and `result.json` for the structured `changedFiles` and
    `tests`. `portico status <run_id>` re-prints a summary (`--json` for structured fields).
+   The report's `## Portico Observations` section is the trustworthy block: it carries
+   Portico's own measurements (changed files, diff check, tests/verify tallies, path policy,
+   sandbox escape, and the `Review Decision`). Trust those over the agent's narration — the
+   streamed agent log can show mojibake, internal sub-agent chatter, or timeouts that don't
+   reflect the files on disk. The agent log (`agent.ndjson`) is a log, not a status source.
    For a group (compare/split), `portico review <group_id>` aggregates every child
    (status, changed files, checks, report/diff paths, per-child next action) and highlights
    files changed by more than one child — the spots that need careful manual merging.
 
 6. **Summarize for the user:** run id and status, changed files, per-command test result, and
    any risks you see in the diff. A run is `ready` when it produced a diff and tests passed;
-   `failed` when a test failed or the agent errored.
+   `failed` when a test failed or the agent errored. Read the report's `Review Decision`
+   (under `## Portico Observations` / `## Review`): even a `ready` run can be `needs_attention`
+   — most often an implement-mode run that produced **no file changes**, which usually means it
+   didn't make progress. Don't lead the user to apply a `needs_attention` run; inspect why, then
+   re-delegate with a sharper task (or pass `--expect-no-changes` if no edits was genuinely the
+   expected outcome).
 
 7. **Decide apply vs discard — always with the user.**
    - `ready` and the diff looks right → present a summary and **ask before** running

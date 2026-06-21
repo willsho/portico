@@ -31,6 +31,32 @@
 
 排序原则：**先消灭白跑，再降低误读。** 下面每个痛点标注它属于哪一类，并注明哪些能力已在代码中存在。
 
+## 进度快照（截至 PR #14）
+
+图例：✅ 已完成 · 🟡 部分完成 · ⬜ 未开始
+
+**P0-a（正确性）+ P0-b（判读）全部完成**，其余尚未开始：
+
+| 项 | 状态 | 说明 |
+| --- | --- | --- |
+| 痛点 1 · repo 透传（delegate/runs/review/watch/notify） | ✅ | `resolveRepoArg` |
+| 痛点 1 · resume 透传 `?repo=` | ✅ | |
+| 痛点 1 · fanout preflight 回显 + 确认 + `-y` | ✅ | repo/base/worktree/daemon 回显;base/worktree 早已在 report |
+| 痛点 1 · daemon 连接错误分类（P1） | 🟡 | 已有 `classifyFetchError`（未运行/沙箱/超时/DNS）;端口不匹配、repo 不可写、复用 doctor 未做 |
+| 痛点 4 · 抓 stderr + 区分 overlap/apply_failure | ✅ | |
+| 痛点 4 · 解析首个失败 hunk + conflicts.json 富字段 | ✅ | kind/failingChild/reason/base refs/`file:line`;「建议最小重跑范围」未单列字段 |
+| 痛点 4 · `review` 增加 `applyCheck`（P1） | ⬜ | |
+| **P0-b** 痛点 5 · 报告弱化 agent 自述 | ✅ | report 新增 `## Portico Observations`（changed files/diff check/tests/verify/policy/sandbox/review decision）+ 「agent.ndjson 非权威」提示 |
+| **P0-b** 痛点 6 · no-change → `needs_attention`（用 mode） | ✅ | `reviewDecision` 结构化字段；implement no-change → `needs_attention`；`--expect-no-changes` 豁免；Review/Next Actions 不再误导 apply |
+| 痛点 2 · telemetry 补桶 / watch 阶段 / 重试成本（全 P1） | ⬜ | |
+| 痛点 3 · Ready-to-review vs apply / 已检查·未检查 / verify 一等（全 P1） | ⬜ | |
+| 痛点 5 · agent log artifact / no-change warning 提显著度（P1） | ⬜ | |
+| 痛点 6 · 无改动结构化理由 / group 分组（P1） | ⬜ | |
+| 痛点 7 · coverage（`--expected-*` / coverage 段 / manifest） | ⬜ | |
+| 痛点 8 · group 采用标记 / patch-stack / apply 前提示 | ⬜ | |
+
+下一步建议：**P1**（review 信息结构化、telemetry 补桶、coverage/verify 强化）——P0-a/P0-b 已完成，正确性与最常见的误读已堵住，P1 进一步减少人工补查和 patch 拆解。
+
 ## 痛点 1（正确性，P0 旗舰）：`--repo` 解析让委派和 resume 跑错仓库
 
 ### 现象
@@ -52,19 +78,20 @@
 
 ### 计划
 
-- **P0**：CLI 侧在发送前把 `--repo` 解析为绝对路径（约 1 行），不再把相对路径交给 daemon。
-- **P0**：resume URL 透传 `?repo=`，与 status / apply 一致（约 1 行）。**注意不要**按原计划做「child id 的
+- ✅ **P0**：CLI 侧在发送前把 `--repo` 解析为绝对路径（约 1 行），不再把相对路径交给 daemon。
+- ✅ **P0**：resume URL 透传 `?repo=`，与 status / apply 一致（约 1 行）。**注意不要**按原计划做「child id 的
   repo 内全局解析」——那是过度设计；正确修法只是把 repo 传过去。
-- **P0（旗舰）**：fanout 注册 child **之前**打印并（fanout 时）要求确认 resolved repo 绝对路径、base ref、
+- ✅ **P0（旗舰）**：fanout 注册 child **之前**打印并（fanout 时）要求确认 resolved repo 绝对路径、base ref、
   worktree root、daemon URL。这是全计划性价比最高的一条——5 行的 preflight，能在 N 个 agent 启动前
-  拦下「错仓库」这个最贵的级联失败。这些字段同时进入 run report。
-- **P1**：daemon 连接错误分类（未运行 / 端口不匹配 / 权限沙箱 / repo 不可写）。复用 `portico doctor`
+  拦下「错仓库」这个最贵的级联失败。（base ref / worktree 早已在 run report;preflight 额外回显绝对 repo + daemon URL。）
+- 🟡 **P1**：daemon 连接错误分类（未运行 / 端口不匹配 / 权限沙箱 / repo 不可写）。复用 `portico doctor`
   已有的端口可用性与 discovery 输出，不要另造诊断面。
+  （现状：`classifyFetchError` 已分未运行 / 沙箱 / 超时 / DNS;端口不匹配、repo 不可写、doctor 复用未做。）
 
 ### 回归测试（验收）
 
-- `--repo .` 在 daemon cwd ≠ 调用方 cwd 时仍解析到调用方仓库。
-- resume 在 daemon cwd ≠ 调用方 cwd 时仍命中正确 run store。
+- ✅ `--repo .` 在 daemon cwd ≠ 调用方 cwd 时仍解析到调用方仓库。（`resolveRepoArg` 单测 + preflight echo 测试）
+- ✅ resume 在 daemon cwd ≠ 调用方 cwd 时仍命中正确 run store。（透传 `?repo=`）
 
 ## 痛点 2（判读）：fanout 的时间花费不透明
 
@@ -80,9 +107,9 @@
 
 ### 计划
 
-- **P1**：在现有 telemetry 上补齐缺的阶段：worktree setup、diff generation、verify、fan-in。
-- **P1**：`watch/status` 显示 child 当前阶段和最后事件时间，避免长时间静默。
-- **P1**：group report 增加「重试成本」摘要：总 wall time、各 child agent duration、失败/取消/无改动运行数。
+- ⬜ **P1**：在现有 telemetry 上补齐缺的阶段：worktree setup、diff generation、verify、fan-in。
+- ⬜ **P1**：`watch/status` 显示 child 当前阶段和最后事件时间，避免长时间静默。
+- ⬜ **P1**：group report 增加「重试成本」摘要：总 wall time、各 child agent duration、失败/取消/无改动运行数。
 
 ## 痛点 3（判读）：`ready` 不等于用户可以放心 apply
 
@@ -100,9 +127,9 @@
 
 ### 计划
 
-- **P1**：report 明确区分 `Ready to review` 与 `Ready to apply`（文档类任务尤其需要）。
-- **P1**：把现有分段归并成「Portico 已检查」与「Portico 未检查」两块，避免 ready 语义被误读。
-- **P1**：把 verify 结果提升为一等信息（乱码扫描、链接检查、冲突标记扫描对文档任务最有用）。
+- ⬜ **P1**：report 明确区分 `Ready to review` 与 `Ready to apply`（文档类任务尤其需要）。
+- ⬜ **P1**：把现有分段归并成「Portico 已检查」与「Portico 未检查」两块，避免 ready 语义被误读。
+- ⬜ **P1**：把 verify 结果提升为一等信息（乱码扫描、链接检查、冲突标记扫描对文档任务最有用）。
 
 ## 痛点 4（正确性，P0）：非重叠 child 的 fan-in conflict 无法归因
 
@@ -126,11 +153,12 @@
 
 ### 计划
 
-- **P0**：捕获并保存 `git apply` 的 stderr；据此区分两类——overlap 三方合并冲突（有 unmerged 条目）
+- ✅ **P0**：捕获并保存 `git apply` 的 stderr；据此区分两类——overlap 三方合并冲突（有 unmerged 条目）
   vs 纯 patch apply failure（无 unmerged 条目）。
-- **P0**：apply failure 时解析首个 `error: patch failed: <file>:<line>`，而不是 dump 整个 child 文件集；
-  conflicts.json 记录失败文件、失败 child、首个失败 hunk、各 child diff 的生成 base ref、建议最小重跑范围。
-- **P1**：`portico review` 在 overlap 之外增加 `applyCheck` 状态，提前暴露 child patch 是否可应用到 group base。
+- ✅ **P0**：apply failure 时解析首个 `error: patch failed: <file>:<line>`，而不是 dump 整个 child 文件集；
+  conflicts.json 记录失败文件、失败 child、首个失败 hunk、各 child diff 的生成 base ref。
+  （「建议最小重跑范围」未单列字段——由 `failingChild` + report Next Actions 间接给出。）
+- ⬜ **P1**：`portico review` 在 overlap 之外增加 `applyCheck` 状态，提前暴露 child patch 是否可应用到 group base。
 
 ## 痛点 5（判读）：agent 日志噪声和最终文件状态脱节
 
@@ -142,12 +170,14 @@
 
 ### 计划
 
-- **P0**：final report 弱化 agent 自述，突出 Portico 自己观察到的事实：changed files、diff check、verify、
-  policy、apply check。
-- **P1**：agent log 非结构化内容保留为 artifact，但默认摘要只引用结构化状态。
-- **P1**：对「agent completed but produced no file changes」提升为显著 warning。
-  （已实现：该 gate warning 文案已存在，见 [orchestrator.ts:1757](../../packages/orchestrator/src/orchestrator.ts#L1757)，
-  此处只需提升其在摘要中的显著度。）
+- ✅ **P0（P0-b）**：final report 弱化 agent 自述，突出 Portico 自己观察到的事实：changed files、diff check、verify、
+  policy、apply check。report 在 Summary 之后新增 `## Portico Observations` 段（单运行/子运行），汇总 Portico 自测的
+  changed files / diff check / tests / verify / path policy / sandbox / review decision，并附「agent.ndjson 是日志、
+  非权威状态源」提示（[orchestrator.ts `formatObservations`]）。
+- ⬜ **P1**：agent log 非结构化内容保留为 artifact，但默认摘要只引用结构化状态。
+- 🟡 **P1**：对「agent completed but produced no file changes」提升为显著 warning。
+  （gate warning 文案**已存在**，见 [orchestrator.ts:1757](../../packages/orchestrator/src/orchestrator.ts#L1757)；
+  尚未提升其在摘要中的显著度。）
 
 ## 痛点 6（判读）：无改动 ready 容易造成误判
 
@@ -164,11 +194,13 @@
 
 ### 计划
 
-- **P0**：no-change 升为 `needs_attention`。**判定依据用已结构化的 `mode`，不要 parse 任务动词**——
-  任务是自由文本、常多句、还经常是中文，动词嗅探太脆。implement 模式 no-change 默认 `needs_attention`；
-  review/check 模式或显式 `--expect-no-changes` 不报。
-- **P1**：无改动 run 要求 agent 给出「为何无需修改」的结构化理由，单独展示。
-- **P1**：group review 中无改动 child 单独分组，避免被 ready child 淹没。
+- ✅ **P0（P0-b）**：no-change 升为 `needs_attention`。新增结构化 `RunResult.reviewDecision`（`approve` | `needs_attention`），
+  由 Portico 观察到的事实推导，不依赖 agent 自述。**判定依据用已结构化的 `mode`，未 parse 任务动词**——
+  implement 模式 no-change 默认 `needs_attention`；review/check 模式或显式 `--expect-no-changes`（新增 CLI flag +
+  `DelegateRequest.expectNoChanges` + `Run.expectNoChanges`）不报。report 的 `## Review` Decision、`## Portico Observations`
+  的 Review Decision、单运行 Next Actions、CLI `--review-summary` 均改用 `reviewDecision`，不再把 no-change ready 误导为 apply。
+- ⬜ **P1**：无改动 run 要求 agent 给出「为何无需修改」的结构化理由，单独展示。
+- ⬜ **P1**：group review 中无改动 child 单独分组，避免被 ready child 淹没。
 
 ## 痛点 7（判读）：path policy 保证边界，不保证覆盖
 
@@ -179,11 +211,11 @@
 
 ### 计划
 
-- **P1**：delegate 支持可选 `--expected-change` / `--expected-touch`，声明预期路径集合。
+- ⬜ **P1**：delegate 支持可选 `--expected-change` / `--expected-touch`，声明预期路径集合。
   （注意：这把枚举工作转嫁给委派方，本身也是摩擦；对 docs sync 可考虑由调用方脚本自动推导
   「有 `*.zh-CN.md` 兄弟的 `*.md`」这类集合，但 Portico 不内建文档引擎。）
-- **P1**：report 增加 coverage 段：expected、touched、untouched、unexpected。
-- **P2**：对 docs sync 这类任务提供轻量 manifest，能表达覆盖预期，但不做专门文档引擎。
+- ⬜ **P1**：report 增加 coverage 段：expected、touched、untouched、unexpected。
+- ⬜ **P2**：对 docs sync 这类任务提供轻量 manifest，能表达覆盖预期，但不做专门文档引擎。
 
 ## 痛点 8（判读）：group 产物修补和组合不方便
 
@@ -194,20 +226,20 @@
 
 ### 计划
 
-- **P1**：group review 支持标记 child 或文件级别的采用状态，第一阶段只做展示，不自动合成复杂补丁。
-- **P2**：提供 `portico patch-stack` 类只读摘要，展示多个 ready run 的文件重叠和应用顺序风险。
-- **P2**：apply 前提示「建议先 apply group，再运行/应用小修」这类可审查路径。
+- ⬜ **P1**：group review 支持标记 child 或文件级别的采用状态，第一阶段只做展示，不自动合成复杂补丁。
+- ⬜ **P2**：提供 `portico patch-stack` 类只读摘要，展示多个 ready run 的文件重叠和应用顺序风险。
+- ⬜ **P2**：apply 前提示「建议先 apply group，再运行/应用小修」这类可审查路径。
 
 ## 分期
 
 P0 拆成两档，正确性优先于判读：
 
-| 阶段 | 类别 | 重点 | 目标 |
-| --- | --- | --- | --- |
-| P0-a | 正确性 | repo 透传(痛点1) + fanout preflight 回显/校验(痛点1) + fan-in 抓 stderr 并区分两类冲突(痛点4) | 不再白跑、不再整组重跑 |
-| P0-b | 判读 | agent 自述降权(痛点5) + no-change→needs_attention(痛点6，用 mode) | ready 不被误读 |
-| P1 | 判读 | review 信息结构化、telemetry 补桶、coverage/verify 强化 | 减少人工补查和 patch 拆解 |
-| P2 | 组合 | 多 run 组合审查、复杂任务覆盖声明 | 让大任务和小修复更稳地协作 |
+| 阶段 | 状态 | 类别 | 重点 | 目标 |
+| --- | --- | --- | --- | --- |
+| P0-a | ✅ 已完成 | 正确性 | repo 透传(痛点1) + fanout preflight 回显/校验(痛点1) + fan-in 抓 stderr 并区分两类冲突(痛点4) | 不再白跑、不再整组重跑 |
+| P0-b | ✅ 已完成 | 判读 | agent 自述降权(痛点5，`## Portico Observations`) + no-change→needs_attention(痛点6，`reviewDecision` 用 mode + `--expect-no-changes`) | ready 不被误读 |
+| P1 | ⬜ 未开始 | 判读 | review 信息结构化、telemetry 补桶、coverage/verify 强化 | 减少人工补查和 patch 拆解 |
+| P2 | ⬜ 未开始 | 组合 | 多 run 组合审查、复杂任务覆盖声明 | 让大任务和小修复更稳地协作 |
 
 ## 非目标
 
@@ -220,9 +252,9 @@ P0 拆成两档，正确性优先于判读：
 
 ## 验收标准
 
-- `--repo .` 不再因 daemon cwd 被解析到意外仓库（有回归测试）。
-- `resume` 在 daemon cwd ≠ 调用方 cwd 时命中正确 run store，失败时打印查找的 run store（有回归测试）。
-- 非重叠 child 的 fan-in conflict 能定位到具体 child patch apply failure，并附 `git apply` 真实原因。
-- 用户能从一个 group report 中看出时间主要花在 agent、verify 还是 fan-in。
-- 无改动 ready 不再和有实质 diff 的 ready 混在一起。
-- 文档类任务能通过 verify/coverage 明确展示「检查了什么」和「没检查什么」。
+- ✅ `--repo .` 不再因 daemon cwd 被解析到意外仓库（有回归测试）。
+- 🟡 `resume` 在 daemon cwd ≠ 调用方 cwd 时命中正确 run store（已透传，有回归测试）；**失败时打印查找的 run store** 尚未做。
+- ✅ 非重叠 child 的 fan-in conflict 能定位到具体 child patch apply failure，并附 `git apply` 真实原因。
+- ⬜ 用户能从一个 group report 中看出时间主要花在 agent、verify 还是 fan-in。
+- ✅ 无改动 ready 不再和有实质 diff 的 ready 混在一起（implement no-change → `reviewDecision: needs_attention`，report/Next Actions/review-summary 不再误导 apply；`--expect-no-changes` 可豁免）。
+- ⬜ 文档类任务能通过 verify/coverage 明确展示「检查了什么」和「没检查什么」。

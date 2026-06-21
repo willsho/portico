@@ -261,8 +261,8 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 | `agent.ndjson` | Target agent runtime events |
 | `diff.patch` | Patch for implementation runs; empty for read-only review runs |
 | `test.log` | Output from configured test commands |
-| `report.md` | Human-readable summary, warnings, telemetry, and next actions |
-| `result.json` | Stable machine-readable result with changed files, warnings, and telemetry |
+| `report.md` | Human-readable summary, Portico observations, warnings, telemetry, and next actions |
+| `result.json` | Stable machine-readable result with changed files, `reviewDecision`, warnings, and telemetry |
 | `conflicts.json` | Split groups only, on a merge conflict: the conflict `kind` (`overlap`/`apply_failure`), `failingChild`, `git apply` `reason`, base refs, and the conflicting files |
 
 For split groups, `diff.patch` holds the **merged** patch (present only when the merge is
@@ -270,11 +270,32 @@ clean), and `result.json` additionally carries `merge` (strategy + status, plus
 `conflictKind`/`conflictReason` on a conflict), `conflicts`, and `judge`. The final
 `run_done` event includes the `reportPath` and `resultPath`.
 
+## Portico Observations and the Review Decision
+
+`report.md` opens (after the summary) with a **`## Portico Observations`** section: the facts
+Portico itself measured — changed-file count, diff check (whitespace / conflict markers),
+test and verify tallies, path-policy status, sandbox-escape status, and the **Review
+Decision**. Trust this block over the agent's narration. The streamed agent log
+(`agent.ndjson`) can show mojibake, internal sub-agent chatter, permission prompts, or
+timeouts that do not reflect the files actually on disk; it is a log, not a status source.
+
+`result.json` carries a structured `reviewDecision` (`approve` | `needs_attention`) that is
+Portico's own verdict, derived from those observed facts rather than the agent's self-report.
+A run is `needs_attention` when it is not `ready`, or when it is `ready` but suspect — most
+commonly an **implement-mode run that produced no file changes**, which usually means the
+agent didn't make progress. The report's `## Review` `Decision` line and Next Actions reflect
+this: a flagged no-change run does not lead with `apply`.
+
+If producing no edits is a legitimate outcome (a check or audit task run in implement mode),
+pass `--expect-no-changes`: it suppresses the no-change warning and keeps the decision
+`approve`. The no-change check keys off the structured `mode`, never off sniffing task verbs.
+
 ## Gate Warnings and Telemetry
 
 `result.json` records gate warnings when Portico sees a mismatch between the agent's
-terminal claim and Portico's own gates, or when a worktree run changes files outside the
-isolated worktree.
+terminal claim and Portico's own gates, when a worktree run changes files outside the
+isolated worktree, or when an implement-mode run produced no file changes (unless
+`--expect-no-changes` was set).
 
 `result.telemetry` records total run duration, agent duration, test duration, and provider
 usage when the agent reports it. Usage data preserves the provider's raw payload and

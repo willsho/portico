@@ -60,6 +60,12 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     assert.match(report, /Whitespace\/Conflict Check/);
     assert.equal(details.result?.pathPolicy?.status, "passed");
     assert.ok(details.result?.diffSummary?.nameStatus.includes("delegated.txt"));
+    // Portico Observations foregrounds Portico's own measured facts over the agent's narration.
+    assert.equal(details.result?.reviewDecision, "approve");
+    assert.match(report, /## Portico Observations/);
+    assert.match(report, /Changed Files: 1 file\(s\)/);
+    assert.match(report, /Review Decision: approve/);
+    assert.match(report, /not an authoritative status source/);
 
     const applied = await orchestrator.apply(repo, runId);
     assert.equal(applied.run.status, "applied");
@@ -128,6 +134,68 @@ test("worktree cleanup can remove no-change runs automatically", async () => {
     assert.match(details.result?.gateWarnings?.join("\n") ?? "", /produced no file changes/);
     assert.ok(details.run.worktreeRemovedAt);
     await assert.rejects(() => stat(details.run.worktreePath));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("implement-mode no-change run is flagged needs_attention, not approve", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", FAKE_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "update the docs" },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.run.status, "ready");
+    assert.deepEqual(details.result?.changedFiles, []);
+    // No-change in implement mode is a non-result: Portico's review verdict is needs_attention.
+    assert.equal(details.result?.reviewDecision, "needs_attention");
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Decision: needs_attention/);
+    assert.match(report, /Review Decision: needs_attention/);
+    assert.match(report, /Needs attention before apply/);
+    // A no-change result must not lead the reviewer straight to apply.
+    assert.doesNotMatch(report, /1\. Apply: `portico apply/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("expectNoChanges keeps a no-change run approve and suppresses the warning", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", FAKE_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "verify nothing needs changing", expectNoChanges: true },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.run.status, "ready");
+    assert.deepEqual(details.result?.changedFiles, []);
+    assert.equal(details.run.expectNoChanges, true);
+    // Declared no-change: review verdict stays approve and the no-change warning is suppressed.
+    assert.equal(details.result?.reviewDecision, "approve");
+    assert.doesNotMatch(details.result?.gateWarnings?.join("\n") ?? "", /produced no file changes/);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Decision: approve/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

@@ -1827,9 +1827,18 @@ function buildRunResult(
         : "Agent claimed success but Portico gate failed.",
     );
   }
-  if (run.mode === "implement" && run.status === "ready" && changedFiles.length === 0) {
+  // No-change in implement mode is usually a non-result for an edit task — flag it unless the
+  // caller declared it acceptable (`--expect-no-changes`) or this is a review/check run. Gating
+  // on the structured `mode`, never on sniffing task verbs (free-text, multi-line, often Chinese).
+  const noChangeNeedsAttention =
+    run.mode === "implement" && run.status === "ready" && changedFiles.length === 0 && !run.expectNoChanges;
+  if (noChangeNeedsAttention) {
     gateWarnings.push("Agent completed successfully but produced no file changes.");
   }
+  // Portico's own verdict, derived from observed facts rather than the agent's self-report:
+  // not-ready or ready-but-suspect (a flagged no-change run) → needs_attention.
+  const reviewDecision: "approve" | "needs_attention" =
+    run.status === "ready" && !noChangeNeedsAttention ? "approve" : "needs_attention";
   return {
     run,
     artifacts,
@@ -1839,6 +1848,7 @@ function buildRunResult(
     ...(sandboxEscaped ? { sandboxEscaped, outOfTreeChanges } : {}),
     ...(agentGateMismatch ? { agentGateMismatch } : {}),
     ...(gateWarnings.length ? { gateWarnings } : {}),
+    reviewDecision,
     telemetry,
     ...(error ? { error } : {}),
   };
@@ -2108,6 +2118,7 @@ function createRun(
     depth: request.depth ?? 0,
     createdAt: now,
     updatedAt: now,
+    ...(request.expectNoChanges ? { expectNoChanges: true } : {}),
     ...(options.role ? { role: options.role } : {}),
     ...(options.groupId ? { groupId: options.groupId } : {}),
     ...(options.parentRunId ? { parentRunId: options.parentRunId } : {}),
@@ -2449,6 +2460,8 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
   const childResults = result.childResults ?? result.compareResults;
   const groupSummary = result.groupSummary;
   const isSplit = run.mode === "split";
+  // Portico's own verdict. Prefer the structured field; fall back to status for older results.
+  const reviewDecision = result.reviewDecision ?? (run.status === "ready" ? "approve" : "needs_attention");
 
   let nextActions: string;
   if (run.role === "group" && isSplit) {
@@ -2481,6 +2494,9 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     }
     for (const c of other) lines.push(`Inspect: \`portico status ${c.run.id}\``);
     nextActions = lines.join("\n");
+  } else if (run.status === "ready" && reviewDecision === "needs_attention") {
+    // Ready by gate, but Portico flagged it (e.g. no file changes) — don't lead with Apply.
+    nextActions = `1. Needs attention before apply — inspect: \`portico status ${run.id}\``;
   } else {
     nextActions = `1. Apply: \`portico apply ${run.id}\``;
   }
@@ -2512,6 +2528,10 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     run.worktreeRemovedAt ? `Worktree Removed At: ${run.worktreeRemovedAt}` : undefined,
     run.worktreeRemovedAt ? "" : undefined,
+    run.role !== "group" ? "## Portico Observations" : undefined,
+    run.role !== "group" ? "" : undefined,
+    run.role !== "group" ? formatObservations(result, changedFiles, reviewDecision) : undefined,
+    run.role !== "group" ? "" : undefined,
     childResults?.length ? (isSplit ? "## Split Contributions" : "## Compare Candidates") : undefined,
     childResults?.length ? "" : undefined,
     groupSummary
@@ -2590,7 +2610,7 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     verifyChecks.length ? "" : undefined,
     "## Review",
     "",
-    `Decision: ${run.status === "ready" ? "approve" : "needs_attention"}`,
+    `Decision: ${reviewDecision}`,
     "",
     error
       ? `Summary: ${error}`
@@ -2615,6 +2635,36 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     .filter((line): line is string => line !== undefined)
     .join("\n");
   await writeFile(path, body);
+}
+
+/** Portico's own measured facts about a run — what Portico observed, independent of the agent's
+ *  narration. Foregrounds changed files, diff check, tests/verify, path policy and sandbox so a
+ *  reviewer never has to trust the (often noisy) agent log to judge whether the result is sound. */
+function formatObservations(
+  result: RunResult,
+  changedFiles: string[],
+  reviewDecision: "approve" | "needs_attention",
+): string {
+  const tests = result.tests ?? [];
+  const verify = result.verify ?? [];
+  const tally = (checks: TestResult[]) => `${checks.filter((c) => c.status === "passed").length}/${checks.length} passed`;
+  const diffCheck = result.diffSummary
+    ? result.diffSummary.check.trim()
+      ? "issues found — see Worktree Changes"
+      : "clean"
+    : "not evaluated";
+  const lines = [
+    `Changed Files: ${changedFiles.length ? `${changedFiles.length} file(s)` : "none"}`,
+    `Diff Check (whitespace/conflict markers): ${diffCheck}`,
+    `Tests: ${tests.length ? tally(tests) : "none configured"}`,
+    `Verify: ${verify.length ? tally(verify) : "none configured"}`,
+    `Path Policy: ${result.pathPolicy ? result.pathPolicy.status : "not evaluated"}`,
+    `Sandbox Escape: ${result.sandboxEscaped ? `DETECTED (${result.outOfTreeChanges?.length ?? 0} out-of-tree change(s))` : "none"}`,
+    `Review Decision: ${reviewDecision}`,
+    "",
+    "These are Portico's own measurements. The agent's narration in agent.ndjson is a log, not an authoritative status source.",
+  ];
+  return lines.join("\n");
 }
 
 /** First non-empty line of a (possibly multi-line) message, truncated for inline use. */

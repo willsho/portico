@@ -238,6 +238,7 @@ interface DelegateRequest {
   allowedPaths?: string[];
   forbiddenPaths?: string[];
   timeoutMs?: number;
+  expectNoChanges?: boolean;   // no-change is an acceptable outcome (suppresses the no-change warning)
   depth?: number;
 }
 
@@ -405,6 +406,7 @@ interface RunResult {
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
   gateWarnings?: string[];
+  reviewDecision?: "approve" | "needs_attention";                  // Portico's own verdict from observed facts
   telemetry?: RunTelemetry;
   error?: string;
 }

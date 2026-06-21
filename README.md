@@ -192,9 +192,9 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 - `agent.ndjson` — target agent runtime events
 - `test.log` — configured test command output
 - `diff.patch` — patch produced from the isolated worktree
-- `report.md` — human-readable summary, warnings, telemetry, and next actions
+- `report.md` — human-readable summary, Portico observations, warnings, telemetry, and next actions
 - `result.json` — stable machine-readable run result, including changed files,
-  out-of-tree changes, gate warnings, and telemetry
+  out-of-tree changes, the `reviewDecision`, gate warnings, and telemetry
 
 Worktrees live under `.portico/worktrees/<run_id>/`. Portico excludes `.portico/` from the
 repo's local git exclude file so artifacts and worktrees do not appear as ordinary

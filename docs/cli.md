@@ -160,6 +160,7 @@ Common options:
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
 | `--timeout <ms>` | Agent/test timeout |
+| `--expect-no-changes` | Treat a no-change result as acceptable: suppress the implement-mode no-change warning and keep the review decision `approve` |
 | `--json` | Print delegation events as JSON lines |
 | `--review-summary` | After the run, print a one-click apply command plus a risk summary |
 | `--apply-on-ready` | Auto-apply a single ready run when all safety guards pass (opt-in; see below) |

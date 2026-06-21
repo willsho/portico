@@ -97,6 +97,9 @@ export interface DelegateRequest {
   timeoutMs?: number;
   maxAutoFixAttempts?: number;
   depth?: number;
+  /** Declare that producing no file changes is an expected, acceptable outcome.
+   *  Suppresses the implement-mode no-change warning and keeps the review decision `approve`. */
+  expectNoChanges?: boolean;
 }
 
 export interface Run {
@@ -131,6 +134,8 @@ export interface Run {
   name?: string;
   /** Target agent's native session id, captured from adapter start event. */
   agentSessionId?: string;
+  /** Caller declared no file changes is an acceptable outcome (from DelegateRequest). */
+  expectNoChanges?: boolean;
 }
 
 export interface RunArtifact {
@@ -265,6 +270,10 @@ export interface RunResult {
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
   gateWarnings?: string[];
+  /** Portico's own review verdict, derived from observed facts (not the agent's self-report).
+   *  `needs_attention` when the run is not ready, or ready-but-suspect (e.g. an implement-mode
+   *  run that produced no changes without `--expect-no-changes`). Otherwise `approve`. */
+  reviewDecision?: "approve" | "needs_attention";
   /** Grouped diff views (name-status / stat / check) for review without re-running git. */
   diffSummary?: DiffSummary;
   /** Allowed/forbidden path-policy outcome, with retry paths when it failed. */
