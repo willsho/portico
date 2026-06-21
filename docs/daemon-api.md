@@ -427,8 +427,12 @@ interface OutOfTreeChange {
 
 interface RunTelemetry {
   totalDurationMs: number;
+  worktreeSetupMs?: number;   // creating the isolated worktree (single/child runs)
   agentDurationMs?: number;
-  testDurationMs: number;
+  diffMs?: number;            // generating the diff (single/child runs)
+  testDurationMs: number;     // --test commands only
+  verifyMs?: number;          // --verify commands, split out from testDurationMs
+  fanInMs?: number;           // group runs: fan-in phase (merge + judge)
   usage: UsageTelemetry;
 }
 

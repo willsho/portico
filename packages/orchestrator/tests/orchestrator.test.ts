@@ -319,7 +319,13 @@ test("compare mode runs multiple isolated candidates and records a parent report
     const details = await orchestrator.getRun(repo, runId);
     assert.equal(details.run.mode, "compare");
     assert.equal(details.result?.compareResults?.length, 2);
-    assert.match(await readFile(details.artifacts.reportPath, "utf8"), /Compare Candidates/);
+    // Group telemetry records the fan-in phase so a reviewer can see time spent converging.
+    assert.ok((details.result?.telemetry?.fanInMs ?? -1) >= 0);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Compare Candidates/);
+    assert.match(report, /Fan-in Duration: \d+ ms/);
+    // Per-child agent duration shows where group time went (retry-cost view).
+    assert.match(report, /ms agent/);
     await assert.rejects(() => orchestrator.apply(repo, runId), /Group run.*has multiple children|only implement runs can be applied/);
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -677,9 +683,18 @@ test("--verify checks run separately from tests and report under Verify Checks",
     const details = await orchestrator.getRun(repo, runId);
     assert.equal(details.result?.verify?.length, 2);
     assert.ok(details.result?.verify?.every((v) => v.status === "passed"));
+    // Telemetry buckets each phase: worktree setup, diff generation, and verify split out of tests.
+    const tel = details.result?.telemetry;
+    assert.ok((tel?.worktreeSetupMs ?? -1) >= 0);
+    assert.ok((tel?.diffMs ?? -1) >= 0);
+    assert.ok((tel?.verifyMs ?? -1) >= 0, "verify duration is tracked separately");
+    assert.equal(tel?.fanInMs, undefined, "single runs have no fan-in phase");
     const report = await readFile(details.artifacts.reportPath, "utf8");
     assert.match(report, /## Code Tests/);
     assert.match(report, /## Verify Checks/);
+    assert.match(report, /Worktree Setup: \d+ ms/);
+    assert.match(report, /Diff Generation: \d+ ms/);
+    assert.match(report, /Verify Duration: \d+ ms/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

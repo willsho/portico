@@ -297,9 +297,23 @@ terminal claim and Portico's own gates, when a worktree run changes files outsid
 isolated worktree, or when an implement-mode run produced no file changes (unless
 `--expect-no-changes` was set).
 
-`result.telemetry` records total run duration, agent duration, test duration, and provider
-usage when the agent reports it. Usage data preserves the provider's raw payload and
-extracts common token and cost fields such as `inputTokens`, `outputTokens`,
+`result.telemetry` buckets the run's wall time by phase so a reviewer can see where time
+went — agent work, checks, or fan-in — without scraping the event log:
+
+- `totalDurationMs` — total run wall time.
+- `worktreeSetupMs` — creating the isolated worktree (single/child runs; absent on resume / shared workspace).
+- `agentDurationMs` — the target agent's execution. For a group, the sum across children.
+- `diffMs` — generating the diff after the agent finished (single/child runs).
+- `testDurationMs` — `--test` commands only.
+- `verifyMs` — `--verify` commands, tracked separately from tests.
+- `fanInMs` — group runs only: wall time in the fan-in phase (merge + judge).
+
+The report's `## Telemetry` section renders whichever buckets were measured, and a group's
+`## Compare Candidates` / `## Split Contributions` list shows each child's agent duration
+plus a `no-change` count in the children summary, so retry cost is visible at a glance.
+
+Provider usage is recorded when the agent reports it. Usage data preserves the provider's raw
+payload and extracts common token and cost fields such as `inputTokens`, `outputTokens`,
 `totalTokens`, and `costUsd`.
 
 ## Path Policy

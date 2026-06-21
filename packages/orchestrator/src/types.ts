@@ -200,7 +200,16 @@ export interface UsageTelemetry {
 export interface RunTelemetry {
   totalDurationMs: number;
   agentDurationMs?: number;
+  /** Time spent creating the isolated worktree (single/child runs; absent for shared/resume). */
+  worktreeSetupMs?: number;
+  /** Time spent generating the diff after the agent finished (single/child runs). */
+  diffMs?: number;
+  /** Time spent in `--test` commands (tests only; `--verify` is tracked in `verifyMs`). */
   testDurationMs: number;
+  /** Time spent in `--verify` commands, split out from testDurationMs. */
+  verifyMs?: number;
+  /** Group runs: wall time spent in the fan-in phase (merge + judge). */
+  fanInMs?: number;
   usage: UsageTelemetry;
 }
 

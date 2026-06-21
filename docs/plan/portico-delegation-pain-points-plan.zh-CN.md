@@ -48,7 +48,7 @@
 | 痛点 4 · `review` 增加 `applyCheck`（P1） | ⬜ | |
 | **P0-b** 痛点 5 · 报告弱化 agent 自述 | ✅ | report 新增 `## Portico Observations`（changed files/diff check/tests/verify/policy/sandbox/review decision）+ 「agent.ndjson 非权威」提示 |
 | **P0-b** 痛点 6 · no-change → `needs_attention`（用 mode） | ✅ | `reviewDecision` 结构化字段；implement no-change → `needs_attention`；`--expect-no-changes` 豁免；Review/Next Actions 不再误导 apply |
-| 痛点 2 · telemetry 补桶 / watch 阶段 / 重试成本（全 P1） | ⬜ | |
+| 痛点 2 · telemetry 补桶 / watch 阶段 / 重试成本（全 P1） | 🟡 | telemetry 补桶 ✅（worktree setup/diff/verify 拆出/fan-in）+ 重试成本 ✅（group 报告含各 child agent duration + no-change 计数）;watch/status 阶段显示未做（`RunProgress` 已有 phase/lastEvent，watch/status 展示未接） |
 | 痛点 3 · Ready-to-review vs apply / 已检查·未检查 / verify 一等（全 P1） | ⬜ | |
 | 痛点 5 · agent log artifact / no-change warning 提显著度（P1） | ⬜ | |
 | 痛点 6 · 无改动结构化理由 / group 分组（P1） | ⬜ | |
@@ -107,9 +107,13 @@
 
 ### 计划
 
-- ⬜ **P1**：在现有 telemetry 上补齐缺的阶段：worktree setup、diff generation、verify、fan-in。
-- ⬜ **P1**：`watch/status` 显示 child 当前阶段和最后事件时间，避免长时间静默。
-- ⬜ **P1**：group report 增加「重试成本」摘要：总 wall time、各 child agent duration、失败/取消/无改动运行数。
+- ✅ **P1**：在现有 telemetry 上补齐缺的阶段：worktree setup、diff generation、verify（从 testDurationMs 拆出）、
+  fan-in（group merge+judge 墙钟）。`RunTelemetry` 新增 `worktreeSetupMs` / `diffMs` / `verifyMs` / `fanInMs`，
+  report `## Telemetry` 按存在的桶渲染。
+- ⬜ **P1**：`watch/status` 显示 child 当前阶段和最后事件时间，避免长时间静默。（`RunProgress` 已有 phase/lastEvent，
+  仅 watch/status 展示未接。）
+- ✅ **P1**：group report 增加「重试成本」摘要：总 wall time（telemetry 已有）、各 child agent duration（Compare
+  Candidates / Split Contributions 列表每行附 `<ms> ms agent`）、no-change 运行数（children 摘要行附 `N no-change`）。
 
 ## 痛点 3（判读）：`ready` 不等于用户可以放心 apply
 
@@ -238,7 +242,7 @@ P0 拆成两档，正确性优先于判读：
 | --- | --- | --- | --- | --- |
 | P0-a | ✅ 已完成 | 正确性 | repo 透传(痛点1) + fanout preflight 回显/校验(痛点1) + fan-in 抓 stderr 并区分两类冲突(痛点4) | 不再白跑、不再整组重跑 |
 | P0-b | ✅ 已完成 | 判读 | agent 自述降权(痛点5，`## Portico Observations`) + no-change→needs_attention(痛点6，`reviewDecision` 用 mode + `--expect-no-changes`) | ready 不被误读 |
-| P1 | ⬜ 未开始 | 判读 | review 信息结构化、telemetry 补桶、coverage/verify 强化 | 减少人工补查和 patch 拆解 |
+| P1 | 🟡 进行中 | 判读 | review 信息结构化、telemetry 补桶(✅)、coverage/verify 强化 | 减少人工补查和 patch 拆解 |
 | P2 | ⬜ 未开始 | 组合 | 多 run 组合审查、复杂任务覆盖声明 | 让大任务和小修复更稳地协作 |
 
 ## 非目标
@@ -255,6 +259,7 @@ P0 拆成两档，正确性优先于判读：
 - ✅ `--repo .` 不再因 daemon cwd 被解析到意外仓库（有回归测试）。
 - 🟡 `resume` 在 daemon cwd ≠ 调用方 cwd 时命中正确 run store（已透传，有回归测试）；**失败时打印查找的 run store** 尚未做。
 - ✅ 非重叠 child 的 fan-in conflict 能定位到具体 child patch apply failure，并附 `git apply` 真实原因。
-- ⬜ 用户能从一个 group report 中看出时间主要花在 agent、verify 还是 fan-in。
+- ✅ 用户能从一个 group report 中看出时间主要花在 agent、verify 还是 fan-in（telemetry 按阶段补桶：worktree setup /
+  diff / test / verify / fan-in;group 列表附各 child agent duration）。watch/status 的实时阶段显示仍 ⬜。
 - ✅ 无改动 ready 不再和有实质 diff 的 ready 混在一起（implement no-change → `reviewDecision: needs_attention`，report/Next Actions/review-summary 不再误导 apply；`--expect-no-changes` 可豁免）。
 - ⬜ 文档类任务能通过 verify/coverage 明确展示「检查了什么」和「没检查什么」。

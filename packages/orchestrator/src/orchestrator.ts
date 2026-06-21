@@ -377,6 +377,7 @@ async function* runGroupDelegation(
   // ---- Fan-in phase: converge the N child results (plan §6/§7). Runs after the
   // child loop drains and before the group's run_done, so run_done carries the
   // fan-in outcome (ready / conflict / partial).
+  const fanInStartedMs = Date.now();
   let mergeOutcome: MergeOutcome | undefined;
   if (fanIn.merge !== "none" && (await allChildrenReady(repoPath, group.id, children.length))) {
     yield await recordEvent(groupArtifacts.eventsPath, { type: "fanin_start", runId: group.id, strategy: "merge" });
@@ -412,6 +413,7 @@ async function* runGroupDelegation(
     expectedChildren: children.length,
     mergeOutcome,
     judgeOutcome,
+    fanInMs: Date.now() - fanInStartedMs,
   });
 
   const finalGroup = await readJson<Run>(join(repoPath, ".portico", "runs", group.id, "run.json"));
@@ -523,6 +525,8 @@ async function finalizeGroup(
     expectedChildren: number;
     mergeOutcome?: MergeOutcome;
     judgeOutcome?: RunResult["judge"];
+    /** Wall time spent in the fan-in phase (merge + judge); preserved across a re-merge when omitted. */
+    fanInMs?: number;
   },
 ): Promise<void> {
   const groupPath = join(repoPath, ".portico", "runs", groupId, "run.json");
@@ -598,6 +602,15 @@ async function finalizeGroup(
       totalDurationMs,
       agentDurationMs: childResults.reduce((sum, r) => sum + (r.telemetry?.agentDurationMs ?? 0), 0),
       testDurationMs: childResults.reduce((sum, r) => sum + (r.telemetry?.testDurationMs ?? 0), 0),
+      ...(childResults.some((r) => r.telemetry?.verifyMs !== undefined)
+        ? { verifyMs: childResults.reduce((sum, r) => sum + (r.telemetry?.verifyMs ?? 0), 0) }
+        : {}),
+      // Fresh run records the measured fan-in time; a re-merge preserves the prior value.
+      ...(opts.fanInMs !== undefined
+        ? { fanInMs: opts.fanInMs }
+        : existing?.telemetry?.fanInMs !== undefined
+          ? { fanInMs: existing.telemetry.fanInMs }
+          : {}),
       usage: aggregateUsageTelemetry(childResults),
     },
   };
@@ -1268,7 +1281,9 @@ async function* resumeChildDelegation(
   let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
   let agentDurationMs: number | undefined;
+  let diffMs: number | undefined;
   let testDurationMs = 0;
+  let verifyDurationMs = 0;
 
   try {
     yield await recordEvent(details.artifacts.eventsPath, { type: "agent_start", runId: childId, agent: details.run.targetAgent });
@@ -1306,7 +1321,9 @@ async function* resumeChildDelegation(
     agentDurationMs = Date.now() - agentStartedMs;
 
     if (details.run.mode !== "review") {
+      const diffStartedMs = Date.now();
       const diffResult = await generateDiff(workDir);
+      diffMs = Date.now() - diffStartedMs;
       changedFiles = diffResult.changedFiles;
       diffSummary = diffResult.summary;
       await writeFile(details.artifacts.diffPath as string, diffResult.diff);
@@ -1339,7 +1356,7 @@ async function* resumeChildDelegation(
         yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
         const result = await runTestCommand(workDir, command, request.timeoutMs);
         verify.push(result);
-        testDurationMs += result.durationMs ?? 0;
+        verifyDurationMs += result.durationMs ?? 0;
         await appendFile(
           details.artifacts.testLogPath as string,
           `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
@@ -1362,12 +1379,15 @@ async function* resumeChildDelegation(
     });
 
     const result = attachReviewArtifacts(
-      buildRunResult(updatedRun, details.artifacts, changedFiles, tests, agentEvents, [], {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      }),
+      buildRunResult(
+        updatedRun,
+        details.artifacts,
+        changedFiles,
+        tests,
+        agentEvents,
+        [],
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, diffMs, testDurationMs, verifyDurationMs }),
+      ),
       changedFiles,
       request,
       deps.defaultForbidden,
@@ -1403,12 +1423,16 @@ async function* resumeChildDelegation(
       completedAt: new Date().toISOString(),
     });
     const result = attachReviewArtifacts(
-      buildRunResult(details.run, details.artifacts, changedFiles, tests, agentEvents, [], {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      }, error),
+      buildRunResult(
+        details.run,
+        details.artifacts,
+        changedFiles,
+        tests,
+        agentEvents,
+        [],
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, diffMs, testDurationMs, verifyDurationMs }),
+        error,
+      ),
       changedFiles,
       request,
       deps.defaultForbidden,
@@ -1550,7 +1574,10 @@ async function* runSingleDelegation(
   let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
   let agentDurationMs: number | undefined;
+  let worktreeSetupMs: number | undefined;
+  let diffMs: number | undefined;
   let testDurationMs = 0;
+  let verifyDurationMs = 0;
 
   try {
     const mode = request.mode ?? "implement";
@@ -1592,8 +1619,10 @@ async function* runSingleDelegation(
     run = await updateRun(run, { status: "planning", startedAt: new Date().toISOString() });
     const workspaceSnapshot = isolation.workspace === "shared" ? await captureStatus(repoPath) : undefined;
     if (isolation.workspace === "worktree") {
+      const worktreeStartedMs = Date.now();
       const baseRef = await resolveBaseRef(repoPath, isolation.baseRef);
       await createWorktree(repoPath, worktreePath, run.branchName, baseRef, deps.worktreeMutex);
+      worktreeSetupMs = Date.now() - worktreeStartedMs;
       worktreeCreated = true;
       yield await recordEvent(artifacts.eventsPath, {
         type: "worktree_created",
@@ -1660,12 +1689,15 @@ async function* runSingleDelegation(
       if (workspaceSnapshot !== undefined) await assertStatusUnchanged(repoPath, workspaceSnapshot);
       await writeFile(artifacts.diffPath as string, "");
       run = await updateRun(run, { status: "ready", completedAt: new Date().toISOString() });
-      const result: RunResult = buildRunResult(run, artifacts, [], [], agentEvents, outOfTreeChanges, {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      });
+      const result: RunResult = buildRunResult(
+        run,
+        artifacts,
+        [],
+        [],
+        agentEvents,
+        outOfTreeChanges,
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, worktreeSetupMs, diffMs, testDurationMs, verifyDurationMs }),
+      );
       await writeJson(artifacts.resultPath, result);
       await writeReport(artifacts.reportPath, result);
       yield await recordEvent(artifacts.eventsPath, {
@@ -1678,7 +1710,9 @@ async function* runSingleDelegation(
       return;
     }
 
+    const diffStartedMs = Date.now();
     const diffResult = await generateDiff(workDir);
+    diffMs = Date.now() - diffStartedMs;
     changedFiles = diffResult.changedFiles;
     diffSummary = diffResult.summary;
     await writeFile(artifacts.diffPath as string, diffResult.diff);
@@ -1712,7 +1746,7 @@ async function* runSingleDelegation(
       yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
       const result = await runTestCommand(workDir, command, request.timeoutMs);
       verify.push(result);
-      testDurationMs += result.durationMs ?? 0;
+      verifyDurationMs += result.durationMs ?? 0;
       await appendFile(
         artifacts.testLogPath as string,
         `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
@@ -1736,12 +1770,15 @@ async function* runSingleDelegation(
       run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
     }
     const result = attachReviewArtifacts(
-      buildRunResult(run, artifacts, changedFiles, tests, agentEvents, outOfTreeChanges, {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      }),
+      buildRunResult(
+        run,
+        artifacts,
+        changedFiles,
+        tests,
+        agentEvents,
+        outOfTreeChanges,
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, worktreeSetupMs, diffMs, testDurationMs, verifyDurationMs }),
+      ),
       changedFiles,
       request,
       deps.defaultForbidden,
@@ -1775,12 +1812,7 @@ async function* runSingleDelegation(
           tests,
           agentEvents,
           outOfTreeChanges,
-          {
-            totalDurationMs: Date.now() - runStartedMs,
-            agentDurationMs,
-            testDurationMs,
-            usage: extractUsageTelemetry(agentEvents),
-          },
+          buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, worktreeSetupMs, diffMs, testDurationMs, verifyDurationMs }),
           error,
         ),
         changedFiles,
@@ -1868,6 +1900,29 @@ function attachReviewArtifacts(
   if (diffSummary) result.diffSummary = diffSummary;
   if (verify.length) result.verify = verify;
   return result;
+}
+
+/** Assemble a RunTelemetry from captured phase timers, omitting buckets that weren't measured
+ *  (e.g. worktree setup on a resume, verify when no `--verify` ran). Keeps the ~6 call sites
+ *  in the single/child run paths consistent. */
+function buildTelemetry(opts: {
+  runStartedMs: number;
+  agentEvents: RuntimeEvent[];
+  agentDurationMs?: number;
+  worktreeSetupMs?: number;
+  diffMs?: number;
+  testDurationMs: number;
+  verifyDurationMs?: number;
+}): RunTelemetry {
+  return {
+    totalDurationMs: Date.now() - opts.runStartedMs,
+    ...(opts.agentDurationMs !== undefined ? { agentDurationMs: opts.agentDurationMs } : {}),
+    ...(opts.worktreeSetupMs !== undefined ? { worktreeSetupMs: opts.worktreeSetupMs } : {}),
+    ...(opts.diffMs !== undefined ? { diffMs: opts.diffMs } : {}),
+    testDurationMs: opts.testDurationMs,
+    ...(opts.verifyDurationMs ? { verifyMs: opts.verifyDurationMs } : {}),
+    usage: extractUsageTelemetry(opts.agentEvents),
+  };
 }
 
 function extractUsageTelemetry(events: RuntimeEvent[]): RunTelemetry["usage"] {
@@ -2535,14 +2590,18 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     childResults?.length ? (isSplit ? "## Split Contributions" : "## Compare Candidates") : undefined,
     childResults?.length ? "" : undefined,
     groupSummary
-      ? `Children: ${groupSummary.total} total, ${groupSummary.ready} ready, ${groupSummary.failed} failed, ${groupSummary.cancelled} cancelled`
+      ? `Children: ${groupSummary.total} total, ${groupSummary.ready} ready, ${groupSummary.failed} failed, ${groupSummary.cancelled} cancelled${
+          (childResults?.filter((c) => c.run.status === "ready" && c.changedFiles.length === 0).length ?? 0)
+            ? `, ${childResults?.filter((c) => c.run.status === "ready" && c.changedFiles.length === 0).length} no-change`
+            : ""
+        }`
       : undefined,
     groupSummary ? "" : undefined,
     childResults?.length
       ? childResults
           .map(
             (candidate, index) =>
-              `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s) — ${candidate.artifacts.reportPath}`,
+              `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s)${candidate.telemetry?.agentDurationMs !== undefined ? ` — ${candidate.telemetry.agentDurationMs} ms agent` : ""} — ${candidate.artifacts.reportPath}`,
           )
           .join("\n")
       : undefined,
@@ -2723,8 +2782,12 @@ function formatTelemetry(telemetry: RunTelemetry | undefined): string {
   const usage = telemetry.usage;
   const lines = [
     `Total Duration: ${telemetry.totalDurationMs} ms`,
+    telemetry.worktreeSetupMs !== undefined ? `Worktree Setup: ${telemetry.worktreeSetupMs} ms` : undefined,
     telemetry.agentDurationMs !== undefined ? `Agent Duration: ${telemetry.agentDurationMs} ms` : undefined,
+    telemetry.diffMs !== undefined ? `Diff Generation: ${telemetry.diffMs} ms` : undefined,
     `Test Duration: ${telemetry.testDurationMs} ms`,
+    telemetry.verifyMs !== undefined ? `Verify Duration: ${telemetry.verifyMs} ms` : undefined,
+    telemetry.fanInMs !== undefined ? `Fan-in Duration: ${telemetry.fanInMs} ms` : undefined,
     usage.available ? `Usage Available: yes` : `Usage Available: no (${usage.unavailableReason ?? "not reported"})`,
     usage.inputTokens !== undefined ? `Input Tokens: ${usage.inputTokens}` : undefined,
     usage.outputTokens !== undefined ? `Output Tokens: ${usage.outputTokens}` : undefined,

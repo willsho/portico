@@ -120,6 +120,10 @@ yourself, or anything where spinning up a separate agent adds no value.
    sandbox escape, and the `Review Decision`). Trust those over the agent's narration — the
    streamed agent log can show mojibake, internal sub-agent chatter, or timeouts that don't
    reflect the files on disk. The agent log (`agent.ndjson`) is a log, not a status source.
+   The report's `## Telemetry` section buckets wall time by phase (worktree setup, agent, diff,
+   tests, verify, and — for groups — fan-in), and a group's candidate list shows each child's
+   agent duration; use these to see whether time went to the agent, the checks, or fan-in
+   before blaming a slow run on Portico.
    For a group (compare/split), `portico review <group_id>` aggregates every child
    (status, changed files, checks, report/diff paths, per-child next action) and highlights
    files changed by more than one child — the spots that need careful manual merging.
