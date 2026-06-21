@@ -27,6 +27,7 @@ function mk(partial: Partial<BoardRun> & { status: string }): BoardRun {
     updatedAt: partial.updatedAt ?? "2026-06-20T00:00:00.000Z",
     createdAt: partial.createdAt ?? "2026-06-20T00:00:00.000Z",
     active: partial.active ?? false,
+    ...(partial.lastEventAt ? { lastEventAt: partial.lastEventAt } : {}),
     children: partial.children ?? [],
   };
 }
@@ -132,4 +133,22 @@ test("normalizeRun lifts transient _active/_children fields", () => {
   assert.equal(norm.active, true);
   assert.equal(norm.children.length, 1);
   assert.equal(norm.children[0]?.id, "c1");
+});
+
+test("normalizeRun lifts _lastEventAt and renderPlain shows idle time for active runs", () => {
+  const raw = {
+    id: "s1",
+    status: "running",
+    task: "do a thing",
+    targetAgent: "codex",
+    updatedAt: "2026-06-20T00:00:00.000Z",
+    createdAt: "2026-06-20T00:00:00.000Z",
+    _active: true,
+    _lastEventAt: "2026-06-20T00:00:00.000Z",
+  };
+  const norm = normalizeRun(raw as never);
+  assert.equal(norm.lastEventAt, "2026-06-20T00:00:00.000Z");
+  // An active run with a last-event time surfaces "idle <ago>" so silence is visible.
+  const text = renderPlain([norm], Date.parse("2026-06-20T00:00:30.000Z"));
+  assert.match(text, /idle 30s/);
 });

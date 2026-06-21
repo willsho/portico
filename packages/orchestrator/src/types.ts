@@ -97,6 +97,12 @@ export interface DelegateRequest {
   timeoutMs?: number;
   maxAutoFixAttempts?: number;
   depth?: number;
+  /** Declare that producing no file changes is an expected, acceptable outcome.
+   *  Suppresses the implement-mode no-change warning and keeps the review decision `approve`. */
+  expectNoChanges?: boolean;
+  /** Paths/patterns the caller expects this run to change. Drives the report's Coverage section
+   *  and a coverage-gap warning when an expected path is left untouched. */
+  expectedChangePaths?: string[];
 }
 
 export interface Run {
@@ -131,6 +137,10 @@ export interface Run {
   name?: string;
   /** Target agent's native session id, captured from adapter start event. */
   agentSessionId?: string;
+  /** Caller declared no file changes is an acceptable outcome (from DelegateRequest). */
+  expectNoChanges?: boolean;
+  /** Paths/patterns the caller expects this run to change (from DelegateRequest). */
+  expectedChangePaths?: string[];
 }
 
 export interface RunArtifact {
@@ -169,6 +179,20 @@ export interface DiffSummary {
   check: string;
 }
 
+/** Coverage of the caller's `--expected-change` declaration: which expected paths were actually
+ *  changed (touched), which were left untouched (gaps), and which changed files were unexpected.
+ *  Path policy guards the *boundary* (no out-of-scope edits); coverage guards *completeness*. */
+export interface CoverageResult {
+  /** The expected patterns the caller declared. */
+  expected: string[];
+  /** Expected patterns matched by at least one changed file. */
+  touched: string[];
+  /** Expected patterns with no matching changed file — the coverage gaps. */
+  untouched: string[];
+  /** Changed files matching none of the expected patterns. */
+  unexpected: string[];
+}
+
 /** Whether the run's changed files stayed within the `--allowed` / `--forbidden` boundary. */
 export interface PathPolicyResult {
   status: "passed" | "failed";
@@ -195,7 +219,16 @@ export interface UsageTelemetry {
 export interface RunTelemetry {
   totalDurationMs: number;
   agentDurationMs?: number;
+  /** Time spent creating the isolated worktree (single/child runs; absent for shared/resume). */
+  worktreeSetupMs?: number;
+  /** Time spent generating the diff after the agent finished (single/child runs). */
+  diffMs?: number;
+  /** Time spent in `--test` commands (tests only; `--verify` is tracked in `verifyMs`). */
   testDurationMs: number;
+  /** Time spent in `--verify` commands, split out from testDurationMs. */
+  verifyMs?: number;
+  /** Group runs: wall time spent in the fan-in phase (merge + judge). */
+  fanInMs?: number;
   usage: UsageTelemetry;
 }
 
@@ -251,6 +284,16 @@ export interface RunResult {
   };
   /** Split group: per-file merge conflicts and their source child (when status=conflict). */
   conflicts?: Array<{ file: string; child: string; kind?: "overlap" | "apply_failure"; line?: number }>;
+  /** Set on a group's childResults entries: whether this child's own patch applies cleanly to
+   *  the group base. Proactively surfaces apply failures that file-name overlap can't explain
+   *  (a child can fail to apply on a file only it touched). Read-only; computed at fan-in. */
+  applyCheck?: {
+    applies: boolean;
+    /** First `git apply --check` error line when the patch does not apply. */
+    reason?: string;
+    /** Specific failing files (and hunk line, when git reports it). */
+    failures?: Array<{ file: string; line?: number }>;
+  };
   /** Fan-in judge verdict (compare: ranking + recommendation; split: overall verdict). */
   judge?: {
     to: string;
@@ -265,10 +308,16 @@ export interface RunResult {
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
   gateWarnings?: string[];
+  /** Portico's own review verdict, derived from observed facts (not the agent's self-report).
+   *  `needs_attention` when the run is not ready, or ready-but-suspect (e.g. an implement-mode
+   *  run that produced no changes without `--expect-no-changes`). Otherwise `approve`. */
+  reviewDecision?: "approve" | "needs_attention";
   /** Grouped diff views (name-status / stat / check) for review without re-running git. */
   diffSummary?: DiffSummary;
   /** Allowed/forbidden path-policy outcome, with retry paths when it failed. */
   pathPolicy?: PathPolicyResult;
+  /** Coverage of `--expected-change`: expected/touched/untouched/unexpected (when declared). */
+  coverage?: CoverageResult;
   telemetry?: RunTelemetry;
   error?: string;
 }

@@ -159,7 +159,9 @@ Common options:
 | `--verify <cmd>` | Verification check, reported separately from tests (e.g. doc/policy checks); repeatable |
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
+| `--expected-change <pattern>` | Path expected to be changed; adds a Coverage section and warns (→ `needs_attention`) on an untouched expected path; repeatable |
 | `--timeout <ms>` | Agent/test timeout |
+| `--expect-no-changes` | Treat a no-change result as acceptable: suppress the implement-mode no-change warning and keep the review decision `approve` |
 | `--json` | Print delegation events as JSON lines |
 | `--review-summary` | After the run, print a one-click apply command plus a risk summary |
 | `--apply-on-ready` | Auto-apply a single ready run when all safety guards pass (opt-in; see below) |
@@ -369,15 +371,19 @@ portico review <run_id> --json
 portico review <run_id> --open-diff
 ```
 
-For each child it shows label, status, changed-file count, test/verify/policy results,
-and the report and diff paths, plus a per-child next action (`apply --child` when ready,
-`delegate --resume` when failed). It also highlights **overlapping files** changed by more
-than one child — the spots that need careful manual merging.
+For each child it shows label, status, changed-file count, test/verify/policy results, an
+**apply check**, and the report and diff paths, plus a per-child next action (`apply --child`
+when ready, `delegate --resume` when failed). It highlights **overlapping files** changed by
+more than one child — the spots that need careful manual merging — and the per-child
+`apply ok` / `apply FAILS` flag reports whether that child's own patch applies cleanly to the
+group base. The two are complementary: a child can have `overlap: []` yet still `apply FAILS`
+(its patch drifted from the base), which the apply check surfaces up front instead of at merge
+time. A failing child prints the underlying `git apply` reason.
 
 | Option | Description |
 | --- | --- |
 | `--ready-only` | Only show children that are ready to apply |
-| `--json` | Emit the structured aggregation (children + overlap) |
+| `--json` | Emit the structured aggregation (children + overlap + applyCheck) |
 | `--open-diff` | Also print each shown child's full diff inline |
 
 ## `portico integrate`

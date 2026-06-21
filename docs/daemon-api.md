@@ -238,6 +238,8 @@ interface DelegateRequest {
   allowedPaths?: string[];
   forbiddenPaths?: string[];
   timeoutMs?: number;
+  expectNoChanges?: boolean;       // no-change is an acceptable outcome (suppresses the no-change warning)
+  expectedChangePaths?: string[];  // paths expected to change; drives the Coverage section + gap warning
   depth?: number;
 }
 
@@ -394,6 +396,12 @@ interface RunResult {
     integrationWorktree?: string;
   };
   conflicts?: Array<{ file: string; child: string }>;
+  // Set on each entry of a group's childResults: does this child's own patch apply to the base?
+  applyCheck?: {
+    applies: boolean;
+    reason?: string;                                             // git apply --check error when it doesn't
+    failures?: Array<{ file: string; line?: number }>;
+  };
   judge?: {
     to: string;
     runId?: string;
@@ -405,6 +413,13 @@ interface RunResult {
   outOfTreeChanges?: OutOfTreeChange[];
   agentGateMismatch?: boolean;
   gateWarnings?: string[];
+  reviewDecision?: "approve" | "needs_attention";                  // Portico's own verdict from observed facts
+  coverage?: {                                                     // when --expected-change was declared
+    expected: string[];
+    touched: string[];
+    untouched: string[];                                           // gaps
+    unexpected: string[];
+  };
   telemetry?: RunTelemetry;
   error?: string;
 }
@@ -425,8 +440,12 @@ interface OutOfTreeChange {
 
 interface RunTelemetry {
   totalDurationMs: number;
+  worktreeSetupMs?: number;   // creating the isolated worktree (single/child runs)
   agentDurationMs?: number;
-  testDurationMs: number;
+  diffMs?: number;            // generating the diff (single/child runs)
+  testDurationMs: number;     // --test commands only
+  verifyMs?: number;          // --verify commands, split out from testDurationMs
+  fanInMs?: number;           // group runs: fan-in phase (merge + judge)
   usage: UsageTelemetry;
 }
 

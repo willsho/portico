@@ -60,6 +60,12 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     assert.match(report, /Whitespace\/Conflict Check/);
     assert.equal(details.result?.pathPolicy?.status, "passed");
     assert.ok(details.result?.diffSummary?.nameStatus.includes("delegated.txt"));
+    // Portico Observations foregrounds Portico's own measured facts over the agent's narration.
+    assert.equal(details.result?.reviewDecision, "approve");
+    assert.match(report, /## Portico Observations/);
+    assert.match(report, /Changed Files: 1 file\(s\)/);
+    assert.match(report, /Review Decision: approve/);
+    assert.match(report, /not an authoritative status source/);
 
     const applied = await orchestrator.apply(repo, runId);
     assert.equal(applied.run.status, "applied");
@@ -128,6 +134,131 @@ test("worktree cleanup can remove no-change runs automatically", async () => {
     assert.match(details.result?.gateWarnings?.join("\n") ?? "", /produced no file changes/);
     assert.ok(details.run.worktreeRemovedAt);
     await assert.rejects(() => stat(details.run.worktreePath));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("implement-mode no-change run is flagged needs_attention, not approve", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", FAKE_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "update the docs" },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.run.status, "ready");
+    assert.deepEqual(details.result?.changedFiles, []);
+    // No-change in implement mode is a non-result: Portico's review verdict is needs_attention.
+    assert.equal(details.result?.reviewDecision, "needs_attention");
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Decision: needs_attention/);
+    assert.match(report, /Review Decision: needs_attention/);
+    assert.match(report, /Needs attention before apply/);
+    // A no-change result must not lead the reviewer straight to apply.
+    assert.doesNotMatch(report, /1\. Apply: `portico apply/);
+    // Readiness distinguishes review-only from apply; a no-change run is review-only.
+    assert.match(report, /Readiness: Ready to review only/);
+    // The agent's own explanation is surfaced (clearly unverified) for a no-change run.
+    assert.match(report, /## Agent's Stated Reason \(unverified/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("expectNoChanges keeps a no-change run approve and suppresses the warning", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", FAKE_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "verify nothing needs changing", expectNoChanges: true },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.run.status, "ready");
+    assert.deepEqual(details.result?.changedFiles, []);
+    assert.equal(details.run.expectNoChanges, true);
+    // Declared no-change: review verdict stays approve and the no-change warning is suppressed.
+    assert.equal(details.result?.reviewDecision, "approve");
+    assert.doesNotMatch(details.result?.gateWarnings?.join("\n") ?? "", /produced no file changes/);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Decision: approve/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("--expected-change reports coverage and flags an untouched expected path", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", EDIT_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", expectedChangePaths: ["delegated.txt", "missing.txt"] },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    // delegated.txt was changed (touched); missing.txt is an untouched expected path (a gap).
+    assert.ok(details.result?.coverage?.touched.includes("delegated.txt"));
+    assert.deepEqual(details.result?.coverage?.untouched, ["missing.txt"]);
+    // A coverage gap on a ready implement run is suspect → needs_attention + a gate warning.
+    assert.equal(details.result?.reviewDecision, "needs_attention");
+    assert.match(details.result?.gateWarnings?.join("\n") ?? "", /Coverage gap.*missing\.txt/);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /## Coverage/);
+    assert.match(report, /Status: gap/);
+    assert.match(report, /Untouched \(gaps\): missing\.txt/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("--expected-change with every expected path touched has no coverage gap", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", EDIT_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", expectedChangePaths: ["delegated.txt"] },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.deepEqual(details.result?.coverage?.untouched, []);
+    assert.equal(details.result?.reviewDecision, "approve");
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Status: complete/);
+    assert.match(report, /Readiness: Ready to apply/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -251,7 +382,16 @@ test("compare mode runs multiple isolated candidates and records a parent report
     const details = await orchestrator.getRun(repo, runId);
     assert.equal(details.run.mode, "compare");
     assert.equal(details.result?.compareResults?.length, 2);
-    assert.match(await readFile(details.artifacts.reportPath, "utf8"), /Compare Candidates/);
+    // Group telemetry records the fan-in phase so a reviewer can see time spent converging.
+    assert.ok((details.result?.telemetry?.fanInMs ?? -1) >= 0);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Compare Candidates/);
+    assert.match(report, /Fan-in Duration: \d+ ms/);
+    // Per-child agent duration shows where group time went (retry-cost view).
+    assert.match(report, /ms agent/);
+    // applyCheck: each candidate's patch applies independently to the group base.
+    assert.ok(details.result?.childResults?.every((c) => c.applyCheck?.applies === true));
+    assert.match(report, /apply: ok/);
     await assert.rejects(() => orchestrator.apply(repo, runId), /Group run.*has multiple children|only implement runs can be applied/);
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -609,9 +749,18 @@ test("--verify checks run separately from tests and report under Verify Checks",
     const details = await orchestrator.getRun(repo, runId);
     assert.equal(details.result?.verify?.length, 2);
     assert.ok(details.result?.verify?.every((v) => v.status === "passed"));
+    // Telemetry buckets each phase: worktree setup, diff generation, and verify split out of tests.
+    const tel = details.result?.telemetry;
+    assert.ok((tel?.worktreeSetupMs ?? -1) >= 0);
+    assert.ok((tel?.diffMs ?? -1) >= 0);
+    assert.ok((tel?.verifyMs ?? -1) >= 0, "verify duration is tracked separately");
+    assert.equal(tel?.fanInMs, undefined, "single runs have no fan-in phase");
     const report = await readFile(details.artifacts.reportPath, "utf8");
     assert.match(report, /## Code Tests/);
     assert.match(report, /## Verify Checks/);
+    assert.match(report, /Worktree Setup: \d+ ms/);
+    assert.match(report, /Diff Generation: \d+ ms/);
+    assert.match(report, /Verify Duration: \d+ ms/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

@@ -16,6 +16,12 @@ interface ChildReview {
   tests: { passed: number; failed: number };
   verify: { passed: number; failed: number };
   policy?: string;
+  /** Whether this child's own patch applies to the group base (read-only fan-in check). */
+  applyCheck?: { applies: boolean; reason?: string };
+  /** Portico's per-child verdict (approve / needs_attention). */
+  decision?: string;
+  /** Ready but produced no file changes — grouped separately so it isn't lost among real diffs. */
+  noChange: boolean;
   reportPath: string;
   diffPath?: string;
 }
@@ -104,6 +110,9 @@ function toChildReview(r: RunResult): ChildReview {
     tests: countChecks(r.tests),
     verify: countChecks(r.verify ?? []),
     policy: r.pathPolicy?.status,
+    ...(r.applyCheck ? { applyCheck: { applies: r.applyCheck.applies, ...(r.applyCheck.reason ? { reason: r.applyCheck.reason } : {}) } } : {}),
+    ...(r.reviewDecision ? { decision: r.reviewDecision } : {}),
+    noChange: r.run.status === "ready" && (r.changedFiles ?? []).length === 0,
     reportPath: r.artifacts.reportPath,
     diffPath: r.artifacts.diffPath,
   };
@@ -142,24 +151,43 @@ function printReview(agg: {
 }): void {
   const ready = agg.children.filter((c) => c.status === "ready").length;
   const failed = agg.children.filter((c) => c.status === "failed" || c.status === "cancelled").length;
-  console.log(`Group ${agg.id} — ${agg.status} (${agg.children.length} shown: ${ready} ready, ${failed} failed)`);
+  const noChange = agg.children.filter((c) => c.noChange).length;
+  console.log(
+    `Group ${agg.id} — ${agg.status} (${agg.children.length} shown: ${ready} ready, ${failed} failed${noChange ? `, ${noChange} no-change` : ""})`,
+  );
   console.log(`Task: ${firstLine(agg.task)}\n`);
 
   for (const c of agg.children) {
     const label = c.label ? ` [${c.label}]` : "";
-    console.log(`${c.id}${label}  ${c.status}  agent=${c.agent}`);
+    const decision = c.decision ? `  decision=${c.decision}` : "";
+    const noChangeTag = c.noChange ? "  ⚠ no file changes" : "";
+    console.log(`${c.id}${label}  ${c.status}${decision}  agent=${c.agent}${noChangeTag}`);
     console.log(`  changed: ${c.changedFiles.length} file(s)${c.changedFiles.length ? `: ${c.changedFiles.join(", ")}` : ""}`);
     const checks = [
       `tests ${c.tests.passed}✓/${c.tests.failed}✗`,
       `verify ${c.verify.passed}✓/${c.verify.failed}✗`,
       `policy ${c.policy ?? "n/a"}`,
+      `apply ${c.applyCheck ? (c.applyCheck.applies ? "ok" : "FAILS") : "n/a"}`,
     ];
     console.log(`  checks: ${checks.join("   ")}`);
+    // A child whose own patch won't apply to the base is the case `overlap: []` can't explain.
+    if (c.applyCheck && !c.applyCheck.applies) {
+      console.log(`  apply-check: does not apply to group base${c.applyCheck.reason ? ` — ${c.applyCheck.reason}` : ""}`);
+    }
     console.log(`  report: ${c.reportPath}`);
     if (c.diffPath) console.log(`  diff:   ${c.diffPath}`);
     if (c.status === "ready") console.log(`  → portico apply ${agg.id} --child ${c.id}`);
     else if (c.status === "failed" || c.status === "cancelled") console.log(`  → portico delegate --resume ${c.id} --task "..."`);
     console.log("");
+  }
+
+  // Group no-change children separately so a "ready but produced nothing" run isn't read as a
+  // real candidate among children that actually have a diff.
+  const noChangeChildren = agg.children.filter((c) => c.noChange);
+  if (noChangeChildren.length) {
+    console.log(
+      `No-change (ready, but produced no file changes — likely needs attention): ${noChangeChildren.map((c) => c.label ?? c.id).join(", ")}`,
+    );
   }
 
   if (agg.overlap.length) {

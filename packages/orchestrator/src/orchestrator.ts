@@ -9,6 +9,7 @@ import type {
   CleanupOptions,
   CleanupPolicy,
   CleanupResult,
+  CoverageResult,
   DelegateRequest,
   DelegationEvent,
   DelegationMode,
@@ -148,13 +149,15 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         const cutoff = Date.now() - opts.sinceMs;
         all = all.filter((run) => Date.parse(run.createdAt) >= cutoff);
       }
-      const annotate = (run: Run) => markActive(run, activeControllers);
-      if (opts?.flat) return all.map(annotate);
-      return foldRuns(all).map((group) => {
-        const children = (group as unknown as Record<string, unknown>)["_children"] as Run[] | undefined;
-        if (children) (group as unknown as Record<string, unknown>)["_children"] = children.map(annotate);
-        return annotate(group);
-      });
+      const annotate = (run: Run) => annotateRun(run, activeControllers, repoPath);
+      if (opts?.flat) return Promise.all(all.map(annotate));
+      return Promise.all(
+        foldRuns(all).map(async (group) => {
+          const children = (group as unknown as Record<string, unknown>)["_children"] as Run[] | undefined;
+          if (children) (group as unknown as Record<string, unknown>)["_children"] = await Promise.all(children.map(annotate));
+          return annotate(group);
+        }),
+      );
     },
 
     async getRun(repo, id) {
@@ -377,6 +380,7 @@ async function* runGroupDelegation(
   // ---- Fan-in phase: converge the N child results (plan §6/§7). Runs after the
   // child loop drains and before the group's run_done, so run_done carries the
   // fan-in outcome (ready / conflict / partial).
+  const fanInStartedMs = Date.now();
   let mergeOutcome: MergeOutcome | undefined;
   if (fanIn.merge !== "none" && (await allChildrenReady(repoPath, group.id, children.length))) {
     yield await recordEvent(groupArtifacts.eventsPath, { type: "fanin_start", runId: group.id, strategy: "merge" });
@@ -412,6 +416,8 @@ async function* runGroupDelegation(
     expectedChildren: children.length,
     mergeOutcome,
     judgeOutcome,
+    fanInMs: Date.now() - fanInStartedMs,
+    deps,
   });
 
   const finalGroup = await readJson<Run>(join(repoPath, ".portico", "runs", group.id, "run.json"));
@@ -523,6 +529,10 @@ async function finalizeGroup(
     expectedChildren: number;
     mergeOutcome?: MergeOutcome;
     judgeOutcome?: RunResult["judge"];
+    /** Wall time spent in the fan-in phase (merge + judge); preserved across a re-merge when omitted. */
+    fanInMs?: number;
+    /** Orchestrator deps; enables the per-child apply-check against the group base. */
+    deps?: DelegationDeps;
   },
 ): Promise<void> {
   const groupPath = join(repoPath, ".portico", "runs", groupId, "run.json");
@@ -582,6 +592,17 @@ async function finalizeGroup(
   const artifacts = artifactPaths(repoPath, groupId);
   group = await updateRun(group, { status: finalStatus, completedAt: new Date().toISOString() });
 
+  // Proactively record, per child, whether its own patch applies to the group base — the
+  // signal `overlap` can't give. Best-effort: only when deps are available (skipped on the
+  // status-only refresh path), and attached to each child's embedded result for `review`.
+  if (opts.deps) {
+    const applyChecks = await computeApplyChecks(repoPath, group, childResults, opts.deps);
+    for (const child of childResults) {
+      const check = applyChecks.get(child.run.id);
+      if (check) child.applyCheck = check;
+    }
+  }
+
   const result: RunResult = {
     run: group,
     artifacts,
@@ -598,6 +619,15 @@ async function finalizeGroup(
       totalDurationMs,
       agentDurationMs: childResults.reduce((sum, r) => sum + (r.telemetry?.agentDurationMs ?? 0), 0),
       testDurationMs: childResults.reduce((sum, r) => sum + (r.telemetry?.testDurationMs ?? 0), 0),
+      ...(childResults.some((r) => r.telemetry?.verifyMs !== undefined)
+        ? { verifyMs: childResults.reduce((sum, r) => sum + (r.telemetry?.verifyMs ?? 0), 0) }
+        : {}),
+      // Fresh run records the measured fan-in time; a re-merge preserves the prior value.
+      ...(opts.fanInMs !== undefined
+        ? { fanInMs: opts.fanInMs }
+        : existing?.telemetry?.fanInMs !== undefined
+          ? { fanInMs: existing.telemetry.fanInMs }
+          : {}),
       usage: aggregateUsageTelemetry(childResults),
     },
   };
@@ -807,6 +837,57 @@ async function mergeSplitChildren(
   return { strategy, status: "ready", integrationWorktree: integrationPath, mergedDiffPath: groupDiffPath };
 }
 
+/**
+ * Per-child "does this child's own patch apply cleanly to the group base?" — the proactive
+ * signal that file-name `overlap` can't give: a child can fail to apply on a file only it
+ * touched (drifted context / malformed diff), which `overlap: []` never reveals. Each child is
+ * checked *independently* against a pristine base worktree (`git apply --check` mutates nothing,
+ * so one worktree serves all children). Read-only and best-effort — a check hiccup leaves the
+ * child without an applyCheck rather than failing the group.
+ */
+async function computeApplyChecks(
+  repoPath: string,
+  group: Run,
+  childResults: RunResult[],
+  deps: DelegationDeps,
+): Promise<Map<string, NonNullable<RunResult["applyCheck"]>>> {
+  const out = new Map<string, NonNullable<RunResult["applyCheck"]>>();
+  const checkable = childResults.filter(
+    (r) => r.changedFiles.length && existsSync(artifactPaths(repoPath, r.run.id).diffPath as string),
+  );
+  if (!checkable.length) return out;
+
+  const checkPath = join(repoPath, ".portico", "worktrees", `${group.id}_applycheck`);
+  const branch = `portico/${group.id}-applycheck`;
+  const baseRef = await resolveBaseRef(repoPath, group.isolation.baseRef);
+  try {
+    // Fresh base worktree (drop any stale one + its branch first, mirroring mergeSplitChildren).
+    await removeWorktree(repoPath, checkPath, deps.worktreeMutex);
+    await capture("git", ["-C", repoPath, "branch", "-D", branch]);
+    await createWorktree(repoPath, checkPath, branch, baseRef, deps.worktreeMutex);
+    for (const r of checkable) {
+      const diffPath = artifactPaths(repoPath, r.run.id).diffPath as string;
+      const res = await capture("git", ["-C", checkPath, "apply", "--check", "--binary", diffPath]);
+      if (res.code === 0) {
+        out.set(r.run.id, { applies: true });
+      } else {
+        const failures = parseApplyFailures(res.stderr);
+        out.set(r.run.id, {
+          applies: false,
+          reason: firstGitErrorLine(res.stderr) ?? `git apply --check exited ${res.code}`,
+          ...(failures.length ? { failures } : {}),
+        });
+      }
+    }
+  } catch {
+    // Worktree setup failed — leave applyCheck unset; the group still finalizes.
+  } finally {
+    await removeWorktree(repoPath, checkPath, deps.worktreeMutex);
+    await capture("git", ["-C", repoPath, "branch", "-D", branch]);
+  }
+  return out;
+}
+
 async function listUnmergedFiles(worktreePath: string): Promise<string[]> {
   const result = await capture("git", ["-C", worktreePath, "diff", "--name-only", "--diff-filter=U"]);
   return result.stdout
@@ -836,7 +917,7 @@ async function* remergeSplitGroupIfNeeded(
   const eventsPath = artifactPaths(repoPath, groupId).eventsPath;
   if (!(await allChildrenReady(repoPath, groupId, expected))) {
     // Still incomplete — refresh the group result/status without merging.
-    await finalizeGroup(repoPath, groupId, { expectedChildren: expected });
+    await finalizeGroup(repoPath, groupId, { expectedChildren: expected, deps });
     return;
   }
 
@@ -848,7 +929,7 @@ async function* remergeSplitGroupIfNeeded(
     status: outcome.status,
     ...(outcome.conflicts?.length ? { conflicts: outcome.conflicts.map((c) => c.file) } : {}),
   });
-  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome });
+  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome, deps });
 }
 
 /** Ready children of a group, in apply order (createdAt), with a usable diff. */
@@ -909,7 +990,7 @@ async function integrateGroup(repoPath: string, groupId: string, deps: Delegatio
   });
 
   const expected = details.run.childRunIds?.length ?? ready.length;
-  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome });
+  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome, deps });
 
   const order = ready.map((child) => ({ id: child.id, ...(child.label ? { label: child.label } : {}) }));
   return {
@@ -1268,7 +1349,9 @@ async function* resumeChildDelegation(
   let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
   let agentDurationMs: number | undefined;
+  let diffMs: number | undefined;
   let testDurationMs = 0;
+  let verifyDurationMs = 0;
 
   try {
     yield await recordEvent(details.artifacts.eventsPath, { type: "agent_start", runId: childId, agent: details.run.targetAgent });
@@ -1306,7 +1389,9 @@ async function* resumeChildDelegation(
     agentDurationMs = Date.now() - agentStartedMs;
 
     if (details.run.mode !== "review") {
+      const diffStartedMs = Date.now();
       const diffResult = await generateDiff(workDir);
+      diffMs = Date.now() - diffStartedMs;
       changedFiles = diffResult.changedFiles;
       diffSummary = diffResult.summary;
       await writeFile(details.artifacts.diffPath as string, diffResult.diff);
@@ -1339,7 +1424,7 @@ async function* resumeChildDelegation(
         yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
         const result = await runTestCommand(workDir, command, request.timeoutMs);
         verify.push(result);
-        testDurationMs += result.durationMs ?? 0;
+        verifyDurationMs += result.durationMs ?? 0;
         await appendFile(
           details.artifacts.testLogPath as string,
           `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
@@ -1362,12 +1447,15 @@ async function* resumeChildDelegation(
     });
 
     const result = attachReviewArtifacts(
-      buildRunResult(updatedRun, details.artifacts, changedFiles, tests, agentEvents, [], {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      }),
+      buildRunResult(
+        updatedRun,
+        details.artifacts,
+        changedFiles,
+        tests,
+        agentEvents,
+        [],
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, diffMs, testDurationMs, verifyDurationMs }),
+      ),
       changedFiles,
       request,
       deps.defaultForbidden,
@@ -1403,12 +1491,16 @@ async function* resumeChildDelegation(
       completedAt: new Date().toISOString(),
     });
     const result = attachReviewArtifacts(
-      buildRunResult(details.run, details.artifacts, changedFiles, tests, agentEvents, [], {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      }, error),
+      buildRunResult(
+        details.run,
+        details.artifacts,
+        changedFiles,
+        tests,
+        agentEvents,
+        [],
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, diffMs, testDurationMs, verifyDurationMs }),
+        error,
+      ),
       changedFiles,
       request,
       deps.defaultForbidden,
@@ -1456,9 +1548,20 @@ function isRunActive(run: Run, controllers: Map<string, AbortController>): boole
   return (run.childRunIds ?? []).some((childId) => controllers.has(childId));
 }
 
-/** Attach a transient `_active` flag (parallels foldRuns' `_children`) for the runs listing. */
-function markActive(run: Run, controllers: Map<string, AbortController>): Run {
-  (run as unknown as Record<string, unknown>)["_active"] = isRunActive(run, controllers);
+/** Attach transient listing fields (parallels foldRuns' `_children`): `_active`, plus — for an
+ *  in-flight run — `_lastEventAt` (the event log's mtime) so `watch` can surface silence/staleness
+ *  without each row needing a getRun. The stat is bounded to active runs to keep listing cheap. */
+async function annotateRun(run: Run, controllers: Map<string, AbortController>, repoPath: string): Promise<Run> {
+  const rec = run as unknown as Record<string, unknown>;
+  const active = isRunActive(run, controllers);
+  rec["_active"] = active;
+  if (active || ACTIVE_STATUSES.has(run.status)) {
+    try {
+      rec["_lastEventAt"] = (await stat(artifactPaths(repoPath, run.id).eventsPath)).mtime.toISOString();
+    } catch {
+      // No event log yet — omit; the board falls back to updatedAt.
+    }
+  }
   return run;
 }
 
@@ -1550,7 +1653,10 @@ async function* runSingleDelegation(
   let diffSummary: DiffSummary | undefined;
   let runStartedMs = Date.now();
   let agentDurationMs: number | undefined;
+  let worktreeSetupMs: number | undefined;
+  let diffMs: number | undefined;
   let testDurationMs = 0;
+  let verifyDurationMs = 0;
 
   try {
     const mode = request.mode ?? "implement";
@@ -1592,8 +1698,10 @@ async function* runSingleDelegation(
     run = await updateRun(run, { status: "planning", startedAt: new Date().toISOString() });
     const workspaceSnapshot = isolation.workspace === "shared" ? await captureStatus(repoPath) : undefined;
     if (isolation.workspace === "worktree") {
+      const worktreeStartedMs = Date.now();
       const baseRef = await resolveBaseRef(repoPath, isolation.baseRef);
       await createWorktree(repoPath, worktreePath, run.branchName, baseRef, deps.worktreeMutex);
+      worktreeSetupMs = Date.now() - worktreeStartedMs;
       worktreeCreated = true;
       yield await recordEvent(artifacts.eventsPath, {
         type: "worktree_created",
@@ -1660,12 +1768,15 @@ async function* runSingleDelegation(
       if (workspaceSnapshot !== undefined) await assertStatusUnchanged(repoPath, workspaceSnapshot);
       await writeFile(artifacts.diffPath as string, "");
       run = await updateRun(run, { status: "ready", completedAt: new Date().toISOString() });
-      const result: RunResult = buildRunResult(run, artifacts, [], [], agentEvents, outOfTreeChanges, {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      });
+      const result: RunResult = buildRunResult(
+        run,
+        artifacts,
+        [],
+        [],
+        agentEvents,
+        outOfTreeChanges,
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, worktreeSetupMs, diffMs, testDurationMs, verifyDurationMs }),
+      );
       await writeJson(artifacts.resultPath, result);
       await writeReport(artifacts.reportPath, result);
       yield await recordEvent(artifacts.eventsPath, {
@@ -1678,7 +1789,9 @@ async function* runSingleDelegation(
       return;
     }
 
+    const diffStartedMs = Date.now();
     const diffResult = await generateDiff(workDir);
+    diffMs = Date.now() - diffStartedMs;
     changedFiles = diffResult.changedFiles;
     diffSummary = diffResult.summary;
     await writeFile(artifacts.diffPath as string, diffResult.diff);
@@ -1712,7 +1825,7 @@ async function* runSingleDelegation(
       yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
       const result = await runTestCommand(workDir, command, request.timeoutMs);
       verify.push(result);
-      testDurationMs += result.durationMs ?? 0;
+      verifyDurationMs += result.durationMs ?? 0;
       await appendFile(
         artifacts.testLogPath as string,
         `$ [verify] ${command}\n${result.output}\n[exit ${result.exitCode ?? "null"}]\n\n`,
@@ -1736,12 +1849,15 @@ async function* runSingleDelegation(
       run = await updateRun(run, { worktreeRemovedAt: new Date().toISOString() });
     }
     const result = attachReviewArtifacts(
-      buildRunResult(run, artifacts, changedFiles, tests, agentEvents, outOfTreeChanges, {
-        totalDurationMs: Date.now() - runStartedMs,
-        agentDurationMs,
-        testDurationMs,
-        usage: extractUsageTelemetry(agentEvents),
-      }),
+      buildRunResult(
+        run,
+        artifacts,
+        changedFiles,
+        tests,
+        agentEvents,
+        outOfTreeChanges,
+        buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, worktreeSetupMs, diffMs, testDurationMs, verifyDurationMs }),
+      ),
       changedFiles,
       request,
       deps.defaultForbidden,
@@ -1775,12 +1891,7 @@ async function* runSingleDelegation(
           tests,
           agentEvents,
           outOfTreeChanges,
-          {
-            totalDurationMs: Date.now() - runStartedMs,
-            agentDurationMs,
-            testDurationMs,
-            usage: extractUsageTelemetry(agentEvents),
-          },
+          buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, worktreeSetupMs, diffMs, testDurationMs, verifyDurationMs }),
           error,
         ),
         changedFiles,
@@ -1827,9 +1938,26 @@ function buildRunResult(
         : "Agent claimed success but Portico gate failed.",
     );
   }
-  if (run.mode === "implement" && run.status === "ready" && changedFiles.length === 0) {
+  // No-change in implement mode is usually a non-result for an edit task — flag it unless the
+  // caller declared it acceptable (`--expect-no-changes`) or this is a review/check run. Gating
+  // on the structured `mode`, never on sniffing task verbs (free-text, multi-line, often Chinese).
+  const noChangeNeedsAttention =
+    run.mode === "implement" && run.status === "ready" && changedFiles.length === 0 && !run.expectNoChanges;
+  if (noChangeNeedsAttention) {
     gateWarnings.push("Agent completed successfully but produced no file changes.");
   }
+  // Coverage: path policy guards the boundary (no out-of-scope edits); coverage guards
+  // completeness (every declared path was actually changed). A gap on a ready implement run
+  // is suspect — the run may have skipped part of the task.
+  const coverage = evaluateCoverage(changedFiles, run.expectedChangePaths);
+  const coverageGap = !!coverage && run.mode === "implement" && run.status === "ready" && coverage.untouched.length > 0;
+  if (coverageGap) {
+    gateWarnings.push(`Coverage gap: expected path(s) not changed: ${coverage.untouched.join(", ")}.`);
+  }
+  // Portico's own verdict, derived from observed facts rather than the agent's self-report:
+  // not-ready or ready-but-suspect (a flagged no-change run / coverage gap) → needs_attention.
+  const reviewDecision: "approve" | "needs_attention" =
+    run.status === "ready" && !noChangeNeedsAttention && !coverageGap ? "approve" : "needs_attention";
   return {
     run,
     artifacts,
@@ -1839,6 +1967,8 @@ function buildRunResult(
     ...(sandboxEscaped ? { sandboxEscaped, outOfTreeChanges } : {}),
     ...(agentGateMismatch ? { agentGateMismatch } : {}),
     ...(gateWarnings.length ? { gateWarnings } : {}),
+    reviewDecision,
+    ...(coverage ? { coverage } : {}),
     telemetry,
     ...(error ? { error } : {}),
   };
@@ -1858,6 +1988,29 @@ function attachReviewArtifacts(
   if (diffSummary) result.diffSummary = diffSummary;
   if (verify.length) result.verify = verify;
   return result;
+}
+
+/** Assemble a RunTelemetry from captured phase timers, omitting buckets that weren't measured
+ *  (e.g. worktree setup on a resume, verify when no `--verify` ran). Keeps the ~6 call sites
+ *  in the single/child run paths consistent. */
+function buildTelemetry(opts: {
+  runStartedMs: number;
+  agentEvents: RuntimeEvent[];
+  agentDurationMs?: number;
+  worktreeSetupMs?: number;
+  diffMs?: number;
+  testDurationMs: number;
+  verifyDurationMs?: number;
+}): RunTelemetry {
+  return {
+    totalDurationMs: Date.now() - opts.runStartedMs,
+    ...(opts.agentDurationMs !== undefined ? { agentDurationMs: opts.agentDurationMs } : {}),
+    ...(opts.worktreeSetupMs !== undefined ? { worktreeSetupMs: opts.worktreeSetupMs } : {}),
+    ...(opts.diffMs !== undefined ? { diffMs: opts.diffMs } : {}),
+    testDurationMs: opts.testDurationMs,
+    ...(opts.verifyDurationMs ? { verifyMs: opts.verifyDurationMs } : {}),
+    usage: extractUsageTelemetry(opts.agentEvents),
+  };
 }
 
 function extractUsageTelemetry(events: RuntimeEvent[]): RunTelemetry["usage"] {
@@ -1951,6 +2104,22 @@ function normalizeUsageKey(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase();
 }
 
+/** The agent's final assistant message — the `done` event's message, else trailing content
+ *  deltas. Used to surface a no-change run's stated reason (clearly labeled unverified). */
+function extractAgentFinalMessage(events: RuntimeEvent[]): string | undefined {
+  const done = [...events].reverse().find((event) => event.type === "done");
+  if (done && done.type === "done" && done.message?.trim()) {
+    const message = done.message.trim();
+    return message.length > 600 ? `${message.slice(0, 597)}...` : message;
+  }
+  const content = events
+    .map((event) => (event.type === "content" ? event.delta : ""))
+    .join("")
+    .trim();
+  if (!content) return undefined;
+  return content.length > 600 ? `${content.slice(0, 597)}...` : content;
+}
+
 function agentClaimedSuccess(events: RuntimeEvent[]): boolean {
   const text = events
     .map((event) => {
@@ -1998,6 +2167,17 @@ function evaluatePathPolicy(
     notAllowed,
     ...(retryAllowed.length ? { retryAllowed } : {}),
   };
+}
+
+/** Pure evaluation of `--expected-change` coverage: which declared patterns were touched, which
+ *  were left untouched (gaps), and which changed files were unexpected. Returns undefined when
+ *  the caller declared no expectations (coverage is opt-in). */
+function evaluateCoverage(changedFiles: string[], expected: string[] | undefined): CoverageResult | undefined {
+  if (!expected?.length) return undefined;
+  const touched = expected.filter((pattern) => changedFiles.some((file) => matchesPathPattern(file, pattern)));
+  const untouched = expected.filter((pattern) => !touched.includes(pattern));
+  const unexpected = changedFiles.filter((file) => !expected.some((pattern) => matchesPathPattern(file, pattern)));
+  return { expected, touched, untouched, unexpected };
 }
 
 function enforcePathPolicy(changedFiles: string[], request: DelegateRequest, defaultForbidden: string[]): void {
@@ -2108,6 +2288,8 @@ function createRun(
     depth: request.depth ?? 0,
     createdAt: now,
     updatedAt: now,
+    ...(request.expectNoChanges ? { expectNoChanges: true } : {}),
+    ...(request.expectedChangePaths?.length ? { expectedChangePaths: request.expectedChangePaths } : {}),
     ...(options.role ? { role: options.role } : {}),
     ...(options.groupId ? { groupId: options.groupId } : {}),
     ...(options.parentRunId ? { parentRunId: options.parentRunId } : {}),
@@ -2449,6 +2631,14 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
   const childResults = result.childResults ?? result.compareResults;
   const groupSummary = result.groupSummary;
   const isSplit = run.mode === "split";
+  // Portico's own verdict. Prefer the structured field; fall back to status for older results.
+  const reviewDecision = result.reviewDecision ?? (run.status === "ready" ? "approve" : "needs_attention");
+  // For a no-change implement run, the agent's own final message often explains why it made no
+  // edits; surface it (truncated, unverified) so the reviewer doesn't have to read the agent log.
+  const noChangeReason =
+    run.role !== "group" && run.mode === "implement" && run.status === "ready" && changedFiles.length === 0
+      ? extractAgentFinalMessage(result.agentEvents)
+      : undefined;
 
   let nextActions: string;
   if (run.role === "group" && isSplit) {
@@ -2481,6 +2671,9 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     }
     for (const c of other) lines.push(`Inspect: \`portico status ${c.run.id}\``);
     nextActions = lines.join("\n");
+  } else if (run.status === "ready" && reviewDecision === "needs_attention") {
+    // Ready by gate, but Portico flagged it (e.g. no file changes) — don't lead with Apply.
+    nextActions = `1. Needs attention before apply — inspect: \`portico status ${run.id}\``;
   } else {
     nextActions = `1. Apply: \`portico apply ${run.id}\``;
   }
@@ -2512,18 +2705,31 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     run.worktreeRemovedAt ? `Worktree Removed At: ${run.worktreeRemovedAt}` : undefined,
     run.worktreeRemovedAt ? "" : undefined,
+    run.role !== "group" ? "## Portico Observations" : undefined,
+    run.role !== "group" ? "" : undefined,
+    run.role !== "group" ? formatObservations(result, changedFiles, reviewDecision) : undefined,
+    run.role !== "group" ? "" : undefined,
     childResults?.length ? (isSplit ? "## Split Contributions" : "## Compare Candidates") : undefined,
     childResults?.length ? "" : undefined,
     groupSummary
-      ? `Children: ${groupSummary.total} total, ${groupSummary.ready} ready, ${groupSummary.failed} failed, ${groupSummary.cancelled} cancelled`
+      ? `Children: ${groupSummary.total} total, ${groupSummary.ready} ready, ${groupSummary.failed} failed, ${groupSummary.cancelled} cancelled${
+          (childResults?.filter((c) => c.run.status === "ready" && c.changedFiles.length === 0).length ?? 0)
+            ? `, ${childResults?.filter((c) => c.run.status === "ready" && c.changedFiles.length === 0).length} no-change`
+            : ""
+        }`
       : undefined,
     groupSummary ? "" : undefined,
     childResults?.length
       ? childResults
-          .map(
-            (candidate, index) =>
-              `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s) — ${candidate.artifacts.reportPath}`,
-          )
+          .map((candidate, index) => {
+            const agentMs = candidate.telemetry?.agentDurationMs !== undefined ? ` — ${candidate.telemetry.agentDurationMs} ms agent` : "";
+            const apply = candidate.applyCheck
+              ? candidate.applyCheck.applies
+                ? " — apply: ok"
+                : ` — apply: FAILS (${candidate.applyCheck.reason ?? "does not apply to base"})`
+              : "";
+            return `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s)${agentMs}${apply} — ${candidate.artifacts.reportPath}`;
+          })
           .join("\n")
       : undefined,
     childResults?.length ? "" : undefined,
@@ -2562,6 +2768,10 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     formatPathPolicy(result.pathPolicy),
     "",
+    result.coverage ? "## Coverage" : undefined,
+    result.coverage ? "" : undefined,
+    result.coverage ? formatCoverage(result.coverage) : undefined,
+    result.coverage ? "" : undefined,
     "## Worktree Changes",
     "",
     result.diffSummary
@@ -2588,9 +2798,16 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     verifyChecks.length ? "" : undefined,
     verifyChecks.length ? formatChecks(verifyChecks) : undefined,
     verifyChecks.length ? "" : undefined,
+    // For a no-change implement run, surface the agent's own explanation (clearly unverified) so
+    // a reviewer can judge "why nothing changed" without scraping the agent log.
+    noChangeReason ? "## Agent's Stated Reason (unverified — for a no-change run)" : undefined,
+    noChangeReason ? "" : undefined,
+    noChangeReason ?? undefined,
+    noChangeReason ? "" : undefined,
     "## Review",
     "",
-    `Decision: ${run.status === "ready" ? "approve" : "needs_attention"}`,
+    `Decision: ${reviewDecision}`,
+    run.role !== "group" ? `Readiness: ${formatReadiness(run, reviewDecision)}` : undefined,
     "",
     error
       ? `Summary: ${error}`
@@ -2603,7 +2820,8 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     `1. ${basename(artifacts.diffPath ?? "diff.patch")}`,
     `2. ${basename(artifacts.testLogPath ?? "test.log")}`,
     `3. ${basename(artifacts.eventsPath)}`,
-    `4. ${basename(artifacts.resultPath)}`,
+    `4. ${basename(artifacts.agentLogPath)} (raw agent log — narration, not an authoritative status source)`,
+    `5. ${basename(artifacts.resultPath)}`,
     "",
     "## Next Actions",
     "",
@@ -2615,6 +2833,49 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     .filter((line): line is string => line !== undefined)
     .join("\n");
   await writeFile(path, body);
+}
+
+/** Distinguish "ready to review" from "ready to apply" so `ready` (a gate-passed flag) is not
+ *  mistaken for "safe to apply". Review/check runs are never applied; an implement run that
+ *  Portico flagged (no-change, coverage gap) is review-only until a human looks. */
+function formatReadiness(run: Run, reviewDecision: "approve" | "needs_attention"): string {
+  if (run.mode !== "implement") return "Ready to review (read-only run; nothing to apply)";
+  if (run.status !== "ready") return `Not ready (${run.status})`;
+  if (reviewDecision === "needs_attention") return "Ready to review only — needs attention before apply (see Gate Warnings)";
+  return "Ready to apply";
+}
+
+/** Portico's own measured facts about a run — what Portico observed, independent of the agent's
+ *  narration. Foregrounds changed files, diff check, tests/verify, path policy and sandbox so a
+ *  reviewer never has to trust the (often noisy) agent log to judge whether the result is sound. */
+function formatObservations(
+  result: RunResult,
+  changedFiles: string[],
+  reviewDecision: "approve" | "needs_attention",
+): string {
+  const tests = result.tests ?? [];
+  const verify = result.verify ?? [];
+  const tally = (checks: TestResult[]) => `${checks.filter((c) => c.status === "passed").length}/${checks.length} passed`;
+  const diffCheck = result.diffSummary
+    ? result.diffSummary.check.trim()
+      ? "issues found — see Worktree Changes"
+      : "clean"
+    : "not evaluated";
+  const lines = [
+    `Changed Files: ${changedFiles.length ? `${changedFiles.length} file(s)` : "none"}`,
+    `Diff Check (whitespace/conflict markers): ${diffCheck}`,
+    `Tests: ${tests.length ? tally(tests) : "none configured"}`,
+    `Verify: ${verify.length ? tally(verify) : "none configured"}`,
+    `Path Policy: ${result.pathPolicy ? result.pathPolicy.status : "not evaluated"}`,
+    result.coverage ? `Coverage: ${result.coverage.untouched.length ? `gap (${result.coverage.untouched.length} expected path(s) untouched)` : "expected paths all touched"}` : undefined,
+    `Sandbox Escape: ${result.sandboxEscaped ? `DETECTED (${result.outOfTreeChanges?.length ?? 0} out-of-tree change(s))` : "none"}`,
+    `Review Decision: ${reviewDecision}`,
+    "",
+    "These are the checks Portico ran — a boundary, not a quality guarantee. Portico does not judge",
+    "semantic correctness, prose quality, or link validity; use --verify for those. The agent's",
+    "narration in agent.ndjson is a log, not an authoritative status source.",
+  ].filter((line): line is string => line !== undefined);
+  return lines.join("\n");
 }
 
 /** First non-empty line of a (possibly multi-line) message, truncated for inline use. */
@@ -2632,6 +2893,20 @@ function formatPathPolicy(policy: PathPolicyResult | undefined): string {
   if (policy.retryAllowed?.length) {
     lines.push("", `Retry allowing them: ${policy.retryAllowed.map((p) => `--allowed ${p}`).join(" ")}`);
   }
+  return lines.join("\n");
+}
+
+/** Render the coverage of `--expected-change`: which declared paths were touched, which are
+ *  still gaps, and which changed files were unexpected. Boundary (path policy) vs completeness. */
+function formatCoverage(coverage: CoverageResult): string {
+  const list = (items: string[]) => (items.length ? items.join(", ") : "(none)");
+  const lines = [
+    `Status: ${coverage.untouched.length ? "gap" : "complete"}`,
+    `Expected: ${list(coverage.expected)}`,
+    `Touched: ${list(coverage.touched)}`,
+    `Untouched (gaps): ${list(coverage.untouched)}`,
+    `Unexpected (changed, not expected): ${list(coverage.unexpected)}`,
+  ];
   return lines.join("\n");
 }
 
@@ -2673,8 +2948,12 @@ function formatTelemetry(telemetry: RunTelemetry | undefined): string {
   const usage = telemetry.usage;
   const lines = [
     `Total Duration: ${telemetry.totalDurationMs} ms`,
+    telemetry.worktreeSetupMs !== undefined ? `Worktree Setup: ${telemetry.worktreeSetupMs} ms` : undefined,
     telemetry.agentDurationMs !== undefined ? `Agent Duration: ${telemetry.agentDurationMs} ms` : undefined,
+    telemetry.diffMs !== undefined ? `Diff Generation: ${telemetry.diffMs} ms` : undefined,
     `Test Duration: ${telemetry.testDurationMs} ms`,
+    telemetry.verifyMs !== undefined ? `Verify Duration: ${telemetry.verifyMs} ms` : undefined,
+    telemetry.fanInMs !== undefined ? `Fan-in Duration: ${telemetry.fanInMs} ms` : undefined,
     usage.available ? `Usage Available: yes` : `Usage Available: no (${usage.unavailableReason ?? "not reported"})`,
     usage.inputTokens !== undefined ? `Input Tokens: ${usage.inputTokens}` : undefined,
     usage.outputTokens !== undefined ? `Output Tokens: ${usage.outputTokens}` : undefined,

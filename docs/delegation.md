@@ -261,8 +261,8 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 | `agent.ndjson` | Target agent runtime events |
 | `diff.patch` | Patch for implementation runs; empty for read-only review runs |
 | `test.log` | Output from configured test commands |
-| `report.md` | Human-readable summary, warnings, telemetry, and next actions |
-| `result.json` | Stable machine-readable result with changed files, warnings, and telemetry |
+| `report.md` | Human-readable summary, Portico observations, warnings, telemetry, and next actions |
+| `result.json` | Stable machine-readable result with changed files, `reviewDecision`, `coverage`, warnings, and telemetry |
 | `conflicts.json` | Split groups only, on a merge conflict: the conflict `kind` (`overlap`/`apply_failure`), `failingChild`, `git apply` `reason`, base refs, and the conflicting files |
 
 For split groups, `diff.patch` holds the **merged** patch (present only when the merge is
@@ -270,15 +270,50 @@ clean), and `result.json` additionally carries `merge` (strategy + status, plus
 `conflictKind`/`conflictReason` on a conflict), `conflicts`, and `judge`. The final
 `run_done` event includes the `reportPath` and `resultPath`.
 
+## Portico Observations and the Review Decision
+
+`report.md` opens (after the summary) with a **`## Portico Observations`** section: the facts
+Portico itself measured — changed-file count, diff check (whitespace / conflict markers),
+test and verify tallies, path-policy status, sandbox-escape status, and the **Review
+Decision**. Trust this block over the agent's narration. The streamed agent log
+(`agent.ndjson`) can show mojibake, internal sub-agent chatter, permission prompts, or
+timeouts that do not reflect the files actually on disk; it is a log, not a status source.
+
+`result.json` carries a structured `reviewDecision` (`approve` | `needs_attention`) that is
+Portico's own verdict, derived from those observed facts rather than the agent's self-report.
+A run is `needs_attention` when it is not `ready`, or when it is `ready` but suspect — most
+commonly an **implement-mode run that produced no file changes**, which usually means the
+agent didn't make progress. The report's `## Review` `Decision` line and Next Actions reflect
+this: a flagged no-change run does not lead with `apply`.
+
+If producing no edits is a legitimate outcome (a check or audit task run in implement mode),
+pass `--expect-no-changes`: it suppresses the no-change warning and keeps the decision
+`approve`. The no-change check keys off the structured `mode`, never off sniffing task verbs.
+
 ## Gate Warnings and Telemetry
 
 `result.json` records gate warnings when Portico sees a mismatch between the agent's
-terminal claim and Portico's own gates, or when a worktree run changes files outside the
-isolated worktree.
+terminal claim and Portico's own gates, when a worktree run changes files outside the
+isolated worktree, or when an implement-mode run produced no file changes (unless
+`--expect-no-changes` was set).
 
-`result.telemetry` records total run duration, agent duration, test duration, and provider
-usage when the agent reports it. Usage data preserves the provider's raw payload and
-extracts common token and cost fields such as `inputTokens`, `outputTokens`,
+`result.telemetry` buckets the run's wall time by phase so a reviewer can see where time
+went — agent work, checks, or fan-in — without scraping the event log:
+
+- `totalDurationMs` — total run wall time.
+- `worktreeSetupMs` — creating the isolated worktree (single/child runs; absent on resume / shared workspace).
+- `agentDurationMs` — the target agent's execution. For a group, the sum across children.
+- `diffMs` — generating the diff after the agent finished (single/child runs).
+- `testDurationMs` — `--test` commands only.
+- `verifyMs` — `--verify` commands, tracked separately from tests.
+- `fanInMs` — group runs only: wall time in the fan-in phase (merge + judge).
+
+The report's `## Telemetry` section renders whichever buckets were measured, and a group's
+`## Compare Candidates` / `## Split Contributions` list shows each child's agent duration
+plus a `no-change` count in the children summary, so retry cost is visible at a glance.
+
+Provider usage is recorded when the agent reports it. Usage data preserves the provider's raw
+payload and extracts common token and cost fields such as `inputTokens`, `outputTokens`,
 `totalTokens`, and `costUsd`.
 
 ## Path Policy
@@ -306,6 +341,37 @@ build/**
 ```
 
 Path policy is enforced after diff generation and before a run becomes ready.
+
+## Coverage
+
+Path policy guards the *boundary* (no out-of-scope edits); coverage guards *completeness*.
+Declare the paths you expect a run to change with repeatable `--expected-change`:
+
+```bash
+portico delegate \
+  --to codex \
+  --repo . \
+  --task "Sync the Chinese docs with their English originals" \
+  --expected-change "docs/*.zh-CN.md" \
+  --expected-change "README.zh-CN.md"
+```
+
+The report's `## Coverage` section then lists `expected`, `touched` (expected patterns that
+matched a changed file), `untouched` (the gaps), and `unexpected` (changed files matching no
+expected pattern). An untouched expected path on a ready implement run is a coverage gap: it
+raises a gate warning and sets the review decision to `needs_attention`, so a run that silently
+skipped part of the task is not mistaken for done. Coverage is opt-in — without
+`--expected-change` the section is omitted. (Portico can only observe the diff, so there is no
+"expected-touch"/read tracking and no built-in docs manifest; enumerate the patterns yourself.)
+
+## Readiness and the no-change reason
+
+The `## Review` section states a `Readiness` line that separates *review* from *apply*:
+`Ready to apply` (implement run, changes present, no flags), `Ready to review (read-only run)`
+for review mode, or `Ready to review only — needs attention before apply` when Portico flagged
+the run (no-change or coverage gap). For a no-change implement run the report also includes an
+`## Agent's Stated Reason (unverified)` section echoing the agent's final message, so a reviewer
+can judge *why* nothing changed without opening the agent log — clearly labeled unverified.
 
 ## Tests
 

@@ -45,7 +45,9 @@ export async function delegateCommand(args: string[]): Promise<number> {
       verify: { type: "string", multiple: true },
       allowed: { type: "string", multiple: true },
       forbidden: { type: "string", multiple: true },
+      "expected-change": { type: "string", multiple: true },
       timeout: { type: "string" },
+      "expect-no-changes": { type: "boolean" },
       json: { type: "boolean" },
       "review-summary": { type: "boolean" },
       "apply-on-ready": { type: "boolean" },
@@ -84,7 +86,9 @@ Options:
   --verify <cmd>           Verification check, reported separately from tests (repeatable)
   --allowed <path>         Allowed path (repeatable)
   --forbidden <path>       Forbidden path (repeatable)
+  --expected-change <path> Path expected to be changed; reports coverage + warns on a gap (repeatable)
   --timeout <ms>           Timeout in milliseconds
+  --expect-no-changes      Treat a no-change result as acceptable (skip the no-change warning)
   --json                   Output JSON format
   --review-summary         After the run, print a one-click apply command + risk summary
   --apply-on-ready         Auto-apply a ready single run when all safety guards pass (opt-in)
@@ -184,7 +188,9 @@ Options:
     verifyCommands: values.verify,
     allowedPaths: values.allowed,
     forbiddenPaths: values.forbidden,
+    expectedChangePaths: values["expected-change"],
     timeoutMs: values.timeout ? Number(values.timeout) : undefined,
+    expectNoChanges: values["expect-no-changes"],
     depth: Number(process.env["PORTICO_DELEGATION_DEPTH"] ?? "0"),
   };
 
@@ -354,7 +360,10 @@ async function printReviewSummary(runId: string, repo: string, url?: string, tok
   console.log(`run ${run.id}: ${run.status}`);
   console.log(risks.length ? risks.join("\n") : "no risks recorded.");
   console.log("");
-  if (run.status === "ready") {
+  if (run.status === "ready" && result?.reviewDecision === "needs_attention") {
+    // Ready by gate, but Portico flagged it (e.g. no file changes) — don't lead with apply.
+    console.log(`needs attention before apply; inspect: portico status ${run.id}`);
+  } else if (run.status === "ready") {
     console.log(isGroup ? `apply: portico apply ${run.id} --all` : `apply: portico apply ${run.id}`);
   } else if (run.status === "partial" || isGroup) {
     console.log(`review children: portico review ${run.id}`);
