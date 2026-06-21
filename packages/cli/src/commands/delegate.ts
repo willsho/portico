@@ -253,12 +253,17 @@ async function postDelegationStream(
   try {
     return await fetchWithRetry(endpoint, init);
   } catch (err) {
-    if (autoStart && (await autoStartDaemon(base, token))) {
-      try {
-        return await fetchWithRetry(endpoint, init);
-      } catch (retryErr) {
-        printDaemonError(retryErr, endpoint);
-        return null;
+    if (autoStart) {
+      const activeBase = await autoStartDaemon(base, token);
+      if (activeBase) {
+        try {
+          const newBase = typeof activeBase === "string" ? activeBase : base;
+          const retryEndpoint = endpoint.replace(base, newBase);
+          return await fetchWithRetry(retryEndpoint, init);
+        } catch (retryErr) {
+          printDaemonError(retryErr, endpoint);
+          return null;
+        }
       }
     }
     printDaemonError(err, endpoint);

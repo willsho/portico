@@ -95,6 +95,8 @@ export interface DelegateRequest {
   allowedPaths?: string[];
   forbiddenPaths?: string[];
   timeoutMs?: number;
+  testTimeoutMs?: number;
+  idleTimeoutMs?: number;
   maxAutoFixAttempts?: number;
   depth?: number;
   /** Declare that producing no file changes is an expected, acceptable outcome.

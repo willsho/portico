@@ -12,6 +12,8 @@ export interface AgentOverride {
 
 export interface DaemonLimits {
   defaultTimeoutMs: number;
+  defaultAgentTimeoutMs: number;
+  idleTimeoutMs: number;
   maxContextChars: number;
   maxOutputChars: number;
 }
@@ -39,6 +41,8 @@ export const DEFAULT_CONFIG: DaemonConfig = {
   agents: {},
   limits: {
     defaultTimeoutMs: 120_000,
+    defaultAgentTimeoutMs: 900_000,
+    idleTimeoutMs: 120_000,
     maxContextChars: 120_000,
     maxOutputChars: 200_000,
   },

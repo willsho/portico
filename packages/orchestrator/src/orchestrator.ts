@@ -1368,15 +1368,19 @@ async function* resumeChildDelegation(
 
     const agentStartedMs = Date.now();
     let capturedSessionId: string | undefined;
-    for await (const event of runAgent(chat, {
-      entry,
-      signal: controller.signal,
-      env: { ...process.env, PORTICO_DELEGATION_DEPTH: String((details.run.depth ?? 0) + 1) },
-      resumeSessionId: details.run.agentSessionId,
-      onAgentSession: (id) => {
-        capturedSessionId = id;
-      },
-    })) {
+    const agentIterable = withIdleWatchdog(
+      runAgent(chat, {
+        entry,
+        signal: controller.signal,
+        env: { ...process.env, PORTICO_DELEGATION_DEPTH: String((details.run.depth ?? 0) + 1) },
+        resumeSessionId: details.run.agentSessionId,
+        onAgentSession: (id) => {
+          capturedSessionId = id;
+        },
+      }),
+      request.idleTimeoutMs
+    );
+    for await (const event of agentIterable) {
       if (capturedSessionId && capturedSessionId !== details.run.agentSessionId) {
         details.run = await updateRun(details.run, { agentSessionId: capturedSessionId });
         capturedSessionId = undefined;
@@ -1405,7 +1409,7 @@ async function* resumeChildDelegation(
 
       for (const command of request.testCommands ?? []) {
         yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
-        const result = await runTestCommand(workDir, command, request.timeoutMs);
+        const result = await runTestCommand(workDir, command, request.testTimeoutMs);
         tests.push(result);
         testDurationMs += result.durationMs ?? 0;
         await appendFile(
@@ -1422,7 +1426,7 @@ async function* resumeChildDelegation(
       }
       for (const command of request.verifyCommands ?? []) {
         yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
-        const result = await runTestCommand(workDir, command, request.timeoutMs);
+        const result = await runTestCommand(workDir, command, request.testTimeoutMs);
         verify.push(result);
         verifyDurationMs += result.durationMs ?? 0;
         await appendFile(
@@ -1733,14 +1737,18 @@ async function* runSingleDelegation(
 
     const agentStartedMs = Date.now();
     let capturedSessionId: string | undefined;
-    for await (const event of runAgent(chat, {
-      entry,
-      signal: controller.signal,
-      env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(run.depth + 1) },
-      onAgentSession: (id) => {
-        capturedSessionId = id;
-      },
-    })) {
+    const agentIterable = withIdleWatchdog(
+      runAgent(chat, {
+        entry,
+        signal: controller.signal,
+        env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(run.depth + 1) },
+        onAgentSession: (id) => {
+          capturedSessionId = id;
+        },
+      }),
+      request.idleTimeoutMs
+    );
+    for await (const event of agentIterable) {
       if (capturedSessionId && !run.agentSessionId) {
         run = await updateRun(run, { agentSessionId: capturedSessionId });
         capturedSessionId = undefined;
@@ -1806,7 +1814,7 @@ async function* runSingleDelegation(
     run = await updateRun(run, { status: "testing" });
     for (const command of request.testCommands ?? []) {
       yield await recordEvent(artifacts.eventsPath, { type: "test_start", runId: run.id, command });
-      const result = await runTestCommand(workDir, command, request.timeoutMs);
+      const result = await runTestCommand(workDir, command, request.testTimeoutMs);
       tests.push(result);
       testDurationMs += result.durationMs ?? 0;
       await appendFile(
@@ -2556,6 +2564,32 @@ async function assertStatusUnchanged(repoPath: string, before: string): Promise<
   const after = await captureStatus(repoPath);
   if (after !== before) {
     throw new DelegationError("read_only_modified", "Read-only run changed the shared working tree.");
+  }
+}
+
+async function* withIdleWatchdog<T>(
+  iterable: AsyncIterable<T>,
+  idleMs: number | undefined,
+): AsyncIterable<T> {
+  if (!idleMs || idleMs <= 0) {
+    yield* iterable;
+    return;
+  }
+  const iterator = iterable[Symbol.asyncIterator]();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    for (;;) {
+      const idlePromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new DelegationError("agent_stalled", `agent idle for ${Math.round(idleMs / 1000)}s with no output — treated as stalled`)), idleMs);
+      });
+      const result = await Promise.race([iterator.next(), idlePromise]);
+      clearTimeout(timer);
+      if (result.done) break;
+      yield result.value;
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+    await iterator.return?.();
   }
 }
 
