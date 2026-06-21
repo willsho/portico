@@ -74,7 +74,7 @@ export async function handleChat(
     ...request,
     options: {
       ...request.options,
-      timeoutMs: request.options?.timeoutMs ?? limits.defaultTimeoutMs,
+      timeoutMs: request.options?.timeoutMs ?? limits.defaultAgentTimeoutMs,
       maxContextChars: request.options?.maxContextChars ?? limits.maxContextChars,
       maxOutputChars: request.options?.maxOutputChars ?? limits.maxOutputChars,
     },
@@ -172,6 +172,11 @@ export async function handleDelegate(
     writeJson(res, 400, { error: (err as Error).message, code: "bad_request" });
     return;
   }
+
+  const { limits } = ctx.config;
+  request.timeoutMs = request.timeoutMs ?? limits.defaultAgentTimeoutMs;
+  request.testTimeoutMs = request.testTimeoutMs ?? limits.defaultTimeoutMs;
+  request.idleTimeoutMs = request.idleTimeoutMs ?? limits.idleTimeoutMs;
 
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",

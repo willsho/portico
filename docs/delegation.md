@@ -60,6 +60,12 @@ Portico turns those changes into a patch. If a worktree-isolated run changes fil
 that workspace, Portico records the out-of-tree changes separately, marks the run failed,
 and emits a `sandbox_escape_detected` event.
 
+If the agent errors, times out, or is stopped by the **idle watchdog** (no output for too long,
+reported as `agent_stalled`), Portico still captures the worktree diff before finalizing the run.
+The run stays `failed`, but any partial edits show up in `changedFiles` / `diff.patch` and a gate
+warning notes "left N uncommitted file(s) in the worktree (partial work — review or resume)", so a
+cut-short run is reviewable or resumable instead of being silently discarded.
+
 ## Modes
 
 Portico supports four delegation modes:

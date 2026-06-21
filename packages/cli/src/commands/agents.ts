@@ -11,13 +11,19 @@ export async function agentsCommand(args: string[]): Promise<number> {
     options: {
       help: { type: "boolean", short: "h" },
       json: { type: "boolean" },
+      url: { type: "string" },
+      token: { type: "string" },
     },
   });
 
   if (values.help) {
     console.log(`Usage: portico agents [options]
 
+Locally-installed agents (does not require or check a running daemon).
+
 Options:
+  --url <url>              Daemon URL (accepted for consistency, not used)
+  --token <token>          Auth token (accepted for consistency, not used)
   --json                   Output JSON format
   -h, --help               Show this help message`);
     return 0;
@@ -31,6 +37,7 @@ Options:
     return 0;
   }
 
+  console.log("Locally-installed agents (does not require or check a running daemon).\n");
   printTable(agents);
   return 0;
 }

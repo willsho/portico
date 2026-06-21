@@ -97,7 +97,7 @@ portico start [--host h] [--port p] [--lan --token T] [--allow-origin o] [--conf
 portico stop
 portico daemon start
 portico daemon stop
-portico agents [--json]
+portico agents [--url <url>] [--token <token>] [--json]
 portico delegate --to <agent> --repo . (--task "<task>" | --task-file <path>) [--test "npm test"]
 portico delegate --mode review --to <agent> --repo . --task "<review task>"
 portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" --judge-to <agent-c>

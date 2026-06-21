@@ -23,7 +23,7 @@ portico start [options]
 portico stop
 portico daemon start [options]
 portico daemon stop
-portico agents [--json]
+portico agents [--url <url>] [--token <token>] [--json]
 portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
@@ -92,6 +92,14 @@ Portico refuses LAN exposure without a token.
 If a daemon is already recorded and still running, `portico start` prints
 `daemon already running (pid ..., port ..., ...)` and exits successfully.
 
+**Daemon discovery.** The daemon records its real host/port/URL in the pid file, so client
+commands find it automatically. They resolve the daemon URL in this order: `--url` → the
+`PORTICO_URL` env var → the URL from a **live** pid file → the `http://127.0.0.1:8787` default
+(a stale pid file whose process is gone is ignored). So a daemon started on a non-default port is
+reachable without passing `--url`. If a request hits a closed port while a daemon is running
+elsewhere, the error names that daemon's URL; `--auto-start` reuses an already-running daemon
+instead of starting a duplicate.
+
 Before binding, `start` runs a preflight that surfaces sandbox/permission problems early
 instead of letting the first `delegate` fail. If the pidfile location isn't writable the
 daemon still starts and serves requests, but `portico stop` and discovery are limited (it
@@ -121,6 +129,16 @@ portico agents --json
 
 Discovery uses provider defaults, environment path overrides such as
 `PORTICO_CODEX_PATH`, PATH lookup, login-shell PATH recovery, and config overrides.
+
+`portico agents` reports **locally-installed** agents — it does not require or check a running
+daemon, so a populated table is not a signal that the daemon is reachable. `--url` and `--token`
+are accepted for flag consistency with the other commands but are not used by local discovery.
+
+| Option | Meaning |
+| --- | --- |
+| `--url <url>` | Accepted for consistency; not used (discovery is local) |
+| `--token <token>` | Accepted for consistency; not used |
+| `--json` | Emit the agent list as JSON |
 
 ## `portico delegate`
 
@@ -162,7 +180,7 @@ Common options:
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
 | `--expected-change <pattern>` | Path expected to be changed; adds a Coverage section and warns (→ `needs_attention`) on an untouched expected path; repeatable |
 | `--coverage-manifest <path>` | JSON manifest file supplying expected-change paths |
-| `--timeout <ms>` | Agent/test timeout |
+| `--timeout <ms>` | Agent run timeout (total task wall-clock). Test/verify commands use their own, shorter timeout; a separate **idle watchdog** also stops an agent that produces no output for too long. Defaults come from the daemon's `defaultAgentTimeoutMs` / `defaultTimeoutMs` / `idleTimeoutMs` limits |
 | `--expect-no-changes` | Treat a no-change result as acceptable: suppress the implement-mode no-change warning and keep the review decision `approve` |
 | `--json` | Print delegation events as JSON lines |
 | `--review-summary` | After the run, print a one-click apply command plus a risk summary |
@@ -177,7 +195,8 @@ Common options:
 
 Before any agent launches, `delegate` prints a **preflight** to stderr — the resolved daemon
 URL, the **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can never
-retarget the daemon's own cwd), the base ref, the worktree root, and the agents about to run.
+retarget the daemon's own cwd), the base ref, the worktree root, the effective timeout, and the
+agents about to run.
 For a multi-agent fan-out at an interactive terminal it then asks for confirmation, so a wrong
 repo or base ref is caught before N agents burn time. Confirmation is skipped with `--yes` and
 for non-interactive (agent-driven / scripted) use, and the echo goes to stderr so it never
@@ -188,6 +207,15 @@ passed `--allowed` (a path boundary), the main tree's tracked files are clean, p
 passed, no sandbox escape was detected, and all tests + verify checks passed. If any guard is
 unmet it applies nothing and prints the unmet items plus the review summary. `--auto-start` is
 loopback-only — LAN/remote daemons are never auto-started.
+
+Exit codes (the streaming client):
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success — the run completed / reached `ready`, or `--detach` registered the run |
+| `1` | The run failed or errored |
+| `3` | The client disconnected, but the run may still be executing on the daemon — re-attach with `portico logs <run_id> --follow` or `portico status <run_id>` |
+| `130` | Interrupted (Ctrl-C) — the run may still be executing on the daemon |
 
 Isolation options:
 

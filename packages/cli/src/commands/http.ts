@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DelegationEvent } from "@portico/orchestrator";
+import { readDaemonPid, isProcessAlive } from "../pidfile.ts";
+import type { DaemonPidInfo } from "../pidfile.ts";
 
 export interface HttpOptions {
   url?: string;
@@ -20,8 +22,24 @@ export function resolveRepoArg(repo?: string): string {
   return repo ? resolve(repo) : process.cwd();
 }
 
-export function daemonUrl(url?: string): string {
-  return (url ?? process.env["PORTICO_URL"] ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+export function resolveLiveDaemon(env: NodeJS.ProcessEnv = process.env): DaemonPidInfo | null {
+  const info = readDaemonPid(env);
+  if (info && isProcessAlive(info.pid)) {
+    return info;
+  }
+  return null;
+}
+
+export function daemonUrl(url?: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (url) return url.replace(/\/$/, "");
+  if (env["PORTICO_URL"]) return env["PORTICO_URL"].replace(/\/$/, "");
+  
+  const live = resolveLiveDaemon(env);
+  if (live && live.url) {
+    return live.url.replace(/\/$/, "");
+  }
+
+  return "http://127.0.0.1:8787";
 }
 
 /** Only loopback daemons may be auto-started — LAN/remote daemons must be started explicitly. */
@@ -35,7 +53,12 @@ export function isLoopbackHost(hostname: string): boolean {
  * reachable afterward. Refuses non-loopback URLs so we never silently launch a process for
  * what should be a remote daemon (plan decision: auto-start is loopback-only).
  */
-export async function autoStartDaemon(url: string, token?: string): Promise<boolean> {
+export async function autoStartDaemon(url: string, token?: string, env: NodeJS.ProcessEnv = process.env): Promise<string | boolean> {
+  const live = resolveLiveDaemon(env);
+  if (live && live.url) {
+    return live.url.replace(/\/$/, "");
+  }
+
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -90,10 +113,17 @@ export async function fetchWithRetry(input: string, init?: RequestInit, retries 
  * running" (ECONNREFUSED) from "sandbox/permission blocked" (EPERM/EACCES) so the
  * user knows whether to start the daemon or relax their sandbox.
  */
-export function classifyFetchError(err: unknown, url: string): { message: string; hint: string } {
+export function classifyFetchError(err: unknown, url: string, env: NodeJS.ProcessEnv = process.env): { message: string; hint: string } {
   const cause = (err as Error & { cause?: NodeJS.ErrnoException })?.cause;
   const code = cause?.code;
   if (code === "ECONNREFUSED") {
+    const live = resolveLiveDaemon(env);
+    if (live && live.url && live.url.replace(/\/$/, "") !== url.replace(/\/$/, "")) {
+      return {
+        message: `a daemon is running at ${live.url} — pass \`--url ${live.url}\` or set \`PORTICO_URL\``,
+        hint: `you tried to reach ${url} but the running daemon is elsewhere.`,
+      };
+    }
     return {
       message: `daemon not running at ${url}`,
       hint: "start it with `portico start` (or pass `--auto-start`), or set PORTICO_URL to a running daemon.",
