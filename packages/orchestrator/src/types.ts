@@ -265,6 +265,16 @@ export interface RunResult {
   };
   /** Split group: per-file merge conflicts and their source child (when status=conflict). */
   conflicts?: Array<{ file: string; child: string; kind?: "overlap" | "apply_failure"; line?: number }>;
+  /** Set on a group's childResults entries: whether this child's own patch applies cleanly to
+   *  the group base. Proactively surfaces apply failures that file-name overlap can't explain
+   *  (a child can fail to apply on a file only it touched). Read-only; computed at fan-in. */
+  applyCheck?: {
+    applies: boolean;
+    /** First `git apply --check` error line when the patch does not apply. */
+    reason?: string;
+    /** Specific failing files (and hunk line, when git reports it). */
+    failures?: Array<{ file: string; line?: number }>;
+  };
   /** Fan-in judge verdict (compare: ranking + recommendation; split: overall verdict). */
   judge?: {
     to: string;

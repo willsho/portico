@@ -35,7 +35,7 @@
 
 图例：✅ 已完成 · 🟡 部分完成 · ⬜ 未开始
 
-**P0-a（正确性）+ P0-b（判读）全部完成**，其余尚未开始：
+**P0-a（正确性）+ P0-b（判读）全部完成**；P1 已开始：痛点 4 applyCheck ✅、痛点 2 telemetry 补桶 + 重试成本 ✅（watch 阶段显示仍缺）：
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
@@ -45,7 +45,7 @@
 | 痛点 1 · daemon 连接错误分类（P1） | 🟡 | 已有 `classifyFetchError`（未运行/沙箱/超时/DNS）;端口不匹配、repo 不可写、复用 doctor 未做 |
 | 痛点 4 · 抓 stderr + 区分 overlap/apply_failure | ✅ | |
 | 痛点 4 · 解析首个失败 hunk + conflicts.json 富字段 | ✅ | kind/failingChild/reason/base refs/`file:line`;「建议最小重跑范围」未单列字段 |
-| 痛点 4 · `review` 增加 `applyCheck`（P1） | ⬜ | |
+| 痛点 4 · `review` 增加 `applyCheck`（P1） | ✅ | finalizeGroup 用 `git apply --check` 逐 child 对 group base 检查;`RunResult.applyCheck`;review/report 展示 `apply ok/FAILS` |
 | **P0-b** 痛点 5 · 报告弱化 agent 自述 | ✅ | report 新增 `## Portico Observations`（changed files/diff check/tests/verify/policy/sandbox/review decision）+ 「agent.ndjson 非权威」提示 |
 | **P0-b** 痛点 6 · no-change → `needs_attention`（用 mode） | ✅ | `reviewDecision` 结构化字段；implement no-change → `needs_attention`；`--expect-no-changes` 豁免；Review/Next Actions 不再误导 apply |
 | 痛点 2 · telemetry 补桶 / watch 阶段 / 重试成本（全 P1） | 🟡 | telemetry 补桶 ✅（worktree setup/diff/verify 拆出/fan-in）+ 重试成本 ✅（group 报告含各 child agent duration + no-change 计数）;watch/status 阶段显示未做（`RunProgress` 已有 phase/lastEvent，watch/status 展示未接） |
@@ -55,7 +55,9 @@
 | 痛点 7 · coverage（`--expected-*` / coverage 段 / manifest） | ⬜ | |
 | 痛点 8 · group 采用标记 / patch-stack / apply 前提示 | ⬜ | |
 
-下一步建议：**P1**（review 信息结构化、telemetry 补桶、coverage/verify 强化）——P0-a/P0-b 已完成，正确性与最常见的误读已堵住，P1 进一步减少人工补查和 patch 拆解。
+下一步建议：继续 **P1** 剩余项——痛点 3（report 重构：Ready-to-review vs apply / 已检查·未检查 / verify 一等）、
+痛点 7（coverage：`--expected-*` + coverage 段）、以及痛点 2 残留的 watch/status 实时阶段显示。telemetry 补桶与
+review applyCheck 已落地。
 
 ## 痛点 1（正确性，P0 旗舰）：`--repo` 解析让委派和 resume 跑错仓库
 
@@ -162,7 +164,10 @@
 - ✅ **P0**：apply failure 时解析首个 `error: patch failed: <file>:<line>`，而不是 dump 整个 child 文件集；
   conflicts.json 记录失败文件、失败 child、首个失败 hunk、各 child diff 的生成 base ref。
   （「建议最小重跑范围」未单列字段——由 `failingChild` + report Next Actions 间接给出。）
-- ⬜ **P1**：`portico review` 在 overlap 之外增加 `applyCheck` 状态，提前暴露 child patch 是否可应用到 group base。
+- ✅ **P1**：`portico review` 在 overlap 之外增加 `applyCheck` 状态，提前暴露 child patch 是否可应用到 group base。
+  finalizeGroup 在 fan-in 时建一个 group base 的临时 worktree，对每个 child 独立跑 `git apply --check`，结果写入
+  `RunResult.applyCheck`（applies/reason/failures）。review 显示 `apply ok/FAILS` + 失败原因，group report 候选列表
+  附 `apply: ok/FAILS`。与 overlap 互补：child 无文件重叠但 patch 漂移仍会 `apply FAILS`。
 
 ## 痛点 5（判读）：agent 日志噪声和最终文件状态脱节
 

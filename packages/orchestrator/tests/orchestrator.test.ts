@@ -326,6 +326,9 @@ test("compare mode runs multiple isolated candidates and records a parent report
     assert.match(report, /Fan-in Duration: \d+ ms/);
     // Per-child agent duration shows where group time went (retry-cost view).
     assert.match(report, /ms agent/);
+    // applyCheck: each candidate's patch applies independently to the group base.
+    assert.ok(details.result?.childResults?.every((c) => c.applyCheck?.applies === true));
+    assert.match(report, /apply: ok/);
     await assert.rejects(() => orchestrator.apply(repo, runId), /Group run.*has multiple children|only implement runs can be applied/);
   } finally {
     await rm(repo, { recursive: true, force: true });

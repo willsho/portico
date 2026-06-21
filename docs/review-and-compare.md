@@ -197,6 +197,11 @@ integration worktree branched from the shared base ref:
   same region — narrow one with `--resume`, Portico re-merges automatically) from
   `apply_failure` (a single child's patch did not apply to the group base — re-run that child).
 
+To catch an `apply_failure` *before* the merge, `portico review <group_id>` runs a per-child
+**apply check** (`git apply --check` of each child's patch against the group base) and reports
+`apply ok` / `apply FAILS` per child. Unlike file-name overlap, this catches a child whose own
+patch drifted from the base even when it touches files no other child changed.
+
 With `--judge-to`, the judge reviews the **merged** result and records an `approve` /
 `needs_attention` verdict. See [Delegation → Task Split and Fan-in](delegation.md) for the
 full lifecycle.

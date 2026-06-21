@@ -395,6 +395,12 @@ interface RunResult {
     integrationWorktree?: string;
   };
   conflicts?: Array<{ file: string; child: string }>;
+  // Set on each entry of a group's childResults: does this child's own patch apply to the base?
+  applyCheck?: {
+    applies: boolean;
+    reason?: string;                                             // git apply --check error when it doesn't
+    failures?: Array<{ file: string; line?: number }>;
+  };
   judge?: {
     to: string;
     runId?: string;

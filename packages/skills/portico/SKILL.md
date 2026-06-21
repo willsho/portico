@@ -125,8 +125,12 @@ yourself, or anything where spinning up a separate agent adds no value.
    agent duration; use these to see whether time went to the agent, the checks, or fan-in
    before blaming a slow run on Portico.
    For a group (compare/split), `portico review <group_id>` aggregates every child
-   (status, changed files, checks, report/diff paths, per-child next action) and highlights
-   files changed by more than one child — the spots that need careful manual merging.
+   (status, changed files, checks, report/diff paths, per-child next action), highlights
+   files changed by more than one child — the spots that need careful manual merging — and
+   shows a per-child **apply check** (`apply ok` / `apply FAILS`): whether that child's own
+   patch still applies to the group base. A child can be `ready` with no file overlap yet still
+   `apply FAILS` (its patch drifted from the base); the apply check flags that up front instead
+   of letting it surface as a fan-in conflict.
 
 6. **Summarize for the user:** run id and status, changed files, per-command test result, and
    any risks you see in the diff. A run is `ready` when it produced a diff and tests passed;
@@ -208,7 +212,7 @@ yourself, or anything where spinning up a separate agent adds no value.
   scriptable. Useful when several delegations are running in parallel.
 - `portico status <run_id>` — show a run's artifacts, changed files, tests, and live progress
   (current phase, whether an agent is still running, last event).
-- `portico review <group_id>` — aggregate a group's children for review (`--ready-only` / `--json` / `--open-diff`).
+- `portico review <group_id>` — aggregate a group's children for review, with cross-child file overlap and a per-child apply check against the group base (`--ready-only` / `--json` / `--open-diff`).
 - `portico integrate <group_id>` — merge an implement/split group's ready children into one patch (not for compare groups).
 - `portico apply <run_id>` — apply a ready single run's patch (only with user approval).
 - `portico apply <group_id> --child <child_id>` — apply one compare candidate.

@@ -16,6 +16,8 @@ interface ChildReview {
   tests: { passed: number; failed: number };
   verify: { passed: number; failed: number };
   policy?: string;
+  /** Whether this child's own patch applies to the group base (read-only fan-in check). */
+  applyCheck?: { applies: boolean; reason?: string };
   reportPath: string;
   diffPath?: string;
 }
@@ -104,6 +106,7 @@ function toChildReview(r: RunResult): ChildReview {
     tests: countChecks(r.tests),
     verify: countChecks(r.verify ?? []),
     policy: r.pathPolicy?.status,
+    ...(r.applyCheck ? { applyCheck: { applies: r.applyCheck.applies, ...(r.applyCheck.reason ? { reason: r.applyCheck.reason } : {}) } } : {}),
     reportPath: r.artifacts.reportPath,
     diffPath: r.artifacts.diffPath,
   };
@@ -153,8 +156,13 @@ function printReview(agg: {
       `tests ${c.tests.passed}✓/${c.tests.failed}✗`,
       `verify ${c.verify.passed}✓/${c.verify.failed}✗`,
       `policy ${c.policy ?? "n/a"}`,
+      `apply ${c.applyCheck ? (c.applyCheck.applies ? "ok" : "FAILS") : "n/a"}`,
     ];
     console.log(`  checks: ${checks.join("   ")}`);
+    // A child whose own patch won't apply to the base is the case `overlap: []` can't explain.
+    if (c.applyCheck && !c.applyCheck.applies) {
+      console.log(`  apply-check: does not apply to group base${c.applyCheck.reason ? ` — ${c.applyCheck.reason}` : ""}`);
+    }
     console.log(`  report: ${c.reportPath}`);
     if (c.diffPath) console.log(`  diff:   ${c.diffPath}`);
     if (c.status === "ready") console.log(`  → portico apply ${agg.id} --child ${c.id}`);

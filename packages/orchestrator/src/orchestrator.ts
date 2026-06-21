@@ -414,6 +414,7 @@ async function* runGroupDelegation(
     mergeOutcome,
     judgeOutcome,
     fanInMs: Date.now() - fanInStartedMs,
+    deps,
   });
 
   const finalGroup = await readJson<Run>(join(repoPath, ".portico", "runs", group.id, "run.json"));
@@ -527,6 +528,8 @@ async function finalizeGroup(
     judgeOutcome?: RunResult["judge"];
     /** Wall time spent in the fan-in phase (merge + judge); preserved across a re-merge when omitted. */
     fanInMs?: number;
+    /** Orchestrator deps; enables the per-child apply-check against the group base. */
+    deps?: DelegationDeps;
   },
 ): Promise<void> {
   const groupPath = join(repoPath, ".portico", "runs", groupId, "run.json");
@@ -585,6 +588,17 @@ async function finalizeGroup(
 
   const artifacts = artifactPaths(repoPath, groupId);
   group = await updateRun(group, { status: finalStatus, completedAt: new Date().toISOString() });
+
+  // Proactively record, per child, whether its own patch applies to the group base — the
+  // signal `overlap` can't give. Best-effort: only when deps are available (skipped on the
+  // status-only refresh path), and attached to each child's embedded result for `review`.
+  if (opts.deps) {
+    const applyChecks = await computeApplyChecks(repoPath, group, childResults, opts.deps);
+    for (const child of childResults) {
+      const check = applyChecks.get(child.run.id);
+      if (check) child.applyCheck = check;
+    }
+  }
 
   const result: RunResult = {
     run: group,
@@ -820,6 +834,57 @@ async function mergeSplitChildren(
   return { strategy, status: "ready", integrationWorktree: integrationPath, mergedDiffPath: groupDiffPath };
 }
 
+/**
+ * Per-child "does this child's own patch apply cleanly to the group base?" — the proactive
+ * signal that file-name `overlap` can't give: a child can fail to apply on a file only it
+ * touched (drifted context / malformed diff), which `overlap: []` never reveals. Each child is
+ * checked *independently* against a pristine base worktree (`git apply --check` mutates nothing,
+ * so one worktree serves all children). Read-only and best-effort — a check hiccup leaves the
+ * child without an applyCheck rather than failing the group.
+ */
+async function computeApplyChecks(
+  repoPath: string,
+  group: Run,
+  childResults: RunResult[],
+  deps: DelegationDeps,
+): Promise<Map<string, NonNullable<RunResult["applyCheck"]>>> {
+  const out = new Map<string, NonNullable<RunResult["applyCheck"]>>();
+  const checkable = childResults.filter(
+    (r) => r.changedFiles.length && existsSync(artifactPaths(repoPath, r.run.id).diffPath as string),
+  );
+  if (!checkable.length) return out;
+
+  const checkPath = join(repoPath, ".portico", "worktrees", `${group.id}_applycheck`);
+  const branch = `portico/${group.id}-applycheck`;
+  const baseRef = await resolveBaseRef(repoPath, group.isolation.baseRef);
+  try {
+    // Fresh base worktree (drop any stale one + its branch first, mirroring mergeSplitChildren).
+    await removeWorktree(repoPath, checkPath, deps.worktreeMutex);
+    await capture("git", ["-C", repoPath, "branch", "-D", branch]);
+    await createWorktree(repoPath, checkPath, branch, baseRef, deps.worktreeMutex);
+    for (const r of checkable) {
+      const diffPath = artifactPaths(repoPath, r.run.id).diffPath as string;
+      const res = await capture("git", ["-C", checkPath, "apply", "--check", "--binary", diffPath]);
+      if (res.code === 0) {
+        out.set(r.run.id, { applies: true });
+      } else {
+        const failures = parseApplyFailures(res.stderr);
+        out.set(r.run.id, {
+          applies: false,
+          reason: firstGitErrorLine(res.stderr) ?? `git apply --check exited ${res.code}`,
+          ...(failures.length ? { failures } : {}),
+        });
+      }
+    }
+  } catch {
+    // Worktree setup failed — leave applyCheck unset; the group still finalizes.
+  } finally {
+    await removeWorktree(repoPath, checkPath, deps.worktreeMutex);
+    await capture("git", ["-C", repoPath, "branch", "-D", branch]);
+  }
+  return out;
+}
+
 async function listUnmergedFiles(worktreePath: string): Promise<string[]> {
   const result = await capture("git", ["-C", worktreePath, "diff", "--name-only", "--diff-filter=U"]);
   return result.stdout
@@ -849,7 +914,7 @@ async function* remergeSplitGroupIfNeeded(
   const eventsPath = artifactPaths(repoPath, groupId).eventsPath;
   if (!(await allChildrenReady(repoPath, groupId, expected))) {
     // Still incomplete — refresh the group result/status without merging.
-    await finalizeGroup(repoPath, groupId, { expectedChildren: expected });
+    await finalizeGroup(repoPath, groupId, { expectedChildren: expected, deps });
     return;
   }
 
@@ -861,7 +926,7 @@ async function* remergeSplitGroupIfNeeded(
     status: outcome.status,
     ...(outcome.conflicts?.length ? { conflicts: outcome.conflicts.map((c) => c.file) } : {}),
   });
-  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome });
+  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome, deps });
 }
 
 /** Ready children of a group, in apply order (createdAt), with a usable diff. */
@@ -922,7 +987,7 @@ async function integrateGroup(repoPath: string, groupId: string, deps: Delegatio
   });
 
   const expected = details.run.childRunIds?.length ?? ready.length;
-  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome });
+  await finalizeGroup(repoPath, groupId, { expectedChildren: expected, mergeOutcome: outcome, deps });
 
   const order = ready.map((child) => ({ id: child.id, ...(child.label ? { label: child.label } : {}) }));
   return {
@@ -2599,10 +2664,15 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     groupSummary ? "" : undefined,
     childResults?.length
       ? childResults
-          .map(
-            (candidate, index) =>
-              `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s)${candidate.telemetry?.agentDurationMs !== undefined ? ` — ${candidate.telemetry.agentDurationMs} ms agent` : ""} — ${candidate.artifacts.reportPath}`,
-          )
+          .map((candidate, index) => {
+            const agentMs = candidate.telemetry?.agentDurationMs !== undefined ? ` — ${candidate.telemetry.agentDurationMs} ms agent` : "";
+            const apply = candidate.applyCheck
+              ? candidate.applyCheck.applies
+                ? " — apply: ok"
+                : ` — apply: FAILS (${candidate.applyCheck.reason ?? "does not apply to base"})`
+              : "";
+            return `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s)${agentMs}${apply} — ${candidate.artifacts.reportPath}`;
+          })
           .join("\n")
       : undefined,
     childResults?.length ? "" : undefined,
