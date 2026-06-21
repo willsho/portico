@@ -166,6 +166,10 @@ test("implement-mode no-change run is flagged needs_attention, not approve", asy
     assert.match(report, /Needs attention before apply/);
     // A no-change result must not lead the reviewer straight to apply.
     assert.doesNotMatch(report, /1\. Apply: `portico apply/);
+    // Readiness distinguishes review-only from apply; a no-change run is review-only.
+    assert.match(report, /Readiness: Ready to review only/);
+    // The agent's own explanation is surfaced (clearly unverified) for a no-change run.
+    assert.match(report, /## Agent's Stated Reason \(unverified/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -196,6 +200,65 @@ test("expectNoChanges keeps a no-change run approve and suppresses the warning",
     assert.doesNotMatch(details.result?.gateWarnings?.join("\n") ?? "", /produced no file changes/);
     const report = await readFile(details.artifacts.reportPath, "utf8");
     assert.match(report, /Decision: approve/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("--expected-change reports coverage and flags an untouched expected path", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", EDIT_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", expectedChangePaths: ["delegated.txt", "missing.txt"] },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    // delegated.txt was changed (touched); missing.txt is an untouched expected path (a gap).
+    assert.ok(details.result?.coverage?.touched.includes("delegated.txt"));
+    assert.deepEqual(details.result?.coverage?.untouched, ["missing.txt"]);
+    // A coverage gap on a ready implement run is suspect → needs_attention + a gate warning.
+    assert.equal(details.result?.reviewDecision, "needs_attention");
+    assert.match(details.result?.gateWarnings?.join("\n") ?? "", /Coverage gap.*missing\.txt/);
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /## Coverage/);
+    assert.match(report, /Status: gap/);
+    assert.match(report, /Untouched \(gaps\): missing\.txt/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("--expected-change with every expected path touched has no coverage gap", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", EDIT_AGENT);
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", expectedChangePaths: ["delegated.txt"] },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.deepEqual(details.result?.coverage?.untouched, []);
+    assert.equal(details.result?.reviewDecision, "approve");
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Status: complete/);
+    assert.match(report, /Readiness: Ready to apply/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

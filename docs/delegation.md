@@ -262,7 +262,7 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 | `diff.patch` | Patch for implementation runs; empty for read-only review runs |
 | `test.log` | Output from configured test commands |
 | `report.md` | Human-readable summary, Portico observations, warnings, telemetry, and next actions |
-| `result.json` | Stable machine-readable result with changed files, `reviewDecision`, warnings, and telemetry |
+| `result.json` | Stable machine-readable result with changed files, `reviewDecision`, `coverage`, warnings, and telemetry |
 | `conflicts.json` | Split groups only, on a merge conflict: the conflict `kind` (`overlap`/`apply_failure`), `failingChild`, `git apply` `reason`, base refs, and the conflicting files |
 
 For split groups, `diff.patch` holds the **merged** patch (present only when the merge is
@@ -341,6 +341,37 @@ build/**
 ```
 
 Path policy is enforced after diff generation and before a run becomes ready.
+
+## Coverage
+
+Path policy guards the *boundary* (no out-of-scope edits); coverage guards *completeness*.
+Declare the paths you expect a run to change with repeatable `--expected-change`:
+
+```bash
+portico delegate \
+  --to codex \
+  --repo . \
+  --task "Sync the Chinese docs with their English originals" \
+  --expected-change "docs/*.zh-CN.md" \
+  --expected-change "README.zh-CN.md"
+```
+
+The report's `## Coverage` section then lists `expected`, `touched` (expected patterns that
+matched a changed file), `untouched` (the gaps), and `unexpected` (changed files matching no
+expected pattern). An untouched expected path on a ready implement run is a coverage gap: it
+raises a gate warning and sets the review decision to `needs_attention`, so a run that silently
+skipped part of the task is not mistaken for done. Coverage is opt-in — without
+`--expected-change` the section is omitted. (Portico can only observe the diff, so there is no
+"expected-touch"/read tracking and no built-in docs manifest; enumerate the patterns yourself.)
+
+## Readiness and the no-change reason
+
+The `## Review` section states a `Readiness` line that separates *review* from *apply*:
+`Ready to apply` (implement run, changes present, no flags), `Ready to review (read-only run)`
+for review mode, or `Ready to review only — needs attention before apply` when Portico flagged
+the run (no-change or coverage gap). For a no-change implement run the report also includes an
+`## Agent's Stated Reason (unverified)` section echoing the agent's final message, so a reviewer
+can judge *why* nothing changed without opening the agent log — clearly labeled unverified.
 
 ## Tests
 

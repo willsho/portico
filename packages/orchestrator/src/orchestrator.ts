@@ -9,6 +9,7 @@ import type {
   CleanupOptions,
   CleanupPolicy,
   CleanupResult,
+  CoverageResult,
   DelegateRequest,
   DelegationEvent,
   DelegationMode,
@@ -148,13 +149,15 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         const cutoff = Date.now() - opts.sinceMs;
         all = all.filter((run) => Date.parse(run.createdAt) >= cutoff);
       }
-      const annotate = (run: Run) => markActive(run, activeControllers);
-      if (opts?.flat) return all.map(annotate);
-      return foldRuns(all).map((group) => {
-        const children = (group as unknown as Record<string, unknown>)["_children"] as Run[] | undefined;
-        if (children) (group as unknown as Record<string, unknown>)["_children"] = children.map(annotate);
-        return annotate(group);
-      });
+      const annotate = (run: Run) => annotateRun(run, activeControllers, repoPath);
+      if (opts?.flat) return Promise.all(all.map(annotate));
+      return Promise.all(
+        foldRuns(all).map(async (group) => {
+          const children = (group as unknown as Record<string, unknown>)["_children"] as Run[] | undefined;
+          if (children) (group as unknown as Record<string, unknown>)["_children"] = await Promise.all(children.map(annotate));
+          return annotate(group);
+        }),
+      );
     },
 
     async getRun(repo, id) {
@@ -1545,9 +1548,20 @@ function isRunActive(run: Run, controllers: Map<string, AbortController>): boole
   return (run.childRunIds ?? []).some((childId) => controllers.has(childId));
 }
 
-/** Attach a transient `_active` flag (parallels foldRuns' `_children`) for the runs listing. */
-function markActive(run: Run, controllers: Map<string, AbortController>): Run {
-  (run as unknown as Record<string, unknown>)["_active"] = isRunActive(run, controllers);
+/** Attach transient listing fields (parallels foldRuns' `_children`): `_active`, plus — for an
+ *  in-flight run — `_lastEventAt` (the event log's mtime) so `watch` can surface silence/staleness
+ *  without each row needing a getRun. The stat is bounded to active runs to keep listing cheap. */
+async function annotateRun(run: Run, controllers: Map<string, AbortController>, repoPath: string): Promise<Run> {
+  const rec = run as unknown as Record<string, unknown>;
+  const active = isRunActive(run, controllers);
+  rec["_active"] = active;
+  if (active || ACTIVE_STATUSES.has(run.status)) {
+    try {
+      rec["_lastEventAt"] = (await stat(artifactPaths(repoPath, run.id).eventsPath)).mtime.toISOString();
+    } catch {
+      // No event log yet — omit; the board falls back to updatedAt.
+    }
+  }
   return run;
 }
 
@@ -1932,10 +1946,18 @@ function buildRunResult(
   if (noChangeNeedsAttention) {
     gateWarnings.push("Agent completed successfully but produced no file changes.");
   }
+  // Coverage: path policy guards the boundary (no out-of-scope edits); coverage guards
+  // completeness (every declared path was actually changed). A gap on a ready implement run
+  // is suspect — the run may have skipped part of the task.
+  const coverage = evaluateCoverage(changedFiles, run.expectedChangePaths);
+  const coverageGap = !!coverage && run.mode === "implement" && run.status === "ready" && coverage.untouched.length > 0;
+  if (coverageGap) {
+    gateWarnings.push(`Coverage gap: expected path(s) not changed: ${coverage.untouched.join(", ")}.`);
+  }
   // Portico's own verdict, derived from observed facts rather than the agent's self-report:
-  // not-ready or ready-but-suspect (a flagged no-change run) → needs_attention.
+  // not-ready or ready-but-suspect (a flagged no-change run / coverage gap) → needs_attention.
   const reviewDecision: "approve" | "needs_attention" =
-    run.status === "ready" && !noChangeNeedsAttention ? "approve" : "needs_attention";
+    run.status === "ready" && !noChangeNeedsAttention && !coverageGap ? "approve" : "needs_attention";
   return {
     run,
     artifacts,
@@ -1946,6 +1968,7 @@ function buildRunResult(
     ...(agentGateMismatch ? { agentGateMismatch } : {}),
     ...(gateWarnings.length ? { gateWarnings } : {}),
     reviewDecision,
+    ...(coverage ? { coverage } : {}),
     telemetry,
     ...(error ? { error } : {}),
   };
@@ -2081,6 +2104,22 @@ function normalizeUsageKey(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase();
 }
 
+/** The agent's final assistant message — the `done` event's message, else trailing content
+ *  deltas. Used to surface a no-change run's stated reason (clearly labeled unverified). */
+function extractAgentFinalMessage(events: RuntimeEvent[]): string | undefined {
+  const done = [...events].reverse().find((event) => event.type === "done");
+  if (done && done.type === "done" && done.message?.trim()) {
+    const message = done.message.trim();
+    return message.length > 600 ? `${message.slice(0, 597)}...` : message;
+  }
+  const content = events
+    .map((event) => (event.type === "content" ? event.delta : ""))
+    .join("")
+    .trim();
+  if (!content) return undefined;
+  return content.length > 600 ? `${content.slice(0, 597)}...` : content;
+}
+
 function agentClaimedSuccess(events: RuntimeEvent[]): boolean {
   const text = events
     .map((event) => {
@@ -2128,6 +2167,17 @@ function evaluatePathPolicy(
     notAllowed,
     ...(retryAllowed.length ? { retryAllowed } : {}),
   };
+}
+
+/** Pure evaluation of `--expected-change` coverage: which declared patterns were touched, which
+ *  were left untouched (gaps), and which changed files were unexpected. Returns undefined when
+ *  the caller declared no expectations (coverage is opt-in). */
+function evaluateCoverage(changedFiles: string[], expected: string[] | undefined): CoverageResult | undefined {
+  if (!expected?.length) return undefined;
+  const touched = expected.filter((pattern) => changedFiles.some((file) => matchesPathPattern(file, pattern)));
+  const untouched = expected.filter((pattern) => !touched.includes(pattern));
+  const unexpected = changedFiles.filter((file) => !expected.some((pattern) => matchesPathPattern(file, pattern)));
+  return { expected, touched, untouched, unexpected };
 }
 
 function enforcePathPolicy(changedFiles: string[], request: DelegateRequest, defaultForbidden: string[]): void {
@@ -2239,6 +2289,7 @@ function createRun(
     createdAt: now,
     updatedAt: now,
     ...(request.expectNoChanges ? { expectNoChanges: true } : {}),
+    ...(request.expectedChangePaths?.length ? { expectedChangePaths: request.expectedChangePaths } : {}),
     ...(options.role ? { role: options.role } : {}),
     ...(options.groupId ? { groupId: options.groupId } : {}),
     ...(options.parentRunId ? { parentRunId: options.parentRunId } : {}),
@@ -2582,6 +2633,12 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
   const isSplit = run.mode === "split";
   // Portico's own verdict. Prefer the structured field; fall back to status for older results.
   const reviewDecision = result.reviewDecision ?? (run.status === "ready" ? "approve" : "needs_attention");
+  // For a no-change implement run, the agent's own final message often explains why it made no
+  // edits; surface it (truncated, unverified) so the reviewer doesn't have to read the agent log.
+  const noChangeReason =
+    run.role !== "group" && run.mode === "implement" && run.status === "ready" && changedFiles.length === 0
+      ? extractAgentFinalMessage(result.agentEvents)
+      : undefined;
 
   let nextActions: string;
   if (run.role === "group" && isSplit) {
@@ -2711,6 +2768,10 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     formatPathPolicy(result.pathPolicy),
     "",
+    result.coverage ? "## Coverage" : undefined,
+    result.coverage ? "" : undefined,
+    result.coverage ? formatCoverage(result.coverage) : undefined,
+    result.coverage ? "" : undefined,
     "## Worktree Changes",
     "",
     result.diffSummary
@@ -2737,9 +2798,16 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     verifyChecks.length ? "" : undefined,
     verifyChecks.length ? formatChecks(verifyChecks) : undefined,
     verifyChecks.length ? "" : undefined,
+    // For a no-change implement run, surface the agent's own explanation (clearly unverified) so
+    // a reviewer can judge "why nothing changed" without scraping the agent log.
+    noChangeReason ? "## Agent's Stated Reason (unverified — for a no-change run)" : undefined,
+    noChangeReason ? "" : undefined,
+    noChangeReason ?? undefined,
+    noChangeReason ? "" : undefined,
     "## Review",
     "",
     `Decision: ${reviewDecision}`,
+    run.role !== "group" ? `Readiness: ${formatReadiness(run, reviewDecision)}` : undefined,
     "",
     error
       ? `Summary: ${error}`
@@ -2752,7 +2820,8 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     `1. ${basename(artifacts.diffPath ?? "diff.patch")}`,
     `2. ${basename(artifacts.testLogPath ?? "test.log")}`,
     `3. ${basename(artifacts.eventsPath)}`,
-    `4. ${basename(artifacts.resultPath)}`,
+    `4. ${basename(artifacts.agentLogPath)} (raw agent log — narration, not an authoritative status source)`,
+    `5. ${basename(artifacts.resultPath)}`,
     "",
     "## Next Actions",
     "",
@@ -2764,6 +2833,16 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     .filter((line): line is string => line !== undefined)
     .join("\n");
   await writeFile(path, body);
+}
+
+/** Distinguish "ready to review" from "ready to apply" so `ready` (a gate-passed flag) is not
+ *  mistaken for "safe to apply". Review/check runs are never applied; an implement run that
+ *  Portico flagged (no-change, coverage gap) is review-only until a human looks. */
+function formatReadiness(run: Run, reviewDecision: "approve" | "needs_attention"): string {
+  if (run.mode !== "implement") return "Ready to review (read-only run; nothing to apply)";
+  if (run.status !== "ready") return `Not ready (${run.status})`;
+  if (reviewDecision === "needs_attention") return "Ready to review only — needs attention before apply (see Gate Warnings)";
+  return "Ready to apply";
 }
 
 /** Portico's own measured facts about a run — what Portico observed, independent of the agent's
@@ -2788,11 +2867,14 @@ function formatObservations(
     `Tests: ${tests.length ? tally(tests) : "none configured"}`,
     `Verify: ${verify.length ? tally(verify) : "none configured"}`,
     `Path Policy: ${result.pathPolicy ? result.pathPolicy.status : "not evaluated"}`,
+    result.coverage ? `Coverage: ${result.coverage.untouched.length ? `gap (${result.coverage.untouched.length} expected path(s) untouched)` : "expected paths all touched"}` : undefined,
     `Sandbox Escape: ${result.sandboxEscaped ? `DETECTED (${result.outOfTreeChanges?.length ?? 0} out-of-tree change(s))` : "none"}`,
     `Review Decision: ${reviewDecision}`,
     "",
-    "These are Portico's own measurements. The agent's narration in agent.ndjson is a log, not an authoritative status source.",
-  ];
+    "These are the checks Portico ran — a boundary, not a quality guarantee. Portico does not judge",
+    "semantic correctness, prose quality, or link validity; use --verify for those. The agent's",
+    "narration in agent.ndjson is a log, not an authoritative status source.",
+  ].filter((line): line is string => line !== undefined);
   return lines.join("\n");
 }
 
@@ -2811,6 +2893,20 @@ function formatPathPolicy(policy: PathPolicyResult | undefined): string {
   if (policy.retryAllowed?.length) {
     lines.push("", `Retry allowing them: ${policy.retryAllowed.map((p) => `--allowed ${p}`).join(" ")}`);
   }
+  return lines.join("\n");
+}
+
+/** Render the coverage of `--expected-change`: which declared paths were touched, which are
+ *  still gaps, and which changed files were unexpected. Boundary (path policy) vs completeness. */
+function formatCoverage(coverage: CoverageResult): string {
+  const list = (items: string[]) => (items.length ? items.join(", ") : "(none)");
+  const lines = [
+    `Status: ${coverage.untouched.length ? "gap" : "complete"}`,
+    `Expected: ${list(coverage.expected)}`,
+    `Touched: ${list(coverage.touched)}`,
+    `Untouched (gaps): ${list(coverage.untouched)}`,
+    `Unexpected (changed, not expected): ${list(coverage.unexpected)}`,
+  ];
   return lines.join("\n");
 }
 

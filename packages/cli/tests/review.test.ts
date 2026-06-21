@@ -67,6 +67,43 @@ test("review aggregates children, flags overlap, and emits per-child actions", a
   }
 });
 
+test("review groups no-change children separately and shows per-child decision", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const output: string[] = [];
+
+  const group = {
+    run: { id: "run_group", role: "group", mode: "compare", status: "ready", task: "do a thing" },
+    artifacts: { reportPath: "/runs/run_group/report.md" },
+    result: {
+      childResults: [
+        { ...childResult("run_x", "real", "ready", ["src/a.ts"], { applies: true }), reviewDecision: "approve" },
+        { ...childResult("run_y", "empty", "ready", []), reviewDecision: "needs_attention" },
+      ],
+    },
+  };
+
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify(group), { status: 200, headers: { "Content-Type": "application/json" } });
+  console.log = (msg?: unknown) => output.push(String(msg ?? ""));
+
+  try {
+    const code = await reviewCommand(["run_group", "--url", "http://127.0.0.1:1"]);
+    assert.equal(code, 0);
+    const text = output.join("\n");
+    // The no-change ready child is tagged inline and called out in its own group.
+    assert.match(text, /run_y \[empty\]  ready  decision=needs_attention  agent=codex  ⚠ no file changes/);
+    assert.match(text, /No-change \(ready, but produced no file changes[^)]*\): empty/);
+    // The summary counts no-change separately from plain ready.
+    assert.match(text, /1 no-change/);
+    // The real child shows its approve decision.
+    assert.match(text, /run_x \[real\]  ready  decision=approve/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+});
+
 test("review --ready-only shows only ready children", async () => {
   const originalFetch = globalThis.fetch;
   const originalLog = console.log;

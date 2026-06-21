@@ -21,6 +21,8 @@ export interface BoardRun {
   updatedAt: string;
   createdAt: string;
   active: boolean;
+  /** Event-log mtime for in-flight runs — lets the board flag silence (time since last event). */
+  lastEventAt?: string;
   children: BoardRun[];
 }
 
@@ -64,6 +66,7 @@ export function normalizeRun(raw: Run): BoardRun {
     updatedAt: raw.updatedAt,
     createdAt: raw.createdAt,
     active: rec["_active"] === true,
+    ...(typeof rec["_lastEventAt"] === "string" ? { lastEventAt: rec["_lastEventAt"] as string } : {}),
     children: children.map(normalizeRun),
   };
 }
@@ -189,9 +192,14 @@ function rowLine(row: RunRow, selected: boolean, now: number): string {
     const p = groupProgress(run);
     info = `${run.mode ?? "group"} · ${p.ready}/${p.total} ready${p.failed ? ` · ${p.failed} failed` : ""}`;
   } else {
-    info = run.task.replace(/\s+/g, " ").trim();
+    const task = run.task.replace(/\s+/g, " ").trim();
+    // Active rows lead with idle time (since last event) so a stalled run is obvious even when
+    // the task text is truncated; the idle marker survives the pad/truncate below.
+    info = run.active && run.lastEventAt ? `⏱ ${formatAgo(run.lastEventAt, now)} idle · ${task}` : task;
   }
-  const age = `${ANSI.dim}${pad(formatAgo(run.updatedAt, now), 4)}${ANSI.reset}`;
+  // For an active run, the meaningful age is "since last event" (silence); else "since updated".
+  const ageSource = run.active && run.lastEventAt ? run.lastEventAt : run.updatedAt;
+  const age = `${ANSI.dim}${pad(formatAgo(ageSource, now), 4)}${ANSI.reset}`;
   const activeMark = run.active ? `${ANSI.cyan}●${ANSI.reset} ` : "  ";
 
   const line = `${indent}${activeMark}${badge} ${name} ${agent} ${pad(info, 40)} ${age}`;
@@ -273,11 +281,13 @@ export function renderPlain(runs: BoardRun[], now = Date.now()): string {
       const p = groupProgress(r);
       info = `${r.mode ?? "group"} ${p.ready}/${p.total} ready`;
     } else {
-      info = r.task.replace(/\s+/g, " ").trim();
+      const task = r.task.replace(/\s+/g, " ").trim();
+      info = r.active && r.lastEventAt ? `idle ${formatAgo(r.lastEventAt, now)} · ${task}` : task;
     }
     const mark = r.active ? "* " : "  ";
+    const ageSource = r.active && r.lastEventAt ? r.lastEventAt : r.updatedAt;
     lines.push(
-      `${row.isChild ? "  └ " : "  "}${mark}${r.status.padEnd(9)}\t${disp}\t${r.targetAgent}\t${info}\t${formatAgo(r.updatedAt, now)}`,
+      `${row.isChild ? "  └ " : "  "}${mark}${r.status.padEnd(9)}\t${disp}\t${r.targetAgent}\t${info}\t${formatAgo(ageSource, now)}`,
     );
   }
   if (foldedDone > 0) lines.push(`  … ${foldedDone} more done`);

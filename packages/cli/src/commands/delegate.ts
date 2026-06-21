@@ -45,6 +45,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       verify: { type: "string", multiple: true },
       allowed: { type: "string", multiple: true },
       forbidden: { type: "string", multiple: true },
+      "expected-change": { type: "string", multiple: true },
       timeout: { type: "string" },
       "expect-no-changes": { type: "boolean" },
       json: { type: "boolean" },
@@ -85,6 +86,7 @@ Options:
   --verify <cmd>           Verification check, reported separately from tests (repeatable)
   --allowed <path>         Allowed path (repeatable)
   --forbidden <path>       Forbidden path (repeatable)
+  --expected-change <path> Path expected to be changed; reports coverage + warns on a gap (repeatable)
   --timeout <ms>           Timeout in milliseconds
   --expect-no-changes      Treat a no-change result as acceptable (skip the no-change warning)
   --json                   Output JSON format
@@ -186,6 +188,7 @@ Options:
     verifyCommands: values.verify,
     allowedPaths: values.allowed,
     forbiddenPaths: values.forbidden,
+    expectedChangePaths: values["expected-change"],
     timeoutMs: values.timeout ? Number(values.timeout) : undefined,
     expectNoChanges: values["expect-no-changes"],
     depth: Number(process.env["PORTICO_DELEGATION_DEPTH"] ?? "0"),

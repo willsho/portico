@@ -35,7 +35,7 @@
 
 图例：✅ 已完成 · 🟡 部分完成 · ⬜ 未开始
 
-**P0-a（正确性）+ P0-b（判读）全部完成**；P1 已开始：痛点 4 applyCheck ✅、痛点 2 telemetry 补桶 + 重试成本 ✅（watch 阶段显示仍缺）：
+**P0-a（正确性）+ P0-b（判读）+ P1（判读）基本完成**；仅余 P2（多 run 组合审查、coverage manifest、`--expected-touch`）未做：
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
@@ -48,16 +48,15 @@
 | 痛点 4 · `review` 增加 `applyCheck`（P1） | ✅ | finalizeGroup 用 `git apply --check` 逐 child 对 group base 检查;`RunResult.applyCheck`;review/report 展示 `apply ok/FAILS` |
 | **P0-b** 痛点 5 · 报告弱化 agent 自述 | ✅ | report 新增 `## Portico Observations`（changed files/diff check/tests/verify/policy/sandbox/review decision）+ 「agent.ndjson 非权威」提示 |
 | **P0-b** 痛点 6 · no-change → `needs_attention`（用 mode） | ✅ | `reviewDecision` 结构化字段；implement no-change → `needs_attention`；`--expect-no-changes` 豁免；Review/Next Actions 不再误导 apply |
-| 痛点 2 · telemetry 补桶 / watch 阶段 / 重试成本（全 P1） | 🟡 | telemetry 补桶 ✅（worktree setup/diff/verify 拆出/fan-in）+ 重试成本 ✅（group 报告含各 child agent duration + no-change 计数）;watch/status 阶段显示未做（`RunProgress` 已有 phase/lastEvent，watch/status 展示未接） |
-| 痛点 3 · Ready-to-review vs apply / 已检查·未检查 / verify 一等（全 P1） | ⬜ | |
-| 痛点 5 · agent log artifact / no-change warning 提显著度（P1） | ⬜ | |
-| 痛点 6 · 无改动结构化理由 / group 分组（P1） | ⬜ | |
-| 痛点 7 · coverage（`--expected-*` / coverage 段 / manifest） | ⬜ | |
+| 痛点 2 · telemetry 补桶 / watch 阶段 / 重试成本（全 P1） | ✅ | telemetry 补桶 ✅ + 重试成本 ✅ + watch 阶段 ✅（active 行显示 `idle <ago>` 距上次事件;listRuns 透传 `_lastEventAt`;status 早已显示 phase/last event） |
+| 痛点 3 · Ready-to-review vs apply / 已检查·未检查 / verify 一等（全 P1） | ✅ | report `## Review` 加 `Readiness`（review-only vs apply）;Observations 重述为「已检查边界、非质量保证」;verify 在 Observations + `## Verify Checks` 一等 |
+| 痛点 5 · agent log artifact / no-change warning 提显著度（P1） | ✅ | agent.ndjson 列入报告 Artifacts（标注「非权威」）;no-change 经 P0-b 的 `reviewDecision`/Readiness 已显著 |
+| 痛点 6 · 无改动结构化理由 / group 分组（P1） | ✅ | no-change run 报告加 `## Agent's Stated Reason (unverified)`;review 把 no-change child 单独 callout + 显示每 child `decision` |
+| 痛点 7 · coverage（`--expected-*` / coverage 段 / manifest） | 🟡 | `--expected-change` + `## Coverage`（expected/touched/untouched/unexpected）+ gap→needs_attention ✅;`--expected-touch`（读取不可观测）与 manifest（P2）未做 |
 | 痛点 8 · group 采用标记 / patch-stack / apply 前提示 | ⬜ | |
 
-下一步建议：继续 **P1** 剩余项——痛点 3（report 重构：Ready-to-review vs apply / 已检查·未检查 / verify 一等）、
-痛点 7（coverage：`--expected-*` + coverage 段）、以及痛点 2 残留的 watch/status 实时阶段显示。telemetry 补桶与
-review applyCheck 已落地。
+下一步建议：P0/P1 已落地，余下为 **P2**（痛点 8 多 run 组合审查 / patch-stack、痛点 7 coverage manifest、
+`--expected-touch`）——组合类需求，优先级低于已完成的正确性与判读改进，按需再做。
 
 ## 痛点 1（正确性，P0 旗舰）：`--repo` 解析让委派和 resume 跑错仓库
 
@@ -112,8 +111,8 @@ review applyCheck 已落地。
 - ✅ **P1**：在现有 telemetry 上补齐缺的阶段：worktree setup、diff generation、verify（从 testDurationMs 拆出）、
   fan-in（group merge+judge 墙钟）。`RunTelemetry` 新增 `worktreeSetupMs` / `diffMs` / `verifyMs` / `fanInMs`，
   report `## Telemetry` 按存在的桶渲染。
-- ⬜ **P1**：`watch/status` 显示 child 当前阶段和最后事件时间，避免长时间静默。（`RunProgress` 已有 phase/lastEvent，
-  仅 watch/status 展示未接。）
+- ✅ **P1**：`watch/status` 显示 child 当前阶段和最后事件时间，避免长时间静默。status 早已显示 phase + last event;
+  watch 现在 active 行显示 `idle <ago>`（距上次事件），listRuns 对 in-flight run 透传 `_lastEventAt`（events.ndjson mtime）。
 - ✅ **P1**：group report 增加「重试成本」摘要：总 wall time（telemetry 已有）、各 child agent duration（Compare
   Candidates / Split Contributions 列表每行附 `<ms> ms agent`）、no-change 运行数（children 摘要行附 `N no-change`）。
 
@@ -133,9 +132,12 @@ review applyCheck 已落地。
 
 ### 计划
 
-- ⬜ **P1**：report 明确区分 `Ready to review` 与 `Ready to apply`（文档类任务尤其需要）。
-- ⬜ **P1**：把现有分段归并成「Portico 已检查」与「Portico 未检查」两块，避免 ready 语义被误读。
-- ⬜ **P1**：把 verify 结果提升为一等信息（乱码扫描、链接检查、冲突标记扫描对文档任务最有用）。
+- ✅ **P1**：report 明确区分 `Ready to review` 与 `Ready to apply`（`## Review` 新增 `Readiness` 行：review-only
+  vs apply;review/check 模式与 needs_attention 一律标 review-only）。
+- ✅ **P1**：把现有分段归并成「已检查 / 未检查」语义——`## Portico Observations` 收尾改述为「这些是 Portico 跑的
+  检查（边界，非质量保证）：不判断语义正确性/文案质量/链接有效性，用 `--verify` 覆盖」。
+- ✅ **P1**：verify 提为一等信息——Observations 单列 Verify 行 + 独立 `## Verify Checks` 段（乱码/链接/冲突标记
+  扫描可作为 `--verify` 命令接入）。
 
 ## 痛点 4（正确性，P0）：非重叠 child 的 fan-in conflict 无法归因
 
@@ -183,10 +185,11 @@ review applyCheck 已落地。
   policy、apply check。report 在 Summary 之后新增 `## Portico Observations` 段（单运行/子运行），汇总 Portico 自测的
   changed files / diff check / tests / verify / path policy / sandbox / review decision，并附「agent.ndjson 是日志、
   非权威状态源」提示（[orchestrator.ts `formatObservations`]）。
-- ⬜ **P1**：agent log 非结构化内容保留为 artifact，但默认摘要只引用结构化状态。
-- 🟡 **P1**：对「agent completed but produced no file changes」提升为显著 warning。
-  （gate warning 文案**已存在**，见 [orchestrator.ts:1757](../../packages/orchestrator/src/orchestrator.ts#L1757)；
-  尚未提升其在摘要中的显著度。）
+- ✅ **P1**：agent log 非结构化内容保留为 artifact（agent.ndjson 一直是 artifact），报告 Artifacts 段现在显式列出它
+  并标注「raw agent log — narration, not an authoritative status source」;默认摘要引用 `## Portico Observations`
+  的结构化状态。
+- ✅ **P1**：对「agent completed but produced no file changes」提升为显著信号——经 P0-b 的 `reviewDecision: needs_attention`
+  + `Readiness: Ready to review only` + Next Actions 不引导 apply，已远比单条 gate warning 显著。
 
 ## 痛点 6（判读）：无改动 ready 容易造成误判
 
@@ -208,8 +211,10 @@ review applyCheck 已落地。
   implement 模式 no-change 默认 `needs_attention`；review/check 模式或显式 `--expect-no-changes`（新增 CLI flag +
   `DelegateRequest.expectNoChanges` + `Run.expectNoChanges`）不报。report 的 `## Review` Decision、`## Portico Observations`
   的 Review Decision、单运行 Next Actions、CLI `--review-summary` 均改用 `reviewDecision`，不再把 no-change ready 误导为 apply。
-- ⬜ **P1**：无改动 run 要求 agent 给出「为何无需修改」的结构化理由，单独展示。
-- ⬜ **P1**：group review 中无改动 child 单独分组，避免被 ready child 淹没。
+- ✅ **P1**：无改动 run 单独展示 agent 的理由——报告加 `## Agent's Stated Reason (unverified — for a no-change run)`，
+  取 agent 最终消息（截断、明确标注未经核实）。（agent 输出是自由文本，按「自述、非权威」呈现，不强行结构化。）
+- ✅ **P1**：group review 中无改动 child 单独分组——`portico review` 给 no-change child 加 `⚠ no file changes` 标记、
+  单列「No-change (ready, but produced no file changes …)」callout、摘要行计 `N no-change`，并显示每 child 的 `decision`。
 
 ## 痛点 7（判读）：path policy 保证边界，不保证覆盖
 
@@ -220,10 +225,11 @@ review applyCheck 已落地。
 
 ### 计划
 
-- ⬜ **P1**：delegate 支持可选 `--expected-change` / `--expected-touch`，声明预期路径集合。
-  （注意：这把枚举工作转嫁给委派方，本身也是摩擦；对 docs sync 可考虑由调用方脚本自动推导
-  「有 `*.zh-CN.md` 兄弟的 `*.md`」这类集合，但 Portico 不内建文档引擎。）
-- ⬜ **P1**：report 增加 coverage 段：expected、touched、untouched、unexpected。
+- ✅ **P1**：delegate 支持 `--expected-change`（可重复），声明预期改动路径集合（`DelegateRequest.expectedChangePaths`
+  + `Run.expectedChangePaths`）。`--expected-touch`（声明「读取/考虑」）**未做**——Portico 只能观测 diff，读取不可观测，
+  按计划不内建文档引擎。枚举工作仍在委派方（对 docs sync 可由调用方脚本推导路径集合）。
+- ✅ **P1**：report 增加 `## Coverage` 段：expected / touched / untouched(gaps) / unexpected。untouched gap 在
+  ready implement run 触发 gate warning + `needs_attention`（`evaluateCoverage`，path policy 守边界、coverage 守完整性）。
 - ⬜ **P2**：对 docs sync 这类任务提供轻量 manifest，能表达覆盖预期，但不做专门文档引擎。
 
 ## 痛点 8（判读）：group 产物修补和组合不方便
@@ -247,7 +253,7 @@ P0 拆成两档，正确性优先于判读：
 | --- | --- | --- | --- | --- |
 | P0-a | ✅ 已完成 | 正确性 | repo 透传(痛点1) + fanout preflight 回显/校验(痛点1) + fan-in 抓 stderr 并区分两类冲突(痛点4) | 不再白跑、不再整组重跑 |
 | P0-b | ✅ 已完成 | 判读 | agent 自述降权(痛点5，`## Portico Observations`) + no-change→needs_attention(痛点6，`reviewDecision` 用 mode + `--expect-no-changes`) | ready 不被误读 |
-| P1 | 🟡 进行中 | 判读 | review 信息结构化、telemetry 补桶(✅)、coverage/verify 强化 | 减少人工补查和 patch 拆解 |
+| P1 | ✅ 基本完成 | 判读 | review 信息结构化(applyCheck/no-change 分组/decision)、telemetry 补桶、coverage/verify 强化、watch idle | 减少人工补查和 patch 拆解 |
 | P2 | ⬜ 未开始 | 组合 | 多 run 组合审查、复杂任务覆盖声明 | 让大任务和小修复更稳地协作 |
 
 ## 非目标
@@ -267,4 +273,5 @@ P0 拆成两档，正确性优先于判读：
 - ✅ 用户能从一个 group report 中看出时间主要花在 agent、verify 还是 fan-in（telemetry 按阶段补桶：worktree setup /
   diff / test / verify / fan-in;group 列表附各 child agent duration）。watch/status 的实时阶段显示仍 ⬜。
 - ✅ 无改动 ready 不再和有实质 diff 的 ready 混在一起（implement no-change → `reviewDecision: needs_attention`，report/Next Actions/review-summary 不再误导 apply；`--expect-no-changes` 可豁免）。
-- ⬜ 文档类任务能通过 verify/coverage 明确展示「检查了什么」和「没检查什么」。
+- ✅ 文档类任务能通过 verify/coverage 明确展示「检查了什么」和「没检查什么」（`--expected-change` + `## Coverage` 段
+  展示 touched/untouched/unexpected;Observations 收尾说明「已检查边界、非质量保证」;`--verify` 提一等）。

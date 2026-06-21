@@ -159,6 +159,7 @@ Common options:
 | `--verify <cmd>` | Verification check, reported separately from tests (e.g. doc/policy checks); repeatable |
 | `--allowed <pattern>` | Allowed changed path pattern; repeatable |
 | `--forbidden <pattern>` | Forbidden changed path pattern; repeatable |
+| `--expected-change <pattern>` | Path expected to be changed; adds a Coverage section and warns (→ `needs_attention`) on an untouched expected path; repeatable |
 | `--timeout <ms>` | Agent/test timeout |
 | `--expect-no-changes` | Treat a no-change result as acceptable: suppress the implement-mode no-change warning and keep the review decision `approve` |
 | `--json` | Print delegation events as JSON lines |

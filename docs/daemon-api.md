@@ -238,7 +238,8 @@ interface DelegateRequest {
   allowedPaths?: string[];
   forbiddenPaths?: string[];
   timeoutMs?: number;
-  expectNoChanges?: boolean;   // no-change is an acceptable outcome (suppresses the no-change warning)
+  expectNoChanges?: boolean;       // no-change is an acceptable outcome (suppresses the no-change warning)
+  expectedChangePaths?: string[];  // paths expected to change; drives the Coverage section + gap warning
   depth?: number;
 }
 
@@ -413,6 +414,12 @@ interface RunResult {
   agentGateMismatch?: boolean;
   gateWarnings?: string[];
   reviewDecision?: "approve" | "needs_attention";                  // Portico's own verdict from observed facts
+  coverage?: {                                                     // when --expected-change was declared
+    expected: string[];
+    touched: string[];
+    untouched: string[];                                           // gaps
+    unexpected: string[];
+  };
   telemetry?: RunTelemetry;
   error?: string;
 }

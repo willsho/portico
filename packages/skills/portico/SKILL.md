@@ -73,6 +73,9 @@ yourself, or anything where spinning up a separate agent adds no value.
    `--expect-no-changes` (declare that producing no edits is an acceptable outcome — suppresses
    the implement-mode no-change warning and keeps the review decision `approve`; use for
    check/audit tasks run in implement mode);
+   `--expected-change <pattern>` (repeatable; declare paths you expect to change — the report
+   adds a Coverage section and an untouched expected path becomes a coverage gap → the run is
+   `needs_attention`, catching a task that silently skipped part of its scope);
    `--review-summary` (after the run, print a one-click apply command + risk summary);
    `--auto-start` (start a loopback daemon and retry once if it isn't running);
    `--detach` (exit as soon as the run registers, printing its id; the run keeps going on the
@@ -131,6 +134,12 @@ yourself, or anything where spinning up a separate agent adds no value.
    patch still applies to the group base. A child can be `ready` with no file overlap yet still
    `apply FAILS` (its patch drifted from the base); the apply check flags that up front instead
    of letting it surface as a fan-in conflict.
+
+   The `## Review` section's `Readiness` line separates *review* from *apply*: `Ready to apply`
+   vs `Ready to review only — needs attention` (a flagged no-change or coverage-gap run). When
+   `--expected-change` was given, the `## Coverage` section shows touched / untouched (gaps) /
+   unexpected paths. For a no-change run, `## Agent's Stated Reason (unverified)` echoes the
+   agent's own explanation — read it, but treat it as a claim, not a verified fact.
 
 6. **Summarize for the user:** run id and status, changed files, per-command test result, and
    any risks you see in the diff. A run is `ready` when it produced a diff and tests passed;
@@ -207,9 +216,10 @@ yourself, or anything where spinning up a separate agent adds no value.
   Group rows show `children <ready>/<total> ready`. `--watch` opens the live board.
 - `portico watch [--repo .]` — live status board: runs grouped by state (decision-needed on top,
   then working, then done), refreshed on an interval, with inline keys to apply/discard/cancel/
-  follow/review/integrate the selected run. Filter with `--status` / `--needs-review` / `--to <agent>`
-  / `--since`. Non-TTY (or `--once` / `--json`) prints a one-shot snapshot instead, so it stays
-  scriptable. Useful when several delegations are running in parallel.
+  follow/review/integrate the selected run. Active rows show `idle <ago>` (time since the run's
+  last event) so a stalled or silent run is obvious at a glance. Filter with `--status` /
+  `--needs-review` / `--to <agent>` / `--since`. Non-TTY (or `--once` / `--json`) prints a
+  one-shot snapshot instead, so it stays scriptable. Useful when several delegations run in parallel.
 - `portico status <run_id>` — show a run's artifacts, changed files, tests, and live progress
   (current phase, whether an agent is still running, last event).
 - `portico review <group_id>` — aggregate a group's children for review, with cross-child file overlap and a per-child apply check against the group base (`--ready-only` / `--json` / `--open-diff`).

@@ -100,6 +100,9 @@ export interface DelegateRequest {
   /** Declare that producing no file changes is an expected, acceptable outcome.
    *  Suppresses the implement-mode no-change warning and keeps the review decision `approve`. */
   expectNoChanges?: boolean;
+  /** Paths/patterns the caller expects this run to change. Drives the report's Coverage section
+   *  and a coverage-gap warning when an expected path is left untouched. */
+  expectedChangePaths?: string[];
 }
 
 export interface Run {
@@ -136,6 +139,8 @@ export interface Run {
   agentSessionId?: string;
   /** Caller declared no file changes is an acceptable outcome (from DelegateRequest). */
   expectNoChanges?: boolean;
+  /** Paths/patterns the caller expects this run to change (from DelegateRequest). */
+  expectedChangePaths?: string[];
 }
 
 export interface RunArtifact {
@@ -172,6 +177,20 @@ export interface DiffSummary {
   stat: string;
   /** `git diff --check HEAD` — trailing whitespace and conflict markers (empty when clean). */
   check: string;
+}
+
+/** Coverage of the caller's `--expected-change` declaration: which expected paths were actually
+ *  changed (touched), which were left untouched (gaps), and which changed files were unexpected.
+ *  Path policy guards the *boundary* (no out-of-scope edits); coverage guards *completeness*. */
+export interface CoverageResult {
+  /** The expected patterns the caller declared. */
+  expected: string[];
+  /** Expected patterns matched by at least one changed file. */
+  touched: string[];
+  /** Expected patterns with no matching changed file — the coverage gaps. */
+  untouched: string[];
+  /** Changed files matching none of the expected patterns. */
+  unexpected: string[];
 }
 
 /** Whether the run's changed files stayed within the `--allowed` / `--forbidden` boundary. */
@@ -297,6 +316,8 @@ export interface RunResult {
   diffSummary?: DiffSummary;
   /** Allowed/forbidden path-policy outcome, with retry paths when it failed. */
   pathPolicy?: PathPolicyResult;
+  /** Coverage of `--expected-change`: expected/touched/untouched/unexpected (when declared). */
+  coverage?: CoverageResult;
   telemetry?: RunTelemetry;
   error?: string;
 }
