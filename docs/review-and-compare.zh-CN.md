@@ -173,7 +173,7 @@ portico delegate \
 - 干净的合并 → 组变为 `ready`，`apply --all` 将合并的补丁登陆。
 - 重叠的编辑 → Portico 记录 `conflicts.json`，将组移动到 `conflict`（冲突）状态，并拒绝 `apply --all`。使用 `--resume` 缩小一个子项范围，Portico 会自动重新合并。
 
-使用 `--judge-to`，裁判审查**合并后的**结果，并记录 `approve` / `needs_attention`（批准/需要注意）的结论。完整的生命周期请参见 [委派 → 任务拆分和扇入](delegation.zh-CN.md)。
+使用 `--judge-to`，裁判审查**合并后的**结果，并记录 `approve` / `needs_attention`（批准/需要注意）的结论。完整的生命周期请参见 [委派 → 任务拆分和扇入](delegation.md)。
 
 ## 常见模式
 

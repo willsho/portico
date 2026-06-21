@@ -316,9 +316,20 @@ split 请求提供 `mode: "split"`，并为 `children` 提供每个对应的 `ta
 ```bash
 curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)"
 curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)&flat=true"
+curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)&status=failed,cancelled"
+curl -s "http://127.0.0.1:8787/runs?repo=$(pwd)&since=7200000"
 ```
 
-响应：
+查询参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| `repo` | 仓库路径（默认：守护进程工作目录） |
+| `flat` | `true` 为扁平列表（无组折叠） |
+| `status` | 逗号分隔的状态允许列表（服务端过滤器） |
+| `since` | 仅保留在最后 N **毫秒** 内创建的运行 |
+
+响应（具有活动代理进程的运行带有一个暂时的 `_active: true`）：
 
 ```json
 {
@@ -341,6 +352,12 @@ interface RunDetails {
   run: Run;
   artifacts: RunArtifact;
   result?: RunResult;
+  // 查询时计算的实时进度（未持久化）。
+  progress?: {
+    phase: RunStatus;            // 映射自 run.status
+    active: boolean;             // 存在一个活动的代理控制器（对于组：任何子项）
+    lastEvent?: { type: string; at: string };
+  };
 }
 ```
 
@@ -444,7 +461,29 @@ curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/apply?repo=$(pwd)" \
   -d '{"all": true}'
 ```
 
-单次运行必须是 `implement`。没有 `child` 的 compare 组 apply 会返回错误；针对非 split 组，或者仍然处于 `conflict` 的 split 组的 `all` apply 会被拒绝。
+单次运行必须是 `implement`。没有 `child` 的 compare 组 apply 会返回错误；针对 compare 组的 `all` apply，或者针对仍然处于 `conflict` / 没有合并补丁的组的 apply 会被拒绝（对于非 split 组，请先运行 `integrate`）。
+
+## `POST /runs/:id/integrate?repo=<path>`
+
+按需将组中**就绪**的子项合并为一个补丁（支持 implement/split 组；拒绝 compare 组）。重用 split 的三方合并至一个新的集成工作树，且不要求所有子项都就绪——因此可以合并 `partial` 组。
+
+```bash
+curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/integrate?repo=$(pwd)"
+```
+
+响应 (`IntegrateResult`)：
+
+```ts
+interface IntegrateResult {
+  details: RunDetails;
+  status: "ready" | "conflict";
+  order: Array<{ id: string; label?: string }>;   // 合并的子项，按应用顺序
+  conflicts?: Array<{ file: string; child: string }>;  // 仅在冲突时提供
+  mergedDiffPath?: string;                         // 仅在干净合并时提供
+}
+```
+
+如果是 `ready`，使用 `POST /runs/:id/apply` + `{ "all": true }` 应用。如果是 `conflict`，不会生成合并补丁；通过 `resume` 缩小一个子项并再次集成。错误：`not_a_group`，`integrate_unsupported` (比较组)，`no_ready_children`。
 
 ## `POST /runs/:id/discard?repo=<path>`
 
@@ -473,6 +512,36 @@ curl -N "http://127.0.0.1:8787/runs/<child_id>/resume?repo=$(pwd)" \
 ```
 
 流式传输 `DelegationEvent` NDJSON。重新生成差异，重新运行测试，刷新 `report.md` / `result.json`，并重新计算父组的状态。对于 split 组，它还会重新运行扇入合并，因此缩小一个子项范围可以清除之前的 `conflict`。
+
+## `POST /cleanup?repo=<path>`
+
+回收已完成的运行。默认情况下仅移除工作树并保留产物；永远不会触碰就绪（ready）/已应用（applied）及正在进行中（in-flight）的运行。
+
+```bash
+curl -s -X POST "http://127.0.0.1:8787/cleanup?repo=$(pwd)" \
+  -H 'Content-Type: application/json' \
+  -d '{"failed": true, "olderThanMs": 604800000, "purge": false}'
+```
+
+请求体（均可选）：
+
+```ts
+interface CleanupBody {
+  failed?: boolean;        // 目标为 failed + cancelled（未给出状态时的默认行为）
+  status?: RunStatus[];    // 显式允许列表；覆盖 failed
+  olderThanMs?: number;    // 仅针对在这么多毫秒之前完成的运行
+  purge?: boolean;         // 还要删除产物，而不仅仅是工作树
+}
+```
+
+响应 (`CleanupResult`)：
+
+```ts
+interface CleanupResult {
+  cleaned: Array<{ id: string; status: RunStatus; worktreeRemoved: boolean; purged: boolean }>;
+  skipped: number;         // 已检查但未触碰的运行数量
+}
+```
 
 ## CORS
 

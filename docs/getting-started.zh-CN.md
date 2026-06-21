@@ -176,11 +176,11 @@ npm run portico -- discard <run_id>
 
 ## 进阶阅读
 
-- [CLI 参考](cli.zh-CN.md)
-- [委派](delegation.zh-CN.md)
-- [隔离与权限](isolation-and-permissions.zh-CN.md)
-- [审查与比较](review-and-compare.zh-CN.md)
-- [守护进程 API](daemon-api.zh-CN.md)
-- [配置](configuration.zh-CN.md)
-- [技能](skills.zh-CN.md)
-- [安全模型](security-model.zh-CN.md)
+- [CLI 参考](cli.md)
+- [委派](delegation.md)
+- [隔离与权限](isolation-and-permissions.md)
+- [审查与比较](review-and-compare.md)
+- [守护进程 API](daemon-api.md)
+- [配置](configuration.md)
+- [技能](skills.md)
+- [安全模型](security-model.md)
