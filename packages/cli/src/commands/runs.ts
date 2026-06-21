@@ -273,7 +273,12 @@ Options:
     throw err;
   }
   if (values.json) console.log(JSON.stringify(body, null, 2));
-  else console.log(`${action} ${body.run.id}: ${body.run.status}`);
+  else {
+    console.log(`${action} ${body.run.id}: ${body.run.status}`);
+    if (action === "apply" && (values.all || values.child)) {
+      console.log(`Tip: review the applied patch, commit it, then run/apply any small follow-up fixes as separate patches rather than folding them in — keeping a reviewable, layered history.`);
+    }
+  }
   return 0;
 }
 

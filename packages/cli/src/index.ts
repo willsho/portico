@@ -17,6 +17,7 @@ import {
   cleanupCommand,
 } from "./commands/runs.ts";
 import { reviewCommand } from "./commands/review.ts";
+import { patchStackCommand } from "./commands/patch-stack.ts";
 import { watchCommand } from "./commands/watch.ts";
 import { initCommand } from "./commands/init.ts";
 import { notifyWatchCommand } from "./notify.ts";
@@ -37,6 +38,7 @@ Usage:
   portico watch [--repo .]    Live status board of runs (grouped, inline apply/discard/follow)
   portico status <run_id>     Show a delegation run
   portico review <run_id>     Aggregate a group's children for review
+  portico patch-stack <run_id> <run_id>... Read-only file-overlap & apply-order summary across runs
   portico integrate <grp_id>  Merge a group's ready children into one patch
   portico logs <run_id>       Stream or follow a run's event log
   portico cancel <run_id>     Cancel a delegation run
@@ -81,6 +83,8 @@ async function main(): Promise<number> {
       return statusCommand(rest);
     case "review":
       return reviewCommand(rest);
+    case "patch-stack":
+      return patchStackCommand(rest);
     case "integrate":
       return integrateCommand(rest);
     case "logs":

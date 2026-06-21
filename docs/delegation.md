@@ -229,6 +229,8 @@ portico apply <group_id> --all      # apply the merged patch (every child's cont
 (use `--child`) and for split groups still in `conflict`. You may still apply a single
 contribution of a split group with `--child <child_id>`.
 
+*Tip: when applying a group's merged patch, consider reviewing and committing it first, then making any follow-up fixes as separate layered patches rather than folding them in.*
+
 ### Fan-in judge
 
 Both fan-out shapes accept an optional **judge** — a read-only `review` run that evaluates
@@ -345,7 +347,7 @@ Path policy is enforced after diff generation and before a run becomes ready.
 ## Coverage
 
 Path policy guards the *boundary* (no out-of-scope edits); coverage guards *completeness*.
-Declare the paths you expect a run to change with repeatable `--expected-change`:
+Declare the paths you expect a run to change with repeatable `--expected-change` or a JSON `--coverage-manifest <path>`:
 
 ```bash
 portico delegate \
@@ -353,7 +355,7 @@ portico delegate \
   --repo . \
   --task "Sync the Chinese docs with their English originals" \
   --expected-change "docs/*.zh-CN.md" \
-  --expected-change "README.zh-CN.md"
+  --coverage-manifest "docs-manifest.json"
 ```
 
 The report's `## Coverage` section then lists `expected`, `touched` (expected patterns that

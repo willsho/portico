@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { delegateCommand } from "../src/commands/delegate.ts";
+import { delegateCommand, parseCoverageManifest } from "../src/commands/delegate.ts";
 
 async function captureError(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
   const originalError = console.error;
@@ -176,4 +176,14 @@ test("delegate preflight lists every fan-out child with its agent", async () => 
     console.error = originalError;
     console.log = originalLog;
   }
+});
+
+test("parseCoverageManifest extracts string paths from varied manifest shapes", () => {
+  assert.deepEqual(parseCoverageManifest('{"expectedChange": ["a.ts", "b.ts"]}'), ["a.ts", "b.ts"]);
+  assert.deepEqual(parseCoverageManifest('{"expectedChangePaths": ["c.ts"]}'), ["c.ts"]);
+  assert.deepEqual(parseCoverageManifest('["d.ts", "e.ts"]'), ["d.ts", "e.ts"]);
+  assert.deepEqual(parseCoverageManifest('["f.ts", 123, null, "g.ts"]'), ["f.ts", "g.ts"]);
+  assert.deepEqual(parseCoverageManifest('{}'), []);
+  assert.deepEqual(parseCoverageManifest('{"other": ["a.ts"]}'), []);
+  assert.deepEqual(parseCoverageManifest('invalid json'), []);
 });
