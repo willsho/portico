@@ -166,9 +166,18 @@ Common options:
 | `--auto-start` | If the loopback daemon isn't running, start it and retry the request once |
 | `--detach` | Exit as soon as the run registers, printing its id; the run keeps running on the daemon |
 | `--notify` | OS-notify when the run reaches a terminal state (`ready`/`partial`/`conflict`/`failed`); pairs with `--detach`. macOS only for now |
+| `-y, --yes` | Skip the fan-out preflight confirmation prompt |
 | `--follow <run_id>` | Re-attach to a run's event log (same as `logs --follow`); ignores other run flags |
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
+
+Before any agent launches, `delegate` prints a **preflight** to stderr — the resolved daemon
+URL, the **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can never
+retarget the daemon's own cwd), the base ref, the worktree root, and the agents about to run.
+For a multi-agent fan-out at an interactive terminal it then asks for confirmation, so a wrong
+repo or base ref is caught before N agents burn time. Confirmation is skipped with `--yes` and
+for non-interactive (agent-driven / scripted) use, and the echo goes to stderr so it never
+corrupts a `--json` stdout stream.
 
 `--apply-on-ready` only applies a **single** ready run, and only when every guard holds: you
 passed `--allowed` (a path boundary), the main tree's tracked files are clean, path policy
@@ -387,9 +396,10 @@ integration worktree:
 
 - On a clean merge it writes the merged group `diff.patch` and reports the apply order; apply
   it with `portico apply <group_id> --all`.
-- On a conflict it lists the conflicting files, their source child, and a suggested review
-  order, and leaves no appliable merged patch. Narrow a child with `delegate --resume`, then
-  run `integrate` again.
+- On a conflict it lists the conflicting files, their source child, the conflict kind
+  (`overlap` vs `apply_failure`), the underlying `git apply` reason, and a suggested review
+  order, and leaves no appliable merged patch. For `overlap`, narrow a child with
+  `delegate --resume`; for `apply_failure`, re-run that child. Then run `integrate` again.
 
 Compare groups are rejected (`integrate_unsupported`) — their children are competing
 implementations of the same task, so pick one with `apply <group_id> --child <child_id>`.

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyFetchError } from "../src/commands/http.ts";
+import { isAbsolute, resolve } from "node:path";
+import { classifyFetchError, resolveRepoArg } from "../src/commands/http.ts";
 
 function fetchError(code: string): Error {
   const err = new Error("fetch failed");
@@ -27,4 +28,19 @@ test("EACCES/EPERM is distinguished as a sandbox/permission block", () => {
 test("unknown transport failures still suggest checking the daemon", () => {
   const { hint } = classifyFetchError(new Error("boom"), url);
   assert.match(hint, /portico start/);
+});
+
+// Regression: a relative `--repo` must be resolved against the *CLI's* cwd before it is sent
+// to the daemon. Sending `.` raw lets the daemon resolve it against its own cwd and silently
+// run in the wrong repository (the "ran in the wrong repo" / "resume hit the wrong store" bug).
+test("resolveRepoArg makes a relative --repo absolute against the CLI cwd", () => {
+  const resolved = resolveRepoArg(".");
+  assert.ok(isAbsolute(resolved));
+  assert.equal(resolved, process.cwd());
+  assert.equal(resolveRepoArg("../sibling"), resolve("../sibling"));
+});
+
+test("resolveRepoArg leaves an absolute path unchanged and defaults to cwd when unset", () => {
+  assert.equal(resolveRepoArg("/abs/repo/path"), "/abs/repo/path");
+  assert.equal(resolveRepoArg(undefined), process.cwd());
 });

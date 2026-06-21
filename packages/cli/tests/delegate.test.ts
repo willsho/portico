@@ -119,3 +119,61 @@ test("delegate command reads task file contents into delegate request", async ()
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("delegate prints a preflight echo with the resolved absolute repo before launching", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const originalLog = console.log;
+  let errOut = "";
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+  console.log = () => {};
+  globalThis.fetch = async () =>
+    new Response(
+      `${JSON.stringify({ type: "run_done", runId: "run_1", status: "ready", reportPath: "report.md", resultPath: "result.json" })}\n`,
+      { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+    );
+  try {
+    const code = await delegateCommand(["--to", "agent", "--task", "x", "--repo", ".", "--url", "http://127.0.0.1:1"]);
+    assert.equal(code, 0);
+    assert.match(errOut, /preflight:/);
+    // A relative `--repo .` is echoed as an absolute path — the wrong-repo guard.
+    assert.ok(errOut.includes(`repo:`) && errOut.includes(process.cwd()));
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+    console.log = originalLog;
+  }
+});
+
+test("delegate preflight lists every fan-out child with its agent", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const originalLog = console.log;
+  let errOut = "";
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+  console.log = () => {};
+  globalThis.fetch = async () =>
+    new Response(
+      `${JSON.stringify({ type: "run_done", runId: "g_1", status: "ready", reportPath: "report.md", resultPath: "result.json" })}\n`,
+      { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+    );
+  try {
+    const code = await delegateCommand([
+      "--to", "codex", "--task", "split it", "--mode", "split", "--url", "http://127.0.0.1:1",
+      "--child", JSON.stringify({ to: "codex", task: "backend", label: "be" }),
+      "--child", JSON.stringify({ to: "claude", task: "frontend", label: "fe" }),
+    ]);
+    assert.equal(code, 0);
+    assert.match(errOut, /agents \(2\)/);
+    assert.match(errOut, /be: codex/);
+    assert.match(errOut, /fe: claude/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+    console.log = originalLog;
+  }
+});

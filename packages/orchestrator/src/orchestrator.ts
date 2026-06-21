@@ -571,6 +571,8 @@ async function finalizeGroup(
         strategy: opts.mergeOutcome.strategy,
         status: opts.mergeOutcome.status,
         integrationWorktree: opts.mergeOutcome.integrationWorktree,
+        ...(opts.mergeOutcome.conflictKind ? { conflictKind: opts.mergeOutcome.conflictKind } : {}),
+        ...(opts.mergeOutcome.conflictReason ? { conflictReason: opts.mergeOutcome.conflictReason } : {}),
       }
     : existing?.merge;
   // On a clean merge `conflicts` is undefined → cleared; on conflict it carries the list.
@@ -616,11 +618,53 @@ async function readResultMaybe(repoPath: string, id: string): Promise<RunResult 
 interface MergeOutcome {
   strategy: "sequential" | "integration";
   status: "ready" | "conflict";
-  conflicts?: Array<{ file: string; child: string }>;
+  conflicts?: Array<{ file: string; child: string; kind?: "overlap" | "apply_failure"; line?: number }>;
+  /** Whether the conflict was an inter-child overlap or a single child's patch failing to apply. */
+  conflictKind?: "overlap" | "apply_failure";
+  /** First meaningful `git apply` stderr line, explaining *why* the merge stopped. */
+  conflictReason?: string;
   /** Integration worktree the merge ran in (kept for inspection). */
   integrationWorktree: string;
   /** Path of the merged group diff (only on a clean merge). */
   mergedDiffPath?: string;
+}
+
+/**
+ * Parse `git apply` stderr into the specific files (and line, when given) that failed to
+ * apply, so a plain apply failure reports the real hunk instead of dumping the child's whole
+ * file set. Recognizes the common forms git emits:
+ *   error: patch failed: path/to/file:42
+ *   error: path/to/file: patch does not apply
+ *   error: path/to/file: already exists in working directory
+ */
+function parseApplyFailures(stderr: string): Array<{ file: string; line?: number }> {
+  const out: Array<{ file: string; line?: number }> = [];
+  const seen = new Set<string>();
+  for (const raw of stderr.split("\n")) {
+    const line = raw.trim();
+    const failed = /^error: patch failed: (.+):(\d+)$/.exec(line);
+    if (failed) {
+      const file = failed[1];
+      if (file && !seen.has(file)) {
+        seen.add(file);
+        out.push({ file, line: Number(failed[2]) });
+      }
+      continue;
+    }
+    const noApply = /^error: (.+?): (?:patch does not apply|already exists in working directory|does not exist in index|No such file or directory)$/.exec(line);
+    const file = noApply?.[1];
+    if (file && !seen.has(file)) {
+      seen.add(file);
+      out.push({ file });
+    }
+  }
+  return out;
+}
+
+/** First non-empty `error:`/`fatal:` line of `git apply` stderr — the human-facing reason. */
+function firstGitErrorLine(stderr: string): string | undefined {
+  const lines = stderr.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.find((l) => l.startsWith("error:") || l.startsWith("fatal:")) ?? lines[0];
 }
 
 function resolveFanInPolicy(
@@ -705,14 +749,35 @@ async function mergeSplitChildren(
   await capture("git", ["-C", repoPath, "branch", "-D", branch]);
   await createWorktree(repoPath, integrationPath, branch, baseRef, deps.worktreeMutex);
 
-  const conflicts: Array<{ file: string; child: string }> = [];
+  let conflicts: Array<{ file: string; child: string; kind?: "overlap" | "apply_failure"; line?: number }> = [];
+  let conflictKind: "overlap" | "apply_failure" | undefined;
+  let conflictReason: string | undefined;
+  let failingChild: string | undefined;
+  let failingChildBaseRef: string | undefined;
   for (const child of contributions) {
     if (!child.changedFiles.length) continue;
     const applied = await capture("git", ["-C", integrationPath, "apply", "--3way", "--binary", child.diffPath]);
     if (applied.code !== 0) {
+      failingChild = child.run.id;
+      failingChildBaseRef = child.run.isolation?.baseRef;
+      conflictReason = firstGitErrorLine(applied.stderr) ?? `git apply exited ${applied.code}`;
+      // Unmerged index entries mean a real three-way overlap; their absence means the child's
+      // own patch never applied (drifted context / malformed diff), which we must not report
+      // as if every file the child touched conflicted.
       const unmerged = await listUnmergedFiles(integrationPath);
-      const files = unmerged.length ? unmerged : child.changedFiles;
-      for (const file of files) conflicts.push({ file, child: child.run.id });
+      if (unmerged.length) {
+        conflictKind = "overlap";
+        conflicts = unmerged.map((file) => ({ file, child: child.run.id, kind: "overlap" as const }));
+      } else {
+        conflictKind = "apply_failure";
+        const failures = parseApplyFailures(applied.stderr);
+        const located: Array<{ file: string; line?: number }> = failures.length
+          ? failures
+          : child.changedFiles[0]
+            ? [{ file: child.changedFiles[0] }]
+            : [];
+        conflicts = located.map((f) => ({ file: f.file, child: child.run.id, kind: "apply_failure" as const, ...(f.line !== undefined ? { line: f.line } : {}) }));
+      }
       break; // stop at the first conflicting child; leave markers in place to inspect
     }
   }
@@ -721,10 +786,19 @@ async function mergeSplitChildren(
   const groupDiffPath = artifactPaths(repoPath, groupId).diffPath as string;
 
   if (conflicts.length) {
-    await writeJson(conflictsPath, { groupId, strategy, conflicts });
+    await writeJson(conflictsPath, {
+      groupId,
+      strategy,
+      kind: conflictKind,
+      failingChild,
+      reason: conflictReason,
+      groupBaseRef: baseRef,
+      childBaseRef: failingChildBaseRef,
+      conflicts,
+    });
     // Never leave a stale merged patch behind — apply --all must be impossible on conflict.
     if (existsSync(groupDiffPath)) await rm(groupDiffPath, { force: true });
-    return { strategy, status: "conflict", conflicts, integrationWorktree: integrationPath };
+    return { strategy, status: "conflict", conflicts, conflictKind, conflictReason, integrationWorktree: integrationPath };
   }
 
   const merged = await generateDiff(integrationPath);
@@ -2457,11 +2531,15 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     result.merge ? "" : undefined,
     result.merge ? `Strategy: ${result.merge.strategy}` : undefined,
     result.merge ? `Merge Status: ${result.merge.status}` : undefined,
+    result.merge?.conflictKind
+      ? `Conflict Kind: ${result.merge.conflictKind === "overlap" ? "overlap (two children edited the same region)" : "apply_failure (a child's own patch did not apply to the group base)"}`
+      : undefined,
+    result.merge?.conflictReason ? `Git Reason: ${result.merge.conflictReason}` : undefined,
     result.merge?.integrationWorktree ? `Integration Worktree: ${result.merge.integrationWorktree}` : undefined,
     result.conflicts?.length ? "" : undefined,
     result.conflicts?.length ? "Conflicts:" : undefined,
     result.conflicts?.length
-      ? result.conflicts.map((c, index) => `${index + 1}. ${c.file} (from ${c.child})`).join("\n")
+      ? result.conflicts.map((c, index) => `${index + 1}. ${c.file}${c.line !== undefined ? `:${c.line}` : ""} (from ${c.child})`).join("\n")
       : undefined,
     result.merge ? "" : undefined,
     result.judge ? "## Judge" : undefined,

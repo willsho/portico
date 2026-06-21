@@ -192,8 +192,10 @@ in its lane so the merge stays clean. After the children finish, Portico merges 
 integration worktree branched from the shared base ref:
 
 - Clean merge → the group becomes `ready` and `apply --all` lands the merged patch.
-- Overlapping edits → Portico records `conflicts.json`, moves the group to `conflict`, and
-  refuses `apply --all`. Narrow a child with `--resume` and Portico re-merges automatically.
+- Conflict → Portico records `conflicts.json`, moves the group to `conflict`, and refuses
+  `apply --all`. The report's `Conflict Kind` distinguishes `overlap` (two children edited the
+  same region — narrow one with `--resume`, Portico re-merges automatically) from
+  `apply_failure` (a single child's patch did not apply to the group base — re-run that child).
 
 With `--judge-to`, the judge reviews the **merged** result and records an `approve` /
 `needs_attention` verdict. See [Delegation → Task Split and Fan-in](delegation.md) for the

@@ -239,9 +239,18 @@ export interface RunResult {
     status: "ready" | "conflict";
     /** Integration worktree the merge ran in (kept for inspection). */
     integrationWorktree?: string;
+    /**
+     * What kind of conflict stopped the merge (only when status=conflict):
+     * - `overlap`: two children edited the same region — a real three-way merge conflict.
+     * - `apply_failure`: a child's own patch did not apply to the group base at all
+     *   (e.g. drifted context, malformed diff) — not an inter-child overlap.
+     */
+    conflictKind?: "overlap" | "apply_failure";
+    /** The raw `git apply` reason (first meaningful stderr line) explaining the failure. */
+    conflictReason?: string;
   };
   /** Split group: per-file merge conflicts and their source child (when status=conflict). */
-  conflicts?: Array<{ file: string; child: string }>;
+  conflicts?: Array<{ file: string; child: string; kind?: "overlap" | "apply_failure"; line?: number }>;
   /** Fan-in judge verdict (compare: ranking + recommendation; split: overall verdict). */
   judge?: {
     to: string;

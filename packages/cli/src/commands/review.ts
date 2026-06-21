@@ -4,7 +4,7 @@
 
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { daemonUrl, DaemonUnreachableError, requestJson } from "./http.ts";
+import { daemonUrl, DaemonUnreachableError, requestJson, resolveRepoArg } from "./http.ts";
 import type { RunDetails, RunResult } from "@portico/orchestrator";
 
 interface ChildReview {
@@ -57,7 +57,7 @@ Options:
     return 1;
   }
 
-  const repo = encodeURIComponent(values.repo ?? process.cwd());
+  const repo = encodeURIComponent(resolveRepoArg(values.repo));
   const url = `${daemonUrl(values.url)}/runs/${encodeURIComponent(id)}?repo=${repo}`;
   let details: RunDetails;
   try {
