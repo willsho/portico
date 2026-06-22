@@ -136,7 +136,9 @@ portico cancel <group_id>   # cascades cancel to every child
 portico discard <group_id>  # removes all child worktrees, keeps artifacts
 ```
 
-These are idempotent — re-cancelling or re-discarding a finished group is safe.
+These are idempotent — re-cancelling or re-discarding a finished group is safe. Cancel salvages
+each active child's worktree diff (the same artifacts an error or timeout would leave) before
+marking it cancelled, so an in-flight cancel isn't a total loss.
 
 ### Folded Run Listing
 
@@ -275,8 +277,13 @@ Each run writes artifacts under `.portico/runs/<run_id>/`:
 
 For split groups, `diff.patch` holds the **merged** patch (present only when the merge is
 clean), and `result.json` additionally carries `merge` (strategy + status, plus
-`conflictKind`/`conflictReason` on a conflict), `conflicts`, and `judge`. The final
-`run_done` event includes the `reportPath` and `resultPath`.
+`conflictKind`/`conflictReason` on a conflict), `conflicts`, and `judge`. A single (non-group)
+run's terminal event — `run_done` on success, `run_error` on a crash/timeout/cancellation —
+includes the `reportPath`/`resultPath` plus a `verdict` block (changed files, diff stat,
+tests/verify tallies, path policy, sandbox-escape, review decision, a one-glance `readiness`,
+and the top risk lines): the next section's content, structured for a single read instead of
+re-opening `report.md`. `portico status <run_id> --json` embeds the same `verdict` for a run
+fetched later.
 
 ## Portico Observations and the Review Decision
 

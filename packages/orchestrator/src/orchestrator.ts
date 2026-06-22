@@ -35,6 +35,7 @@ import type {
 } from "./types.ts";
 import { createSemaphore, mergeAsyncIterables } from "./concurrency.ts";
 import type { Semaphore } from "./concurrency.ts";
+import { buildRunVerdict } from "./verdict.ts";
 
 const DEFAULT_FORBIDDEN = [".env", ".ssh/**", "node_modules/**", "dist/**", "build/**"];
 
@@ -183,7 +184,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
       if (role === "group" && details.run.childRunIds?.length) {
         for (const childId of details.run.childRunIds) {
           try {
-            await cancelChild(repoPath, childId, deps);
+            await cancelAndSalvage(repoPath, childId, deps);
           } catch {
             // Idempotent: already-finished children should not block the cascade.
           }
@@ -193,9 +194,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         return readRunDetails(repoPath, id);
       }
 
-      activeControllers.get(id)?.abort();
-      const run = await updateRun(details.run, { status: "cancelled", completedAt: new Date().toISOString() });
-      await writeJson(details.artifacts.resultPath, { ...details.result, run });
+      await cancelAndSalvage(repoPath, id, deps);
       return readRunDetails(repoPath, id);
     },
 
@@ -1296,16 +1295,59 @@ async function applyGroupMerged(repoPath: string, groupId: string): Promise<RunD
   return readRunDetails(repoPath, groupId);
 }
 
-async function cancelChild(repoPath: string, childId: string, deps: DelegationDeps): Promise<void> {
-  deps.activeControllers.get(childId)?.abort();
-  try {
-    const details = await readRunDetails(repoPath, childId);
-    if (!["cancelled", "applied", "discarded", "failed"].includes(details.run.status)) {
-      await updateRun(details.run, { status: "cancelled", completedAt: new Date().toISOString() });
-    }
-  } catch {
-    // Child run may not exist yet; ignore.
+/** Statuses a run can already be in when cancel is requested — nothing left to salvage. */
+const TERMINAL_RUN_STATUSES: RunStatus[] = ["ready", "failed", "applied", "discarded", "cancelled"];
+
+/**
+ * Cancel one run: abort its agent process and, if it was still active, salvage whatever
+ * diff sits in its worktree right now — same artifact shape (result.json + report.md) the
+ * error/timeout path already produces, so a stopped run isn't a total loss. Idempotent:
+ * safe to call on an already-terminal run (just re-confirms "cancelled"). Used both for the
+ * top-level `cancel(id)` RPC and for each child during a group cancel cascade.
+ */
+async function cancelAndSalvage(repoPath: string, id: string, deps: DelegationDeps): Promise<Run> {
+  deps.activeControllers.get(id)?.abort();
+  const details = await readRunDetails(repoPath, id);
+
+  if (TERMINAL_RUN_STATUSES.includes(details.run.status)) {
+    if (details.run.status === "cancelled") return details.run;
+    const run = await updateRun(details.run, { status: "cancelled", completedAt: new Date().toISOString() });
+    await writeJson(details.artifacts.resultPath, { ...details.result, run });
+    return run;
   }
+
+  let changedFiles = details.result?.changedFiles ?? [];
+  let diffSummary = details.result?.diffSummary;
+  if (details.run.mode !== "review") {
+    try {
+      const workDir = details.run.isolation.workspace === "worktree" ? details.run.worktreePath : repoPath;
+      const diffResult = await generateDiff(workDir);
+      changedFiles = diffResult.changedFiles;
+      diffSummary = diffResult.summary;
+      await writeFile(details.artifacts.diffPath as string, diffResult.diff);
+    } catch {
+      // Worktree may already be gone (or never created yet) — nothing to salvage.
+    }
+  }
+
+  const run = await updateRun(details.run, { status: "cancelled", completedAt: new Date().toISOString() });
+  const task = await readJson<DelegateRequest>(details.artifacts.taskPath);
+  const telemetry = buildTelemetry({
+    runStartedMs: Date.parse(run.startedAt ?? run.createdAt),
+    agentEvents: [],
+    testDurationMs: 0,
+  });
+  const result = attachReviewArtifacts(
+    buildRunResult(run, details.artifacts, changedFiles, details.result?.tests ?? [], [], [], telemetry, "Run cancelled by caller."),
+    changedFiles,
+    task,
+    deps.defaultForbidden,
+    diffSummary,
+    details.result?.verify ?? [],
+  );
+  await writeJson(details.artifacts.resultPath, result);
+  await writeReport(details.artifacts.reportPath, result);
+  return run;
 }
 
 async function* resumeChildDelegation(
@@ -1474,6 +1516,7 @@ async function* resumeChildDelegation(
       status: newStatus,
       reportPath: details.artifacts.reportPath,
       resultPath: details.artifacts.resultPath,
+      verdict: buildRunVerdict(updatedRun, result),
     });
 
     // Recompute parent group, then re-run the split fan-in merge so a narrowed child
@@ -1805,6 +1848,7 @@ async function* runSingleDelegation(
         status: run.status,
         reportPath: artifacts.reportPath,
         resultPath: artifacts.resultPath,
+        verdict: buildRunVerdict(run, result),
       });
       return;
     }
@@ -1892,6 +1936,7 @@ async function* runSingleDelegation(
       status: run.status,
       reportPath: artifacts.reportPath,
       resultPath: artifacts.resultPath,
+      verdict: buildRunVerdict(run, result),
     });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -1935,7 +1980,16 @@ async function* runSingleDelegation(
       );
       await writeJson(artifacts.resultPath, result);
       await writeReport(artifacts.reportPath, result);
-      yield await recordEvent(artifacts.eventsPath, { type: "run_error", runId: run.id, error, code });
+      yield await recordEvent(artifacts.eventsPath, {
+        type: "run_error",
+        runId: run.id,
+        error,
+        code,
+        status: run.status,
+        reportPath: artifacts.reportPath,
+        resultPath: artifacts.resultPath,
+        verdict: buildRunVerdict(run, result),
+      });
     } else {
       yield { type: "run_error", error, code };
     }
@@ -1988,7 +2042,8 @@ function buildRunResult(
     gateWarnings.push(`Coverage gap: expected path(s) not changed: ${coverage.untouched.join(", ")}.`);
   }
   if (error && changedFiles.length > 0) {
-    gateWarnings.push(`Agent errored/timed out but left ${changedFiles.length} uncommitted file(s) in the worktree (partial work — review or resume).`);
+    const reason = run.status === "cancelled" ? "was cancelled" : "errored/timed out";
+    gateWarnings.push(`Agent ${reason} but left ${changedFiles.length} uncommitted file(s) in the worktree (partial work — review or resume).`);
   }
   // Portico's own verdict, derived from observed facts rather than the agent's self-report:
   // not-ready or ready-but-suspect (a flagged no-change run / coverage gap) → needs_attention.

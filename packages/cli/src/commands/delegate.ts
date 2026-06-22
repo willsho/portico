@@ -17,6 +17,7 @@ import {
   resolveRepoArg,
 } from "./http.ts";
 import { logsCommand } from "./runs.ts";
+import { buildRunVerdict } from "@portico/orchestrator";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
 
 export const EXIT_CLIENT_DISCONNECTED = 3;
@@ -73,6 +74,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "review-summary": { type: "boolean" },
       "apply-on-ready": { type: "boolean" },
       "auto-start": { type: "boolean" },
+      "no-auto-start": { type: "boolean" },
       detach: { type: "boolean" },
       notify: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
@@ -114,7 +116,8 @@ Options:
   --json                   Output JSON format
   --review-summary         After the run, print a one-click apply command + risk summary
   --apply-on-ready         Auto-apply a ready single run when all safety guards pass (opt-in)
-  --auto-start             If the loopback daemon isn't running, start it and retry once
+  --auto-start             If the loopback daemon isn't running, start it and retry once (default: on)
+  --no-auto-start          Don't auto-start a loopback daemon; fail fast if none is reachable
   --detach                 Exit as soon as the run starts, printing its id (run continues)
   --notify                 Fire an OS notification when the run reaches a terminal state (macOS)
   -y, --yes                Skip the fan-out preflight confirmation prompt
@@ -130,6 +133,11 @@ Exit codes:
   130  Interrupted (Ctrl-C)`);
     return 0;
   }
+
+  // Zero-config default: auto-start a loopback daemon when none is reachable, so a bare
+  // `delegate` works without a prior `portico start`. `--no-auto-start` opts back out
+  // (e.g. CI expecting a pre-existing daemon); `--auto-start` is kept as an explicit no-op.
+  const autoStart = !values["no-auto-start"];
 
   // Re-attach to an already-running (e.g. detached) run's event log.
   if (values.follow) {
@@ -162,7 +170,7 @@ Exit codes:
         body: JSON.stringify({ task: task.value }),
       },
       base,
-      values["auto-start"] ?? false,
+      autoStart,
       values.token,
     );
     if (!res) return 1;
@@ -265,7 +273,7 @@ Exit codes:
       body: JSON.stringify(request),
     },
     base,
-    values["auto-start"] ?? false,
+    autoStart,
     values.token,
   );
   if (!res) return 1;
@@ -398,23 +406,11 @@ async function printReviewSummary(runId: string, repo: string, url?: string, tok
 
   const { run, result } = details;
   const isGroup = (run.role ?? "single") === "group";
-  const risks: string[] = [];
-  if (result?.pathPolicy) {
-    risks.push(`path policy: ${result.pathPolicy.status}`);
-    if (result.pathPolicy.retryAllowed?.length) {
-      risks.push(`  out-of-scope: ${result.pathPolicy.retryAllowed.join(", ")}`);
-    }
-  }
-  const tests = result?.tests ?? [];
-  const verify = result?.verify ?? [];
-  if (tests.length) risks.push(`tests: ${tests.filter((t) => t.status === "passed").length}/${tests.length} passed`);
-  if (verify.length) risks.push(`verify: ${verify.filter((t) => t.status === "passed").length}/${verify.length} passed`);
-  if (result?.sandboxEscaped) risks.push("sandbox escape: DETECTED");
-  for (const w of result?.gateWarnings ?? []) risks.push(`warning: ${w}`);
+  const verdict = buildRunVerdict(run, result);
 
   console.log("\n── Review summary ──────────────────────────────");
   console.log(`run ${run.id}: ${run.status}`);
-  console.log(risks.length ? risks.join("\n") : "no risks recorded.");
+  console.log(verdict.topRisks.length ? verdict.topRisks.join("\n") : "no risks recorded.");
   console.log("");
   if (run.status === "ready" && result?.reviewDecision === "needs_attention") {
     // Ready by gate, but Portico flagged it (e.g. no file changes) — don't lead with apply.
@@ -640,14 +636,19 @@ export function printEvent(event: DelegationEvent): void {
     case "run_done":
       console.log(`[${event.runId}] ${event.status}`);
       console.log(`report: ${event.reportPath}`);
+      if (event.verdict?.topRisks.length) console.log(event.verdict.topRisks.join("\n"));
       console.log(
-        event.status === "ready"
+        (event.verdict ? event.verdict.readiness === "ready" : event.status === "ready")
           ? `next: portico apply ${event.runId} | portico discard ${event.runId}`
           : `next: portico status ${event.runId} | portico discard ${event.runId}`,
       );
       return;
     case "run_error":
       console.error(`[${event.runId ?? "delegate"}] ${event.code ?? "error"}: ${event.error}`);
+      if (event.verdict?.changedFiles.length) {
+        console.error(`[${event.runId}] left ${event.verdict.changedFiles.length} changed file(s) in the worktree (salvaged)`);
+        console.error(`next: portico status ${event.runId} | portico discard ${event.runId}`);
+      }
       return;
   }
 }

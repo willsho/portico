@@ -17,6 +17,7 @@ const FAKE_AGENT = join(here, "../../../test/fixtures/fake-agent.mjs");
 const ESCAPE_AGENT = join(here, "../../../test/fixtures/escape-agent.mjs");
 const SPLIT_AGENT = join(here, "../../../test/fixtures/split-agent.mjs");
 const JUDGE_AGENT = join(here, "../../../test/fixtures/judge-agent.mjs");
+const CANCEL_AGENT = join(here, "../../../test/fixtures/cancel-agent.mjs");
 
 test("delegation creates a worktree, artifacts, diff and report", async () => {
   installBuiltinAdapters();
@@ -918,6 +919,52 @@ test("cancel group cascades to all children (idempotent)", async () => {
     // Cancel again (idempotent — should not throw)
     const cancelled2 = await orchestrator.cancel(repo, groupId);
     assert.equal(cancelled2.run.status, "cancelled");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("cancel mid-flight salvages the worktree diff", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const entry = agentEntry("codex", CANCEL_AGENT);
+
+  try {
+    const iterator = orchestrator.delegate(
+      { to: "codex", repo, task: "make a change then hang" },
+      { findEntry: () => entry },
+    )[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    assert.equal(first.value?.type, "run_start");
+    const runId = first.value?.type === "run_start" ? first.value.runId : "";
+
+    // Drain the generator in the background so its own (slower) catch-path salvage
+    // also runs to completion — cancel() below should not need to race it.
+    const drain = (async () => {
+      while (!(await iterator.next()).done) {
+        // keep pumping
+      }
+    })();
+    drain.catch(() => {});
+
+    const marker = join(repo, ".portico", "worktrees", runId, "delegated.txt");
+    const deadline = Date.now() + 5000;
+    while (!existsSync(marker)) {
+      if (Date.now() > deadline) throw new Error("cancel-agent never wrote its marker file");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const cancelled = await orchestrator.cancel(repo, runId);
+    assert.equal(cancelled.run.status, "cancelled");
+    assert.ok(cancelled.result?.changedFiles?.includes("delegated.txt"));
+    assert.ok(cancelled.result?.diffSummary?.stat.includes("delegated.txt"));
+    assert.ok(existsSync(cancelled.artifacts.diffPath as string));
+    assert.match(await readFile(cancelled.artifacts.diffPath as string, "utf8"), /delegated.txt/);
+    assert.match(await readFile(cancelled.artifacts.reportPath, "utf8"), /delegated\.txt/);
+
+    await drain;
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
