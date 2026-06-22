@@ -108,6 +108,7 @@ portico delegate --to <agent-a> --repo . --task "<task>" \
   --child '{"to":"codex","permissionProfile":"auto-edit"}' \
   --child '{"to":"claude","model":"sonnet"}'
 portico delegate --resume <child_id> (--task "fix the failing tests" | --task-file feedback.txt)
+portico delegate --continue <run_id> (--task "keep going from the current worktree" | --task-file feedback.txt)
 portico delegate --to <agent> --repo . --task "<task>" --allowed "src/**" --apply-on-ready  # auto-apply if guards pass
 portico delegate --to <agent> --repo . --task "<task>" --detach   # exit at run_start, keep running
 portico delegate --to <agent> --repo . --task "<task>" --detach --notify  # OS-notify on terminal state
@@ -234,9 +235,13 @@ Delegation controls in the MVP:
 - `--child '{"to":"agent","permissionProfile":"auto-edit","label":"c1"}'` (repeatable)
   defines heterogeneous child specs with per-child agent, task, permission profile, model,
   effort, and path policy. The old `--compare-to` syntax is normalized into children.
-- `--resume <child_id> (--task "new task" | --task-file <path>)` re-runs a child in its existing worktree
-  to iterate on a fix, regenerating the diff and recomputing the group status (and, for a
-  split group, re-running the fan-in merge).
+- `--resume <child_id> (--task "new task" | --task-file <path>)` re-runs a child in its existing
+  worktree **and native agent session** to iterate on a fix, regenerating the diff and recomputing
+  the group status (and, for a split group, re-running the fan-in merge). Requires a stored
+  `agentSessionId`.
+- `--continue <run_id> (--task "new task" | --task-file <path>)` re-runs a run in its existing
+  worktree with a fresh agent session. It does not require or pass `agentSessionId`; continuation
+  comes from the partial files already in the worktree plus the new `[continue]` task text.
 - Test commands come from repeated `--test` flags or `.portico/config.json`
   `testCommands`.
 - Worktree runs snapshot the caller's main checkout before and after the agent runs. If
@@ -256,7 +261,8 @@ Delegation controls in the MVP:
 - `--iterate-from <run_id>` (delegate) splices a previous run's failure/result summary (top
   risks, failing test/verify output, changed files) into the new task's `## Context` section,
   then launches an ordinary new run — never a continuation. Orthogonal to `--resume`, which
-  re-runs a child in its existing worktree/session.
+  re-runs a child in its existing worktree/session, and `--continue`, which reuses the worktree
+  but starts a fresh agent session.
 - `--dry-run` (delegate) lints the task text for a named file, acceptance criteria, and a test
   command, then exits (0 if all three pass, 1 otherwise) — no network call, no worktree.
   `--context <path-or-glob>` / `--context-diff <ref>` (repeatable) deterministically splice file
@@ -283,7 +289,7 @@ Delegation controls in the MVP:
   (`ready` / `partial` / `conflict` / `failed`). Pairs with `--detach` — a detached background
   watcher delivers the notification after the foreground process has exited. macOS only for now;
   a no-op elsewhere.
-- `delegate` (and `delegate --resume`) auto-starts a loopback daemon and retries once if none is
+- `delegate` (including `delegate --resume` and `delegate --continue`) auto-starts a loopback daemon and retries once if none is
   reachable — no prior `portico start` needed. Loopback only — LAN/remote daemons are never
   auto-started, so a non-loopback `--url`/`PORTICO_URL` still fails fast. Pass
   `--no-auto-start` to fail fast on loopback too.
@@ -339,6 +345,7 @@ agent), read the run's report and result, and decide apply vs discard with the u
 | `POST /runs/:id/apply?repo=/path` | `{ child? }` | `RunDetails` (child id for groups) |
 | `POST /runs/:id/discard?repo=/path` | – | `RunDetails` (cascades for groups) |
 | `POST /runs/:id/resume?repo=/path` | `{ task }` | `application/x-ndjson` delegation stream |
+| `POST /runs/:id/continue?repo=/path` | `{ task }` | `application/x-ndjson` delegation stream |
 | `POST /reload`| –                   | `{ agents: AgentEntry[] }` (re-discover) |
 | `GET /sessions` | –                 | `{ sessions: SessionRecord[] }`   |
 | `DELETE /sessions/:id` | –          | `{ ok }` (or `404`)               |

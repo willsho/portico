@@ -104,13 +104,15 @@
   group 级联中的每个 child 走同一函数。`buildRunResult` 的 gate-warning 文案也按 `run.status` 区分
   「was cancelled」与「errored/timed out」。已加单测：mid-flight cancel 一个真实写文件后挂起的 agent，
   断言 `changedFiles`/`diffSummary`/`diff.patch`/`report.md` 均落地。
-- **P0**：承接 [#18]——`apply --allow`（policy-failed 的好 diff 经确认落地，✅已完成）、`delegate --continue`
-  （在部分产物上续跑，未开始），让「叫停 → 看半成品 → 接着做」成为**便宜回路**。已落地部分：
+- **P0**✅：承接 [#18]——`apply --allow`（policy-failed 的好 diff 经确认落地，✅已完成）、`delegate --continue`
+  （在部分产物上续跑，✅已完成），让「叫停 → 看半成品 → 接着做」成为**便宜回路**。已落地：
   `portico apply <run_id|group_id --child <id>> --allow <path>…`——见
   `packages/orchestrator/src/orchestrator.ts` 的 `resolvePathPolicyOverride()`：只在路径越界
   （`pathPolicy.status === "failed"` 且无 `forbidden` 命中）且 `--allow` 覆盖全部 `notAllowed`
   路径时放行，落地后在 `result.json` 写 `pathPolicyOverride` 留痕；`forbidden` 命中仍硬失败、不可
-  override。详见 [[portico-partial-run-landing-plan.zh-CN]]。
+  override。`portico delegate --continue <run_id> --task "<refinement>"` 复用目标 run 的既有
+  worktree，追加 `[continue]` task，重跑 agent / diff / tests / verify / report，但不要求也不传递
+  `agentSessionId`，因此与 `--resume` 的 session 续跑语义正交。详见 [[portico-partial-run-landing-plan.zh-CN]]。
 - **P1**✅：**iterate 模板**——把「引用上一次 `report.md` / `test.log` 的失败要点、细化任务再委派」做成一条命令（预填失败摘要），
   逼近内置 subagent 的「便宜重试」。已落地：`delegate --iterate-from <run_id>`（`packages/cli/src/commands/delegate.ts`）
   确定性地把上一个 run 的 `topRisks`、每个失败 test/verify 的尾部输出、`changedFiles` 拼进新 task 的
@@ -158,7 +160,7 @@
 
 | 阶段 | 重点 | 目标 |
 | --- | --- | --- |
-| P0 | 终态内联可信判读（差距1，✅已完成）+ 零配置 daemon/默认超时（差距2，✅已完成）+ cancel salvage（差距3，✅已完成）/ `apply --allow` 落地 policy-failed 好 diff（差距3，承接 [#18]，✅已完成）/ `delegate --continue`（差距3，承接 [#18]，未开始） | 删掉「读盘 + 运维 + 全损」三大附带税 |
+| P0 | 终态内联可信判读（差距1，✅已完成）+ 零配置 daemon/默认超时（差距2，✅已完成）+ cancel salvage（差距3，✅已完成）/ `apply --allow` 落地 policy-failed 好 diff（差距3，承接 [#18]，✅已完成）/ `delegate --continue`（差距3，承接 [#18]，✅已完成） | 删掉「读盘 + 运维 + 全损」三大附带税 |
 | P1 | `verdict` 事件 / `result --json`、预检健康门、iterate 模板、context 打包、`--dry-run` task 自检、CLI 一致性（均 ✅已完成） | 把冷启动税与 papercut 也压低 |
 | P2 | （探索）更紧的续跑 / 跨 run 组合编排 | 大任务多趟协作接近无缝 |
 
@@ -175,8 +177,8 @@
 - ✅ 单次 `delegate`（不带 `--url` / `--timeout` / `--auto-start`）在 daemon 未起或在非默认端口时仍自洽跑通。
 - ✅ 拿到终态后，**一次结构化读取**即可知道：改了什么、tests/verify、`reviewDecision`、`readiness`、风险——
   无需打开 `report.md` / `result.json` / 手跑 `git diff`。（单 run / child 终态；group 父 run 仍用 `review` 聚合。）
-- 部分达成：被主动 `cancel` 的 run 能在**不重跑 agent、不离开 Portico** 的前提下叫停 → 保留半成品（已落地）；
-  policy-failed 的好 diff 一等落地（`apply --allow`，✅已完成）。`delegate --continue` 续跑仍未做（承接 [#18]）。
+- ✅ 被主动 `cancel` 的 run 能在**不离开 Portico** 的前提下叫停 → 保留半成品；policy-failed 的好 diff
+  可一等落地（`apply --allow`）；也可用 `delegate --continue` 在既有 worktree 上不依赖 session 续跑。
 - ✅ `delegate --dry-run` 能对一个弱 task 指出缺了文件 / 验收标准 / 测试命令。
 
 ## 未决问题
@@ -195,7 +197,7 @@
 - ~~iterate 模板、现有 `--resume`（child-only、需 session）、[#18] 的 `--continue` 如何归一，避免三套语义？~~
   已决策并落地：**不归一，保持三套正交语义**——`--iterate-from` 只读取上一个 run 的失败摘要拼进新 task、
   起一个全新 run（零续跑）；`--resume` 在已有 worktree/session 里续跑同一个 child（需要 adapter 支持
-  session resume）；`--continue`（[#18]，仍未做）将是「在已有 worktree 上不依赖 session 续跑」。三者解决
+  session resume）；`--continue` 是「在已有 worktree 上不依赖 session 续跑」。三者解决
   的是不同问题（填上下文 vs 续 session vs 续 worktree），强行合并只会让单个命令的语义变模糊。
 - 有没有一个**可量化的体验指标**来判断「是否已接近 spawn subagent」？候选：从 `delegate` launch 到拿到可信结论所需的**人工步数 / 读取次数**——目标把它降到 1。
   P1 落地后估算：单 run 的「launch → 可信结论」现在是 1 步（`status --json` 或 `result --json` 任选其一，

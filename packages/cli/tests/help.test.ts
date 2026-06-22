@@ -27,6 +27,7 @@ test("delegate command handles --help before task validation", async () => {
   assert.match(output, /--allowed/);
   assert.match(output, /--forbidden/);
   assert.match(output, /--resume/);
+  assert.match(output, /--continue/);
   assert.match(output, /--json/);
   assert.match(output, /--url/);
   assert.match(output, /--token/);

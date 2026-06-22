@@ -79,6 +79,7 @@ export interface DelegationOrchestrator {
   cleanup(repo: string, opts?: CleanupOptions): Promise<CleanupResult>;
   discard(repo: string, id: string): Promise<RunDetails>;
   resumeChild(repo: string, id: string, task: string, context: { findEntry(provider: string): AgentEntry | undefined }): AsyncIterable<DelegationEvent>;
+  continueRun(repo: string, id: string, task: string, context: { findEntry(provider: string): AgentEntry | undefined }): AsyncIterable<DelegationEvent>;
 }
 
 export function createDelegationOrchestrator(options: OrchestratorOptions = {}): DelegationOrchestrator {
@@ -299,6 +300,16 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
     async *resumeChild(repo, id, task, ctx) {
       try {
         yield* resumeChildDelegation(await resolveRepo(repo), id, task, ctx, deps);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        const code = err instanceof DelegationError ? err.code : "internal";
+        yield { type: "run_error", error, code };
+      }
+    },
+
+    async *continueRun(repo, id, task, ctx) {
+      try {
+        yield* continueRunDelegation(await resolveRepo(repo), id, task, ctx, deps);
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         const code = err instanceof DelegationError ? err.code : "internal";
@@ -1394,8 +1405,38 @@ async function* resumeChildDelegation(
   if (!details.run.agentSessionId) {
     throw new DelegationError("resume_unsupported", `Child run ${childId} does not have a stored agent session; the adapter may not support resume.`);
   }
+  yield* rerunExistingWorktree(details, task, context, deps, {
+    marker: "resume",
+    resumeSessionId: details.run.agentSessionId,
+    missingWorktreeMessage: `Child run ${childId}'s worktree has been cleaned up and cannot be resumed.`,
+  });
+}
+
+async function* continueRunDelegation(
+  repoPath: string,
+  runId: string,
+  task: string,
+  context: { findEntry(provider: string): AgentEntry | undefined },
+  deps: DelegationDeps,
+): AsyncIterable<DelegationEvent> {
+  const details = await readRunDetails(repoPath, runId);
+  yield* rerunExistingWorktree(details, task, context, deps, {
+    marker: "continue",
+    missingWorktreeMessage: `Run ${runId}'s worktree has been cleaned up and cannot be continued.`,
+  });
+}
+
+async function* rerunExistingWorktree(
+  details: RunDetails,
+  task: string,
+  context: { findEntry(provider: string): AgentEntry | undefined },
+  deps: DelegationDeps,
+  options: { marker: "resume" | "continue"; resumeSessionId?: string; missingWorktreeMessage: string },
+): AsyncIterable<DelegationEvent> {
+  const runId = details.run.id;
+  const repoPath = details.run.repoPath;
   if (details.run.isolation.workspace === "worktree" && details.run.worktreePath && !existsSync(details.run.worktreePath)) {
-    throw new DelegationError("worktree_missing", `Child run ${childId}'s worktree has been cleaned up and cannot be resumed.`);
+    throw new DelegationError("worktree_missing", options.missingWorktreeMessage);
   }
 
   const entry = context.findEntry(details.run.targetAgent);
@@ -1403,12 +1444,12 @@ async function* resumeChildDelegation(
     throw new DelegationError("agent_unavailable", `Target agent "${details.run.targetAgent}" is not available.`);
   }
 
-  // Build a new request from the stored task plus the resume task.
+  // Build a new request from the stored task plus the resume/continue task.
   const taskJson = await readJson<DelegateRequest>(details.artifacts.taskPath);
   const request: DelegateRequest = {
     ...taskJson,
     to: details.run.targetAgent,
-    task: `${taskJson.task}\n\n[resume] ${task}`,
+    task: `${taskJson.task}\n\n[${options.marker}] ${task}`,
     depth: (taskJson.depth ?? 0) + 1,
   };
 
@@ -1416,7 +1457,7 @@ async function* resumeChildDelegation(
 
   // Re-run agent in the existing worktree, capturing new events.
   const controller = new AbortController();
-  deps.activeControllers.set(childId, controller);
+  deps.activeControllers.set(runId, controller);
   let agentEvents: RuntimeEvent[] = [];
   let tests: TestResult[] = [];
   let verify: TestResult[] = [];
@@ -1429,7 +1470,7 @@ async function* resumeChildDelegation(
   let verifyDurationMs = 0;
 
   try {
-    yield await recordEvent(details.artifacts.eventsPath, { type: "agent_start", runId: childId, agent: details.run.targetAgent });
+    yield await recordEvent(details.artifacts.eventsPath, { type: "agent_start", runId, agent: details.run.targetAgent });
 
     const chat: ChatRequest = {
       provider: details.run.targetAgent,
@@ -1448,7 +1489,7 @@ async function* resumeChildDelegation(
         entry,
         signal: controller.signal,
         env: { ...process.env, PORTICO_DELEGATION_DEPTH: String((details.run.depth ?? 0) + 1) },
-        resumeSessionId: details.run.agentSessionId,
+        ...(options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
         onAgentSession: (id) => {
           capturedSessionId = id;
         },
@@ -1462,7 +1503,7 @@ async function* resumeChildDelegation(
       }
       agentEvents.push(event);
       await appendFile(details.artifacts.agentLogPath, encodeEvent(event));
-      yield await recordEvent(details.artifacts.eventsPath, { type: "agent_event", runId: childId, event });
+      yield await recordEvent(details.artifacts.eventsPath, { type: "agent_event", runId, event });
       if (event.type === "error") throw new DelegationError(event.code ?? "agent_failed", event.error);
     }
     agentDurationMs = Date.now() - agentStartedMs;
@@ -1477,13 +1518,13 @@ async function* resumeChildDelegation(
       enforcePathPolicy(changedFiles, request, deps.defaultForbidden);
       yield await recordEvent(details.artifacts.eventsPath, {
         type: "diff_ready",
-        runId: childId,
+        runId,
         path: details.artifacts.diffPath as string,
         changedFiles,
       });
 
       for (const command of request.testCommands ?? []) {
-        yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
+        yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId, command });
         const result = await runTestCommand(workDir, command, request.testTimeoutMs);
         tests.push(result);
         testDurationMs += result.durationMs ?? 0;
@@ -1493,14 +1534,14 @@ async function* resumeChildDelegation(
         );
         yield await recordEvent(details.artifacts.eventsPath, {
           type: "test_done",
-          runId: childId,
+          runId,
           command,
           status: result.status,
           exitCode: result.exitCode,
         });
       }
       for (const command of request.verifyCommands ?? []) {
-        yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId: childId, command });
+        yield await recordEvent(details.artifacts.eventsPath, { type: "test_start", runId, command });
         const result = await runTestCommand(workDir, command, request.testTimeoutMs);
         verify.push(result);
         verifyDurationMs += result.durationMs ?? 0;
@@ -1510,7 +1551,7 @@ async function* resumeChildDelegation(
         );
         yield await recordEvent(details.artifacts.eventsPath, {
           type: "test_done",
-          runId: childId,
+          runId,
           command,
           status: result.status,
           exitCode: result.exitCode,
@@ -1545,7 +1586,7 @@ async function* resumeChildDelegation(
     await writeReport(details.artifacts.reportPath, result);
     yield await recordEvent(details.artifacts.eventsPath, {
       type: "run_done",
-      runId: childId,
+      runId,
       status: newStatus,
       reportPath: details.artifacts.reportPath,
       resultPath: details.artifacts.resultPath,
@@ -1601,13 +1642,13 @@ async function* resumeChildDelegation(
     );
     await writeJson(details.artifacts.resultPath, result);
     await writeReport(details.artifacts.reportPath, result);
-    yield await recordEvent(details.artifacts.eventsPath, { type: "run_error", runId: childId, error, code });
+    yield await recordEvent(details.artifacts.eventsPath, { type: "run_error", runId, error, code });
     if (details.run.groupId) {
       await recomputeGroupStatus(repoPath, details.run.groupId);
     }
   } finally {
     controller.abort();
-    deps.activeControllers.delete(childId);
+    deps.activeControllers.delete(runId);
   }
 }
 
