@@ -717,3 +717,55 @@ test("buildContextSections handles file globs, file content, git diff, and chara
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("delegate command threads --idle-timeout into the delegate request", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  let body = "";
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    body = String(init?.body ?? "");
+    return new Response(
+      `${JSON.stringify({ type: "run_done", runId: "run_1", status: "ready", reportPath: "report.md", resultPath: "result.json" })}\n`,
+      { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+    );
+  };
+  console.log = () => {};
+
+  try {
+    let code = await delegateCommand([
+      "--to", "agent", "--task", "x",
+      "--idle-timeout", "5000",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    let parsed = JSON.parse(body);
+    assert.equal(parsed.idleTimeoutMs, 5000);
+
+    code = await delegateCommand([
+      "--to", "agent", "--task", "x",
+      "--idle-timeout", "off",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    parsed = JSON.parse(body);
+    assert.equal(parsed.idleTimeoutMs, 0);
+
+    code = await delegateCommand([
+      "--to", "agent", "--task", "x",
+      "--idle-timeout", "0",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    parsed = JSON.parse(body);
+    assert.equal(parsed.idleTimeoutMs, 0);
+
+    // Omitted
+    await delegateCommand(["--to", "agent", "--task", "x", "--url", "http://127.0.0.1:1"]);
+    const bare = JSON.parse(body);
+    assert.equal(bare.idleTimeoutMs, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+});
+

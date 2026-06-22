@@ -1491,7 +1491,7 @@ async function* rerunExistingWorktree(
     const agentStartedMs = Date.now();
     let capturedSessionId: string | undefined;
     const agentIterable = withIdleWatchdog(
-      runAgent(chat, {
+      (onActivity) => runAgent(chat, {
         entry,
         signal: controller.signal,
         env: { ...process.env, PORTICO_DELEGATION_DEPTH: String((details.run.depth ?? 0) + 1) },
@@ -1499,10 +1499,20 @@ async function* rerunExistingWorktree(
         onAgentSession: (id) => {
           capturedSessionId = id;
         },
+        onActivity,
       }),
-      request.idleTimeoutMs
+      {
+        idleMs: request.idleTimeoutMs,
+        abort: () => controller.abort(),
+        worktreeDir: details.run.isolation.workspace === "worktree" ? details.run.worktreePath : undefined,
+      },
     );
-    for await (const event of agentIterable) {
+    for await (const item of agentIterable) {
+      if (item.kind === "warning") {
+        yield await recordEvent(details.artifacts.eventsPath, { type: "idle_warning", runId, idleForMs: item.idleForMs });
+        continue;
+      }
+      const event = item.event;
       if (capturedSessionId && capturedSessionId !== details.run.agentSessionId) {
         details.run = await updateRun(details.run, { agentSessionId: capturedSessionId });
         capturedSessionId = undefined;
@@ -1626,7 +1636,9 @@ async function* rerunExistingWorktree(
       }
     }
     details.run = await updateRun(details.run, {
-      status: controller.signal.aborted ? "cancelled" : "failed",
+      // A watchdog stall aborts the controller to kill the subprocess, but it's a failure,
+      // not a user cancellation — only a genuine cancel (no agent_stalled) reads as cancelled.
+      status: controller.signal.aborted && code !== "agent_stalled" ? "cancelled" : "failed",
       completedAt: new Date().toISOString(),
     });
     const result = attachReviewArtifacts(
@@ -1874,18 +1886,33 @@ async function* runSingleDelegation(
 
     const agentStartedMs = Date.now();
     let capturedSessionId: string | undefined;
+    const ctrl = controller;
+    const r = run;
+    if (!ctrl || !r) {
+      throw new Error("Bug: controller or run is undefined before runAgent");
+    }
     const agentIterable = withIdleWatchdog(
-      runAgent(chat, {
+      (onActivity) => runAgent(chat, {
         entry,
-        signal: controller.signal,
-        env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(run.depth + 1) },
+        signal: ctrl.signal,
+        env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(r.depth + 1) },
         onAgentSession: (id) => {
           capturedSessionId = id;
         },
+        onActivity,
       }),
-      request.idleTimeoutMs
+      {
+        idleMs: request.idleTimeoutMs,
+        abort: () => ctrl.abort(),
+        worktreeDir: r.isolation.workspace === "worktree" ? r.worktreePath : undefined,
+      },
     );
-    for await (const event of agentIterable) {
+    for await (const item of agentIterable) {
+      if (item.kind === "warning") {
+        yield await recordEvent(artifacts.eventsPath, { type: "idle_warning", runId: run.id, idleForMs: item.idleForMs });
+        continue;
+      }
+      const event = item.event;
       if (capturedSessionId && !run.agentSessionId) {
         run = await updateRun(run, { agentSessionId: capturedSessionId });
         capturedSessionId = undefined;
@@ -2047,7 +2074,9 @@ async function* runSingleDelegation(
     const error = err instanceof Error ? err.message : String(err);
     const code = err instanceof DelegationError ? err.code : "internal";
     if (run && artifacts) {
-      const status = controller?.signal.aborted ? "cancelled" : "failed";
+      // A watchdog stall aborts the controller to kill the subprocess, but it's a failure,
+      // not a user cancellation — only a genuine cancel (no agent_stalled) reads as cancelled.
+      const status = controller?.signal.aborted && code !== "agent_stalled" ? "cancelled" : "failed";
       run = await updateRun(run, { status, completedAt: new Date().toISOString() });
       if (run.mode !== "review") {
         try {
@@ -2794,29 +2823,195 @@ async function assertStatusUnchanged(repoPath: string, before: string): Promise<
   }
 }
 
-async function* withIdleWatchdog<T>(
-  iterable: AsyncIterable<T>,
-  idleMs: number | undefined,
-): AsyncIterable<T> {
+// Idle-watchdog tuning. The window before the agent's first real output is widened (cold model
+// load / repo indexing), and an in-flight tool call (a long-running shell command) gets extra
+// slack. After the soft window elapses Portico emits a visible idle warning, then only kills the
+// run once HARD_STOP_FACTOR× the window has passed with still no activity.
+const STARTUP_GRACE_FACTOR = 2;
+const TOOL_CALL_GRACE_FACTOR = 3;
+const HARD_STOP_FACTOR = 2;
+// Worktree file-change sampling: cheap "is the silent edit-agent alive?" heartbeat. Sampled at
+// half the idle window, capped so a long idle window doesn't make the check sluggish.
+const WORKTREE_HEARTBEAT_MAX_INTERVAL_MS = 2000;
+const WORKTREE_HEARTBEAT_MIN_INTERVAL_MS = 250;
+const WORKTREE_HEARTBEAT_SKIP = new Set([".git", "node_modules", ".portico"]);
+const WORKTREE_HEARTBEAT_MAX_FILES = 50_000;
+
+export interface IdleWindowState {
+  idleMs: number;
+  /** No real agent output seen yet — tolerate a longer first gap (cold start). */
+  startupPending: boolean;
+  /** A tool call has been issued but not yet resolved — the agent may be running a long command. */
+  toolCallOpen: boolean;
+}
+
+/** The currently allowed idle window, widened during cold start and in-flight tool calls. */
+export function computeIdleWindowMs(state: IdleWindowState): number {
+  let windowMs = state.idleMs;
+  if (state.startupPending) windowMs = Math.max(windowMs, state.idleMs * STARTUP_GRACE_FACTOR);
+  if (state.toolCallOpen) windowMs = Math.max(windowMs, state.idleMs * TOOL_CALL_GRACE_FACTOR);
+  return windowMs;
+}
+
+/** A cheap signature (file count, total size, newest mtime) of a worktree, ignoring heavy dirs. */
+async function worktreeSignature(dir: string): Promise<string> {
+  let files = 0;
+  let totalSize = 0;
+  let maxMtime = 0;
+  let scanned = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop() as string;
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (WORKTREE_HEARTBEAT_SKIP.has(entry.name)) continue;
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (++scanned > WORKTREE_HEARTBEAT_MAX_FILES) return `${files}:${totalSize}:${Math.round(maxMtime)}`;
+      try {
+        const st = await stat(full);
+        files++;
+        totalSize += st.size;
+        if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
+      } catch {
+        /* file vanished mid-scan — ignore */
+      }
+    }
+  }
+  return `${files}:${totalSize}:${Math.round(maxMtime)}`;
+}
+
+/** Sample a worktree's files; call `onActivity` whenever its signature changes. Returns a stop fn. */
+function startWorktreeHeartbeat(dir: string, idleMs: number, onActivity: () => void): () => void {
+  const intervalMs = Math.max(
+    WORKTREE_HEARTBEAT_MIN_INTERVAL_MS,
+    Math.min(Math.floor(idleMs / 2), WORKTREE_HEARTBEAT_MAX_INTERVAL_MS),
+  );
+  let last: string | undefined;
+  let scanning = false;
+  const timer = setInterval(() => {
+    if (scanning) return;
+    scanning = true;
+    void worktreeSignature(dir)
+      .then((sig) => {
+        if (last !== undefined && sig !== last) onActivity();
+        last = sig;
+      })
+      .catch(() => {})
+      .finally(() => {
+        scanning = false;
+      });
+  }, intervalMs);
+  if (typeof timer.unref === "function") timer.unref();
+  return () => clearInterval(timer);
+}
+
+type IdleWatchdogItem = { kind: "event"; event: RuntimeEvent } | { kind: "warning"; idleForMs: number };
+
+interface IdleWatchdogDeps {
+  idleMs: number | undefined;
+  abort: () => void;
+  /** When set, sample this worktree's file changes as an additional activity signal. */
+  worktreeDir?: string;
+}
+
+// Two-stage idle watchdog: resets on any agent I/O, yielded event, or (for worktree runs)
+// observed file change; warns once the soft window lapses; aborts + raises `agent_stalled` only at
+// the hard ceiling. Yields a discriminated item so the caller can surface warnings distinctly.
+async function* withIdleWatchdog(
+  run: (onActivity: () => void) => AsyncIterable<RuntimeEvent>,
+  deps: IdleWatchdogDeps,
+): AsyncIterable<IdleWatchdogItem> {
+  const { idleMs, abort, worktreeDir } = deps;
   if (!idleMs || idleMs <= 0) {
-    yield* iterable;
+    for await (const event of run(() => {})) yield { kind: "event", event };
     return;
   }
-  const iterator = iterable[Symbol.asyncIterator]();
-  let timer: NodeJS.Timeout | undefined;
+
+  const queue: IdleWatchdogItem[] = [];
+  let wake: (() => void) | null = null;
+  let finished = false;
+  let failure: Error | undefined;
+  const signal = () => {
+    const w = wake;
+    wake = null;
+    w?.();
+  };
+  const emit = (item: IdleWatchdogItem) => {
+    queue.push(item);
+    signal();
+  };
+
+  let startupPending = true;
+  let toolCallOpen = false;
+  let warnTimer: NodeJS.Timeout | undefined;
+  let killTimer: NodeJS.Timeout | undefined;
+  const clearTimers = () => {
+    if (warnTimer) clearTimeout(warnTimer);
+    if (killTimer) clearTimeout(killTimer);
+    warnTimer = killTimer = undefined;
+  };
+  const arm = () => {
+    clearTimers();
+    const windowMs = computeIdleWindowMs({ idleMs, startupPending, toolCallOpen });
+    warnTimer = setTimeout(() => {
+      emit({ kind: "warning", idleForMs: windowMs });
+      killTimer = setTimeout(() => {
+        abort();
+        failure = new DelegationError(
+          "agent_stalled",
+          `agent idle for ${Math.round((windowMs * HARD_STOP_FACTOR) / 1000)}s with no output — treated as stalled`,
+        );
+        finished = true;
+        signal();
+      }, windowMs * (HARD_STOP_FACTOR - 1));
+    }, windowMs);
+  };
+  const reset = (endsStartup: boolean) => {
+    if (endsStartup) startupPending = false;
+    arm();
+  };
+
+  const stopHeartbeat = worktreeDir ? startWorktreeHeartbeat(worktreeDir, idleMs, () => reset(true)) : undefined;
+  arm();
+
+  const consume = (async () => {
+    try {
+      for await (const event of run(() => reset(true))) {
+        if (event.type === "tool_call") toolCallOpen = true;
+        else if (event.type === "tool_result") toolCallOpen = false;
+        reset(event.type !== "start");
+        emit({ kind: "event", event });
+      }
+    } catch (err) {
+      failure = failure ?? (err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      finished = true;
+      signal();
+    }
+  })();
+
   try {
     for (;;) {
-      const idlePromise = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new DelegationError("agent_stalled", `agent idle for ${Math.round(idleMs / 1000)}s with no output — treated as stalled`)), idleMs);
+      while (queue.length) yield queue.shift() as IdleWatchdogItem;
+      if (failure) throw failure;
+      if (finished) break;
+      await new Promise<void>((resolve) => {
+        wake = resolve;
       });
-      const result = await Promise.race([iterator.next(), idlePromise]);
-      clearTimeout(timer);
-      if (result.done) break;
-      yield result.value;
     }
   } finally {
-    if (timer) clearTimeout(timer);
-    await iterator.return?.();
+    clearTimers();
+    stopHeartbeat?.();
+    await consume.catch(() => {});
   }
 }
 

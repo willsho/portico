@@ -14,6 +14,7 @@ import type {
 import { DelegationError, encodeDelegationEvent } from "@portico/orchestrator";
 import type { DelegateRequest, DelegationOrchestrator, RunStatus } from "@portico/orchestrator";
 import type { DaemonConfig } from "./config.ts";
+import { resolveIdleTimeoutMs } from "./config.ts";
 
 export interface DaemonContext {
   name: string;
@@ -176,7 +177,7 @@ export async function handleDelegate(
   const { limits } = ctx.config;
   request.timeoutMs = request.timeoutMs ?? limits.defaultAgentTimeoutMs;
   request.testTimeoutMs = request.testTimeoutMs ?? limits.defaultTimeoutMs;
-  request.idleTimeoutMs = request.idleTimeoutMs ?? limits.idleTimeoutMs;
+  request.idleTimeoutMs = resolveIdleTimeoutMs(request.idleTimeoutMs, ctx.config.agents[request.to], limits);
 
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",

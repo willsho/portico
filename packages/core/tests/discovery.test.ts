@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { discoverAgent, discoverAgents, safeDiscoverAgent } from "../src/discovery.ts";
-import { getProvider } from "../src/registry.ts";
+import { getProvider, registerProvider } from "../src/registry.ts";
 import { runAgent } from "../src/run.ts";
 import type { AgentProvider, RuntimeEvent } from "../src/types.ts";
 
@@ -167,4 +167,38 @@ test("runAgent yields agent_not_found for an unknown provider", async () => {
   }
   assert.equal(events[0]?.type, "error");
   assert.equal(events[0]?.type === "error" ? events[0].code : "", "agent_not_found");
+});
+
+test("runAgent calls onActivity when only stderr output is produced", async () => {
+  let activityCount = 0;
+  const onActivity = () => {
+    activityCount++;
+  };
+
+  const testProvider: AgentProvider = {
+    id: "test-stderr-heartbeat",
+    displayName: "Test Stderr Heartbeat",
+    commandNames: ["fake"],
+    envPathNames: ["TEST_STDERR_HEARTBEAT_PATH"],
+    protocols: ["generic-cli"],
+    defaultArgs: ["--stderr-heartbeat"],
+  };
+
+  registerProvider(testProvider);
+
+  const events: RuntimeEvent[] = [];
+  for await (const event of runAgent(
+    {
+      provider: "test-stderr-heartbeat",
+      messages: [{ role: "user", content: "hello" }],
+    },
+    {
+      env: { ...process.env, TEST_STDERR_HEARTBEAT_PATH: FAKE_AGENT },
+      onActivity,
+    },
+  )) {
+    events.push(event);
+  }
+
+  assert.ok(activityCount > 0, `onActivity should have been called, got ${activityCount}`);
 });

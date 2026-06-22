@@ -93,9 +93,11 @@ export async function* runGenericCli(
     signal: context.signal,
   })) {
     if (event.type === "stdout") {
+      context.onActivity?.();
       full += event.chunk;
       yield { type: "content", delta: event.chunk };
     } else if (event.type === "stderr") {
+      context.onActivity?.();
       stderr += event.chunk;
     } else {
       const failure = classifyExit(event, stderr);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveConfig, DEFAULT_CONFIG } from "../src/config.ts";
+import { resolveConfig, resolveIdleTimeoutMs, DEFAULT_CONFIG } from "../src/config.ts";
 
 function tempConfig(contents: unknown): string {
   const path = join(tmpdir(), `portico-config-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
@@ -48,6 +48,34 @@ test("precedence is CLI overrides > env > file > defaults", () => {
   } finally {
     rmSync(path);
   }
+});
+
+test("PORTICO_IDLE_TIMEOUT_MS env sets the idle limit; per-agent override is read from file", () => {
+  const path = tempConfig({ agents: { antigravity: { idleTimeoutMs: 600_000 } } });
+  try {
+    const { config, sources } = resolveConfig({ configPath: path, env: { PORTICO_IDLE_TIMEOUT_MS: "300000" } });
+    assert.equal(config.limits.idleTimeoutMs, 300_000, "env beats the default idle limit");
+    assert.ok(sources.envApplied.includes("PORTICO_IDLE_TIMEOUT_MS"));
+    assert.equal(config.agents.antigravity?.idleTimeoutMs, 600_000, "per-agent override parsed from file");
+    // A non-numeric env value is ignored, keeping the default.
+    const { config: bad } = resolveConfig({ configPath: "/nonexistent.json", env: { PORTICO_IDLE_TIMEOUT_MS: "nope" } });
+    assert.equal(bad.limits.idleTimeoutMs, DEFAULT_CONFIG.limits.idleTimeoutMs);
+  } finally {
+    rmSync(path);
+  }
+});
+
+test("resolveIdleTimeoutMs precedence: request > per-agent > limit, preserving 0", () => {
+  const limits = { ...DEFAULT_CONFIG.limits, idleTimeoutMs: 120_000 };
+  // request value wins over everything
+  assert.equal(resolveIdleTimeoutMs(5_000, { idleTimeoutMs: 600_000 }, limits), 5_000);
+  // no request value → per-agent override
+  assert.equal(resolveIdleTimeoutMs(undefined, { idleTimeoutMs: 600_000 }, limits), 600_000);
+  // no request, no per-agent → limit (which may itself come from env)
+  assert.equal(resolveIdleTimeoutMs(undefined, undefined, limits), 120_000);
+  assert.equal(resolveIdleTimeoutMs(undefined, {}, limits), 120_000);
+  // an explicit 0 (watchdog off) from the request must survive, not fall through
+  assert.equal(resolveIdleTimeoutMs(0, { idleTimeoutMs: 600_000 }, limits), 0);
 });
 
 test("malformed config surfaces an error but still yields defaults", () => {

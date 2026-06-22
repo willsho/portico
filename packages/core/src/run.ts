@@ -38,5 +38,6 @@ export async function* runAgent(
     sessionId: context.sessionId,
     resumeSessionId: context.resumeSessionId,
     onAgentSession: context.onAgentSession,
+    onActivity: context.onActivity,
   });
 }

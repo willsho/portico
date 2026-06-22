@@ -52,6 +52,13 @@ export function parseCoverageManifest(raw: string): string[] {
   }
 }
 
+function parseIdle(val: string | undefined): number | undefined {
+  if (val === undefined) return undefined;
+  if (val === "0" || val === "off") return 0;
+  const num = Number(val);
+  return Number.isNaN(num) ? undefined : num;
+}
+
 export async function buildIterateSection(details: RunDetails, maxChars = 20000): Promise<string> {
   const { run, result } = details;
   const verdict = buildRunVerdict(run, result);
@@ -124,6 +131,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "expected-change": { type: "string", multiple: true },
       "coverage-manifest": { type: "string" },
       timeout: { type: "string" },
+      "idle-timeout": { type: "string" },
       "expect-no-changes": { type: "boolean" },
       json: { type: "boolean" },
       "review-summary": { type: "boolean" },
@@ -176,6 +184,7 @@ Options:
   --expected-change <path> Path expected to be changed; reports coverage + warns on a gap (repeatable)
   --coverage-manifest <path> Manifest file with expected-change paths
   --timeout <ms>           Timeout in milliseconds
+  --idle-timeout <ms>      Idle timeout in milliseconds, or 'off' to disable (unlike total run --timeout)
   --expect-no-changes      Treat a no-change result as acceptable (skip the no-change warning)
   --json                   Output JSON format
   --review-summary         After the run, print a one-click apply command + risk summary
@@ -391,6 +400,7 @@ Exit codes:
     forbiddenPaths: values.forbidden,
     expectedChangePaths: expectedChangePaths,
     timeoutMs: values.timeout ? Number(values.timeout) : undefined,
+    idleTimeoutMs: parseIdle(values["idle-timeout"]),
     expectNoChanges: values["expect-no-changes"],
     depth: Number(process.env["PORTICO_DELEGATION_DEPTH"] ?? "0"),
   };
@@ -834,6 +844,11 @@ export function printEvent(event: DelegationEvent): void {
     case "verdict_update":
       console.log(
         `[${event.runId}] verdict (Portico, in progress): ${event.verdict.topRisks.length ? event.verdict.topRisks.join("; ") : "no risks yet"}`,
+      );
+      return;
+    case "idle_warning":
+      console.log(
+        `[${event.runId}] idle warning (Portico): no activity for ${Math.round(event.idleForMs / 1000)}s — will stop the run if it stays silent`,
       );
       return;
     case "fanin_start":

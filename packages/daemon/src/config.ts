@@ -8,6 +8,8 @@ import { join } from "node:path";
 export interface AgentOverride {
   path?: string;
   enabled?: boolean;
+  /** Per-agent idle watchdog timeout (ms). Lets a known-quiet agent get a longer leash. */
+  idleTimeoutMs?: number;
 }
 
 export interface DaemonLimits {
@@ -130,5 +132,26 @@ function applyEnv(config: DaemonConfig, env: NodeJS.ProcessEnv): string[] {
     config.allowOrigins = env["PORTICO_ALLOW_ORIGIN"].split(",").map((s) => s.trim()).filter(Boolean);
     applied.push("PORTICO_ALLOW_ORIGIN");
   }
+  if (env["PORTICO_IDLE_TIMEOUT_MS"]) {
+    const idleMs = Number(env["PORTICO_IDLE_TIMEOUT_MS"]);
+    if (Number.isFinite(idleMs)) {
+      config.limits.idleTimeoutMs = idleMs;
+      applied.push("PORTICO_IDLE_TIMEOUT_MS");
+    }
+  }
   return applied;
+}
+
+/**
+ * Effective idle watchdog timeout for a delegation, highest precedence first:
+ * request body (where the CLI's `--idle-timeout` lands) > per-agent override >
+ * daemon limit (itself settable via PORTICO_IDLE_TIMEOUT_MS or the config file).
+ * Uses `??` so an explicit `0` (watchdog off) from the request is preserved.
+ */
+export function resolveIdleTimeoutMs(
+  requestIdleMs: number | undefined,
+  agentOverride: AgentOverride | undefined,
+  limits: DaemonLimits,
+): number {
+  return requestIdleMs ?? agentOverride?.idleTimeoutMs ?? limits.idleTimeoutMs;
 }

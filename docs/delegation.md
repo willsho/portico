@@ -95,9 +95,24 @@ and emits a `sandbox_escape_detected` event.
 
 If the agent errors, times out, or is stopped by the **idle watchdog** (no output for too long,
 reported as `agent_stalled`), Portico still captures the worktree diff before finalizing the run.
-The run stays `failed`, but any partial edits show up in `changedFiles` / `diff.patch` and a gate
-warning notes "left N uncommitted file(s) in the worktree (partial work — review or resume)", so a
-cut-short run is reviewable or resumable instead of being silently discarded.
+The run is `failed` (a stall is a failure, not a user cancellation), but any partial edits show up
+in `changedFiles` / `diff.patch` and a gate warning notes "left N uncommitted file(s) in the
+worktree (partial work — review or resume)", so a cut-short run is reviewable or resumable instead
+of being silently discarded.
+
+The idle watchdog resets on **any** sign of life, not just stdout: stdout *or* stderr output, and —
+for worktree-isolated runs — observed **file changes in the worktree**. A silent edit-agent that
+writes files while logging only to stderr (or nothing at all) is therefore not falsely flagged as
+stalled. The window is also widened automatically during **cold start** (before the agent's first
+output) and while a **tool call is in flight** (the agent may be running a long command).
+
+Rather than killing the instant the window lapses, the watchdog is **two-stage**: it first emits a
+visible `idle_warning` event ("agent quiet for Ns"), then only raises `agent_stalled` and aborts
+the run once a larger hard ceiling passes with still no activity.
+
+Tune the window with `--idle-timeout <ms>` per run (`0`/`off` disables it, leaving only the total
+`--timeout`), or set a default per agent via `agents.<id>.idleTimeoutMs` / `PORTICO_IDLE_TIMEOUT_MS`
+/ `limits.idleTimeoutMs` in the daemon config.
 
 ## Modes
 

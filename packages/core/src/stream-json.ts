@@ -219,6 +219,7 @@ export async function* runStreamJson(
     signal: context.signal,
   })) {
     if (event.type === "stdout") {
+      context.onActivity?.();
       buffer += event.chunk;
       let nl = buffer.indexOf("\n");
       while (nl !== -1) {
@@ -228,6 +229,7 @@ export async function* runStreamJson(
         nl = buffer.indexOf("\n");
       }
     } else if (event.type === "stderr") {
+      context.onActivity?.();
       stderr += event.chunk;
     } else {
       const failure = classifyExit(event, stderr);

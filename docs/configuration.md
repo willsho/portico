@@ -36,6 +36,8 @@ Built-in defaults:
   "agents": {},
   "limits": {
     "defaultTimeoutMs": 120000,
+    "defaultAgentTimeoutMs": 900000,
+    "idleTimeoutMs": 120000,
     "maxContextChars": 120000,
     "maxOutputChars": 200000
   },
@@ -115,6 +117,7 @@ Daemon config environment variables:
 | `PORTICO_PORT` | Bind port |
 | `PORTICO_TOKEN` | Bearer token |
 | `PORTICO_ALLOW_ORIGIN` | Comma-separated extra CORS origins |
+| `PORTICO_IDLE_TIMEOUT_MS` | Default idle watchdog timeout (sets `limits.idleTimeoutMs`) |
 
 Agent path overrides:
 
@@ -147,6 +150,9 @@ Daemon config can override provider discovery:
     },
     "claude": {
       "enabled": false
+    },
+    "antigravity": {
+      "idleTimeoutMs": 600000
     }
   }
 }
@@ -156,19 +162,31 @@ Daemon config can override provider discovery:
 
 `enabled: false` marks the provider unavailable with the reason "Disabled in config."
 
+`idleTimeoutMs` gives that agent a longer (or shorter) idle watchdog leash than the
+daemon default — useful for an agent that works silently (writes files without printing
+to stdout) and would otherwise be falsely flagged as stalled.
+
 ## Limits
 
 Limits apply to `/chat` defaults:
 
 | Field | Meaning |
 | --- | --- |
-| `defaultTimeoutMs` | Default agent timeout |
+| `defaultTimeoutMs` | Default test/verify command timeout |
+| `defaultAgentTimeoutMs` | Default total agent run timeout |
+| `idleTimeoutMs` | Default idle watchdog timeout — kills an agent that produces no output for this long |
 | `maxContextChars` | Default context truncation limit |
 | `maxOutputChars` | Default child process output cap |
 
 Individual chat requests can override these through `ChatRequest.options`.
 
-Delegation requests can set `timeoutMs`; test commands use the same timeout.
+Delegation requests can set `timeoutMs` (total run), `testTimeoutMs` (test/verify), and
+`idleTimeoutMs` (idle watchdog; the CLI's `--idle-timeout` lands here). The effective idle
+timeout resolves request value > per-agent `agents.<id>.idleTimeoutMs` > `limits.idleTimeoutMs`.
+
+`limits` are read at daemon start and are **not** hot-reloaded — changing them requires a
+daemon restart (`portico stop && portico start`). The background reload only refreshes the
+agent registry.
 
 ## Reload Interval
 

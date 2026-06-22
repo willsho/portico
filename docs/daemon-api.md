@@ -285,6 +285,7 @@ Event examples:
 {"type":"worktree_created","runId":"run_...","path":".portico/worktrees/run_...","branch":"portico/run_..."}
 {"type":"agent_start","runId":"run_...","agent":"codex"}
 {"type":"agent_event","runId":"run_...","event":{"type":"content","delta":"..."}}
+{"type":"idle_warning","runId":"run_...","idleForMs":120000}
 {"type":"diff_ready","runId":"run_...","path":".portico/runs/run_.../diff.patch","changedFiles":["delegated.txt"]}
 {"type":"verdict_update","runId":"run_...","verdict":{"status":"running","reviewDecision":"needs_attention","readiness":"not_ready","changedFiles":["delegated.txt"],"tests":{"total":0,"passed":0,"failed":0},"verify":{"total":0,"passed":0,"failed":0},"sandboxEscaped":false,"topRisks":["path policy: passed"]}}
 {"type":"test_start","runId":"run_...","command":"npm test"}
@@ -300,6 +301,11 @@ from `result.json`, `report.md`, or a separate review call: `changedFiles`, `dif
 (`ready`/`needs_attention`/`not_ready`), and `topRisks` (flattened, human-readable risk lines).
 Group-run `run_done` (below) does not carry `verdict` — aggregate the children's own verdicts
 via `GET /runs/<group_id>` or `portico review <group_id>` instead.
+
+`idle_warning` is the first stage of the two-stage idle watchdog: emitted when the agent has
+produced no activity (stdout/stderr, a streamed event, or — for worktree runs — a worktree file
+change) for the current idle window, carrying `idleForMs`. It is informational; the run is only
+aborted with `agent_stalled` if a larger hard ceiling then elapses with still no activity.
 
 `verdict_update` is a single-run-only mid-flight checkpoint: emitted once, right after
 `diff_ready` and before any test/verify command runs, carrying the same `RunVerdict` shape as
