@@ -80,6 +80,17 @@ if (args.includes("--hang")) {
   setInterval(() => {}, 1 << 30);
 }
 
+if (args.includes("--stderr-heartbeat")) {
+  let count = 0;
+  const timer = setInterval(() => {
+    process.stderr.write(`heartbeat ${count++}\n`);
+    if (count >= 15) { // 15 * 200ms = 3s
+      clearInterval(timer);
+      process.exit(0);
+    }
+  }, 200);
+}
+
 function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -154,7 +165,7 @@ if (args.includes("stream-json")) {
   process.exit(0);
 }
 
-if (!args.includes("--hang")) {
+if (!args.includes("--hang") && !args.includes("--stderr-heartbeat")) {
   const prompt = await readStdin();
 
   if (args.includes("--echo-argv-stdin")) {

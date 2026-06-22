@@ -5,10 +5,10 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capture } from "@portico/core";
+import { capture, registerProvider } from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
 import { createDelegationOrchestrator } from "../src/index.ts";
-import type { AgentEntry } from "@portico/core";
+import type { AgentEntry, AgentProvider } from "@portico/core";
 import type { DelegationEvent, Run } from "../src/index.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -2027,6 +2027,72 @@ test("a run records the model/effort it used, on run.json and in the report", as
     assert.equal(details.run.effort, "high");
     const report = await readFile(details.artifacts.reportPath, "utf8");
     assert.match(report, /Model: claude-opus-4-8 \(effort: high\)/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+// Register a generic-cli provider that always launches fake-agent in a fixed mode, so the
+// orchestrator (which builds argv from the provider, not the request) can drive the
+// fixture's --stderr-heartbeat / --hang behaviors through a normal delegation.
+function fakeAgentMode(id: string, flag: string): AgentEntry {
+  registerProvider({
+    id,
+    displayName: id,
+    commandNames: ["fake"],
+    envPathNames: [],
+    protocols: ["generic-cli"],
+    defaultArgs: [flag],
+  } satisfies AgentProvider);
+  return agentEntry(id, FAKE_AGENT);
+}
+
+test("an agent that only writes to stderr is not falsely stalled by the idle watchdog", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  // fake-agent --stderr-heartbeat beats on stderr every ~200ms for ~3s with no stdout.
+  const entry = fakeAgentMode("idle-stderr-heartbeat", "--stderr-heartbeat");
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      // Idle window (1s) is longer than the 200ms heartbeat interval but shorter than the
+      // agent's total runtime: stderr activity must keep resetting the timer, so the run
+      // completes rather than being killed as stalled.
+      { to: "idle-stderr-heartbeat", repo, task: "beat on stderr, stay silent on stdout", idleTimeoutMs: 1000 },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    assert.ok(
+      !events.some((e) => e.type === "run_error"),
+      "stderr heartbeat should not trip the idle watchdog",
+    );
+    assert.equal(events.at(-1)?.type, "run_done");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("a silent hung agent is stopped by the idle watchdog with agent_stalled", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  // fake-agent --hang produces no output and never exits — a genuine stall.
+  const entry = fakeAgentMode("idle-hang", "--hang");
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "idle-hang", repo, task: "hang forever without output", idleTimeoutMs: 500 },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const last = events.at(-1);
+    assert.equal(last?.type, "run_error");
+    assert.equal(last?.type === "run_error" ? last.code : "", "agent_stalled");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

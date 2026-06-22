@@ -179,6 +179,8 @@ export interface RunContext {
   resumeSessionId?: string;
   /** Called once with the agent's native session id when first seen (capture → pin). */
   onAgentSession?: (agentSessionId: string) => void;
+  /** Called whenever the agent process exhibits activity (e.g. stdout or stderr output) to reset the idle watchdog timer. */
+  onActivity?: () => void;
 }
 
 /**

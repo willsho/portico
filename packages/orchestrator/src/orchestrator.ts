@@ -1491,7 +1491,7 @@ async function* rerunExistingWorktree(
     const agentStartedMs = Date.now();
     let capturedSessionId: string | undefined;
     const agentIterable = withIdleWatchdog(
-      runAgent(chat, {
+      (onActivity) => runAgent(chat, {
         entry,
         signal: controller.signal,
         env: { ...process.env, PORTICO_DELEGATION_DEPTH: String((details.run.depth ?? 0) + 1) },
@@ -1499,8 +1499,10 @@ async function* rerunExistingWorktree(
         onAgentSession: (id) => {
           capturedSessionId = id;
         },
+        onActivity,
       }),
-      request.idleTimeoutMs
+      request.idleTimeoutMs,
+      () => controller.abort()
     );
     for await (const event of agentIterable) {
       if (capturedSessionId && capturedSessionId !== details.run.agentSessionId) {
@@ -1874,16 +1876,23 @@ async function* runSingleDelegation(
 
     const agentStartedMs = Date.now();
     let capturedSessionId: string | undefined;
+    const ctrl = controller;
+    const r = run;
+    if (!ctrl || !r) {
+      throw new Error("Bug: controller or run is undefined before runAgent");
+    }
     const agentIterable = withIdleWatchdog(
-      runAgent(chat, {
+      (onActivity) => runAgent(chat, {
         entry,
-        signal: controller.signal,
-        env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(run.depth + 1) },
+        signal: ctrl.signal,
+        env: { ...process.env, PORTICO_DELEGATION_DEPTH: String(r.depth + 1) },
         onAgentSession: (id) => {
           capturedSessionId = id;
         },
+        onActivity,
       }),
-      request.idleTimeoutMs
+      request.idleTimeoutMs,
+      () => ctrl.abort()
     );
     for await (const event of agentIterable) {
       if (capturedSessionId && !run.agentSessionId) {
@@ -2795,22 +2804,41 @@ async function assertStatusUnchanged(repoPath: string, before: string): Promise<
 }
 
 async function* withIdleWatchdog<T>(
-  iterable: AsyncIterable<T>,
+  run: (onActivity: () => void) => AsyncIterable<T>,
   idleMs: number | undefined,
+  abort: () => void,
 ): AsyncIterable<T> {
   if (!idleMs || idleMs <= 0) {
-    yield* iterable;
+    yield* run(() => {});
     return;
   }
-  const iterator = iterable[Symbol.asyncIterator]();
+
   let timer: NodeJS.Timeout | undefined;
+  let rejectStalled: ((err: Error) => void) | undefined;
+  const stalledPromise = new Promise<never>((_, reject) => {
+    rejectStalled = reject;
+  });
+
+  const resetTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      const err = new DelegationError(
+        "agent_stalled",
+        `agent idle for ${Math.round(idleMs / 1000)}s with no output — treated as stalled`
+      );
+      abort();
+      rejectStalled?.(err);
+    }, idleMs);
+  };
+
+  resetTimer();
+
+  const iterable = run(resetTimer);
+  const iterator = iterable[Symbol.asyncIterator]();
   try {
     for (;;) {
-      const idlePromise = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new DelegationError("agent_stalled", `agent idle for ${Math.round(idleMs / 1000)}s with no output — treated as stalled`)), idleMs);
-      });
-      const result = await Promise.race([iterator.next(), idlePromise]);
-      clearTimeout(timer);
+      const result = await Promise.race([iterator.next(), stalledPromise]);
+      resetTimer();
       if (result.done) break;
       yield result.value;
     }
