@@ -99,11 +99,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // mirrors the real partial-message shape: token-level `stream_event` deltas for text
 // and thinking, plus the complete `assistant` messages that carry full tool_use input.
 if (args.includes("stream-json")) {
-  // When resumed, prefix the answer with a marker so tests can observe that the engine
-  // forwarded `--resume <id>` to us.
-  const resumeIdx = args.indexOf("--resume");
-  const resumedId = resumeIdx !== -1 ? args[resumeIdx + 1] : null;
-  const head = resumedId ? `(resumed ${resumedId}) ` : "";
+  // Prefix the answer with a marker so tests can observe which flags the engine forwarded
+  // (--resume / --model / --effort). The `(resumed <id>)` form is kept verbatim when only
+  // resume is set, so existing resume tests stay valid.
+  const flagValue = (flag) => {
+    const idx = args.indexOf(flag);
+    return idx !== -1 ? args[idx + 1] : null;
+  };
+  const markers = [];
+  const resumedId = flagValue("--resume");
+  if (resumedId) markers.push(`resumed ${resumedId}`);
+  const model = flagValue("--model");
+  if (model) markers.push(`model ${model}`);
+  const effort = flagValue("--effort");
+  if (effort) markers.push(`effort ${effort}`);
+  const head = markers.length ? `(${markers.join(", ")}) ` : "";
   const lines = [
     { type: "system", subtype: "init", session_id: "fake-1", tools: ["Bash"], model: "fake" },
     { type: "rate_limit_event", rate_limit_info: { status: "allowed" } },

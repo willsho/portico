@@ -1921,3 +1921,113 @@ test("getRun attaches progress (phase, inactive, last event) for a finished run"
     await rm(repo, { recursive: true, force: true });
   }
 });
+
+// ---- Phase 2: model / effort passthrough --------------------------------------------
+// The fake agent's stream-json branch echoes "(model <m>, effort <e>)" markers when the
+// engine forwards --model / --effort, so a claude-shaped run surfaces them in agentEvents.
+
+function agentContent(details: { result?: { agentEvents?: Array<{ type: string; delta?: string }> } }): string {
+  return (details.result?.agentEvents ?? [])
+    .filter((e) => e.type === "content")
+    .map((e) => e.delta ?? "")
+    .join("");
+}
+
+test("model + effort flow from DelegateRequest into the target agent's CLI flags", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      {
+        to: "claude",
+        repo,
+        task: "echo",
+        model: "claude-opus-4-8",
+        effort: "high",
+        // The fake agent makes no edits; declare that so the run stays a clean signal.
+        expectNoChanges: true,
+      },
+      { findEntry: () => agentEntry("claude", FAKE_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    const content = agentContent(details);
+    assert.match(content, /model claude-opus-4-8/);
+    assert.match(content, /effort high/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("a child's model overrides the group's; a child without one inherits it", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      {
+        to: "claude",
+        repo,
+        task: "echo",
+        model: "claude-opus-4-8", // group default
+        expectNoChanges: true,
+        children: [
+          { to: "claude", label: "override", model: "claude-sonnet-4-6" }, // wins
+          { to: "claude", label: "inherit" }, // falls back to the group's opus
+        ],
+      },
+      { findEntry: () => agentEntry("claude", FAKE_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    const groupId = done?.type === "run_done" ? done.runId : "";
+    const group = await orchestrator.getRun(repo, groupId);
+    const children = await Promise.all((group.run.childRunIds ?? []).map((id) => orchestrator.getRun(repo, id)));
+
+    const override = children.find((c) => c.run.label === "override")!;
+    const inherit = children.find((c) => c.run.label === "inherit")!;
+    assert.match(agentContent(override), /model claude-sonnet-4-6/);
+    assert.match(agentContent(inherit), /model claude-opus-4-8/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("a run records the model/effort it used, on run.json and in the report", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "claude", repo, task: "echo", model: "claude-opus-4-8", effort: "high", expectNoChanges: true },
+      { findEntry: () => agentEntry("claude", FAKE_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.run.model, "claude-opus-4-8");
+    assert.equal(details.run.effort, "high");
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Model: claude-opus-4-8 \(effort: high\)/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});

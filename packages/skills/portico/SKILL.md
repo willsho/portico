@@ -69,6 +69,12 @@ yourself, or anything where spinning up a separate agent adds no value.
    to a slug of the task); repeatable `--test`; repeatable `--verify` (checks reported
    separately from tests — use for doc/policy tasks that have no test command); repeatable
    `--allowed`/`--forbidden` (path policy); `--base-ref <ref>`;
+   `--model <id>` (pick the target agent's model, e.g. `opus` / `claude-opus-4-8`; omitted →
+   the agent's own default) and `--effort <level>` (reasoning effort where the agent supports
+   it, e.g. `low|medium|high`); both are translated to the agent's native flags, and a child's
+   `model`/`effort` in `--child` overrides these per child. An unknown `--model` for an agent
+   with a known catalog (e.g. claude) is rejected before launch; `--model-force` sends a custom
+   id as-is (use `portico models --to <agent>` to see valid ids);
    `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>` (total task duration, independent of the idle watchdog that stops stalled agents);
    `--expect-no-changes` (declare that producing no edits is an acceptable outcome — suppresses
    the implement-mode no-change warning and keeps the review decision `approve`; use for
@@ -254,6 +260,7 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico init` — create Portico repo metadata and refresh the generated Portico Skill files
   under `.claude/skills/portico/` and `.agents/skills/portico/`.
 - `portico agents [--url <url>] [--token <token>] [--json]` — list local agents you can delegate to (does not require a running daemon).
+- `portico models [--to <agent>] [--json]` — list the models each agent can run (id, default, aliases). claude has a fixed catalog; cursor and opencode are probed live from the CLI on demand (so this is slower than `portico agents`); agents that self-manage model choice show "model selection managed by runtime". The model/effort a run actually used is recorded in its `report.md` (and per child in a group's candidate list).
 - `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation (exit 0 success, 1 fail, 3 client disconnected).
 - `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
 - `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" [--judge-to <agent>]` — run candidate implementations for comparison.

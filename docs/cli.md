@@ -24,6 +24,7 @@ portico stop
 portico daemon start [options]
 portico daemon stop
 portico agents [--url <url>] [--token <token>] [--json]
+portico models [--to <agent>] [--json]
 portico delegate --to <agent> (--task <task> | --task-file <path>) [options]
 portico runs [options]
 portico status <run_id> [options]
@@ -140,6 +141,27 @@ are accepted for flag consistency with the other commands but are not used by lo
 | `--token <token>` | Accepted for consistency; not used |
 | `--json` | Emit the agent list as JSON |
 
+## `portico models`
+
+Lists the models each installed agent can run:
+
+```bash
+portico models
+portico models --to claude
+portico models --json
+```
+
+For each available agent, Portico shows its model catalog — id, label, a `*` on the agent's
+default, and any aliases the CLI accepts. An agent that declares no model knob is shown as
+"model selection managed by runtime", and an agent with no known catalog as "no known models
+(any value passed through)". Catalogs come from a static list and/or an on-demand probe of the
+CLI (cached briefly), so `portico models` is slower than `portico agents` and is kept separate.
+
+| Option | Meaning |
+| --- | --- |
+| `--to <agent>` | Show a single agent only |
+| `--json` | Emit `{ agents: [{ provider, modelSelection, models }] }` as JSON |
+
 ## `portico delegate`
 
 Starts a delegation run:
@@ -167,6 +189,9 @@ Common options:
 | `--from <agent>` | Calling/root agent label |
 | `--repo <path>` | Repository path; default current directory |
 | `--mode implement|review|compare|split` | Delegation mode; default `implement` |
+| `--model <id>` | Model for the target agent (full id or an alias like `opus`); omitted → the agent's own default. A child's `model` in `--child` overrides it |
+| `--effort <level>` | Reasoning-effort level where the agent supports it (e.g. `low\|medium\|high`) |
+| `--model-force` | Skip `--model` validation and send a custom/unknown id as-is (for newly-released models not yet in the catalog) |
 | `--compare-to <agent>` | Additional compare candidate; repeatable |
 | `--child <json>` | Child spec (JSON); repeatable. `task` required in split mode |
 | `--merge none|sequential|integration` | Fan-in merge strategy (split → `integration`, compare → `none`) |

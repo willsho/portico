@@ -18,6 +18,23 @@ export const cursorProvider: AgentProvider = {
   promptMode: "argument",
   // Granted only on `options.autoEdit` (delegation in a throwaway worktree).
   autoEditArgs: ["--force"],
+  // `cursor-agent --model <id>`; the live catalog comes from `--list-models`, whose output is
+  // a header line, a blank line, then `<id> - <label>` rows. No static catalog — the probe is it.
+  modelArgs: (model) => ["--model", model],
+  models: {
+    probe: {
+      args: ["--list-models"],
+      parse: (stdout) =>
+        stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l && l !== "Available models" && l.includes(" - "))
+          .map((l) => {
+            const sep = l.indexOf(" - ");
+            return { id: l.slice(0, sep).trim(), label: l.slice(sep + 3).trim() };
+          }),
+    },
+  },
 };
 
 export const cursorAdapter: AgentAdapter = createGenericCliAdapter(cursorProvider);

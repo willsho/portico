@@ -3,6 +3,7 @@
 export type {
   AgentAdapter,
   AgentEntry,
+  AgentModelCatalog,
   AgentProtocol,
   AgentProvider,
   ChatMessage,
@@ -10,6 +11,7 @@ export type {
   ChatRequestOptions,
   ContextAttachment,
   ContextBundle,
+  ModelDescriptor,
   RunContext,
   RuntimeEvent,
 } from "./types.ts";
@@ -65,7 +67,7 @@ export {
 export { discoverAgents, discoverAgent } from "./discovery.ts";
 export type { DiscoverOptions } from "./discovery.ts";
 
-export { createGenericCliAdapter, runGenericCli, classifyExit } from "./generic.ts";
+export { createGenericCliAdapter, runGenericCli, classifyExit, modelInjectionArgs } from "./generic.ts";
 
 export {
   createStreamJsonAdapter,
@@ -83,3 +85,10 @@ export type {
   SessionStore,
   CreateSessionInput,
 } from "./session.ts";
+
+export {
+  discoverModels,
+  resolveModel,
+  modelSelectionSupported,
+  modelKnownIncompatible,
+} from "./models.ts";

@@ -16,6 +16,9 @@ export const geminiProvider: AgentProvider = {
   // Granted only on `options.autoEdit` (delegation in a throwaway worktree).
   // Gemini documents --yolo as automatic approval for all tool calls.
   autoEditArgs: ["--yolo"],
+  // Gemini documents `-m, --model <model>`. No static catalog (not verified on this host);
+  // any value passes through. Effort/thinking has no documented flag yet, so it's omitted.
+  modelArgs: (model) => ["--model", model],
 };
 
 export const geminiAdapter: AgentAdapter = createGenericCliAdapter(geminiProvider);

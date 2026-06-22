@@ -35,6 +35,11 @@ export const codexProvider: AgentProvider = {
   // was deprecated in favor of an explicit sandbox policy; `workspace-write` lets the agent
   // edit files in its cwd without approval prompts. Version-sensitive — overridable per setup.
   autoEditArgs: ["--sandbox", "workspace-write"],
+  // `codex exec --model <id>` and reasoning effort via a config override (verified against
+  // `codex exec --help`). No static catalog: Codex's model ids aren't authoritatively
+  // known here, so we pass any value through rather than risk false-rejecting a valid one.
+  modelArgs: (model) => ["--model", model],
+  effortArgs: (effort) => ["-c", `model_reasoning_effort=${effort}`],
 };
 
 /** Translate one `item.{started,completed}` payload into zero or more RuntimeEvents. */

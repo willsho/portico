@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { spawnStream } from "./runner.ts";
 import { renderPrompt } from "./context.ts";
-import { classifyExit } from "./generic.ts";
+import { classifyExit, modelInjectionArgs } from "./generic.ts";
 import type {
   AgentAdapter,
   AgentEntry,
@@ -168,9 +168,10 @@ export async function* runStreamJson(
   const prompt = renderPrompt(request);
   const baseArgs = [...(provider.defaultArgs ?? [])];
   const editArgs = request.options?.autoEdit ? (provider.autoEditArgs ?? []) : [];
+  const modelArgs = modelInjectionArgs(provider, request.options);
   const resumeArgs =
     context.resumeSessionId && provider.resumeArgs ? provider.resumeArgs(context.resumeSessionId) : [];
-  const args = [...baseArgs, ...editArgs, ...resumeArgs];
+  const args = [...baseArgs, ...editArgs, ...modelArgs, ...resumeArgs];
   if (entry.capabilities?.partialMessages) {
     args.push("--include-partial-messages");
   }
