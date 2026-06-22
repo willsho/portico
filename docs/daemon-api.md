@@ -513,11 +513,24 @@ curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/apply?repo=$(pwd)" \
 curl -s -X POST "http://127.0.0.1:8787/runs/<group_id>/apply?repo=$(pwd)" \
   -H 'Content-Type: application/json' \
   -d '{"all": true}'
+
+# Land a run that only failed path policy, after confirming the out-of-scope path(s)
+curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/apply?repo=$(pwd)" \
+  -H 'Content-Type: application/json' \
+  -d '{"allow": ["delegated.txt"]}'
 ```
 
 A single run must be `implement`. A compare group apply without `child` returns an error; an
 `all` apply against a compare group, or a group still in `conflict` / without a merged patch,
 is refused (run `integrate` first for non-split groups).
+
+`allow` lands a `failed` run (or, combined with `child`, a failed group child) whose only gate
+failure was path policy: `result.pathPolicy.status === "failed"` with `notAllowed` paths and no
+`forbidden` ones. Every path in `notAllowed` must be covered by one of the `allow` patterns, or
+the apply is refused with the uncovered paths named. A `forbidden` violation is never overridable
+— that run must be re-delegated. A successful override is recorded as `pathPolicyOverride: { allow,
+appliedAt }` on the result for provenance; all other apply preconditions (clean main tree, diff
+present) still apply.
 
 ## `POST /runs/:id/integrate?repo=<path>`
 

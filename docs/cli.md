@@ -486,9 +486,10 @@ output.
 Applies a ready run:
 
 ```bash
-portico apply <run_id>                 # single implement run
-portico apply <group_id> --child <id>  # compare group: pick one candidate
-portico apply <group_id> --all         # split group: apply the merged patch
+portico apply <run_id>                            # single implement run
+portico apply <group_id> --child <id>             # compare group: pick one candidate
+portico apply <group_id> --all                    # split group: apply the merged patch
+portico apply <run_id> --allow <path>...          # land a path-policy-failed run
 ```
 
 Options:
@@ -498,6 +499,7 @@ Options:
 | `--repo <path>` | Repository path |
 | `--child <child_id>` | Apply one candidate of a compare group |
 | `--all` | Apply the merged patch of a split group |
+| `--allow <path>` | Confirm an out-of-scope path so a run that only `failed` on path policy can land (repeatable) |
 | `--json` | Print `RunDetails` as JSON |
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
@@ -506,6 +508,13 @@ A single run must be `implement`. A compare group requires `--child`; a split or
 group uses `--all` (refused while the group is in `conflict` or has no merged patch — run
 `portico integrate <group_id>` first). `apply` requires the main worktree's tracked files to
 be clean.
+
+`--allow <path>` lands a `failed` run whose only problem was `path_not_allowed`: the diff is
+otherwise good, it just touched a file outside `--allowed`. Pass one `--allow` per out-of-scope
+path (or a pattern covering them); every `notAllowed` path from `result.pathPolicy` must be
+covered or the apply is refused, naming what's missing. Works with `--child` too, for a single
+group child. It never overrides a `forbidden` violation — that always requires a fresh run. A
+successful override is recorded on the result as `pathPolicyOverride` for provenance.
 
 ## `portico discard`
 

@@ -292,12 +292,13 @@ export async function handleApplyRun(
   id: string,
 ): Promise<void> {
   try {
-    let opts: { child?: string; all?: boolean } | undefined;
+    let opts: { child?: string; all?: boolean; allow?: string[] } | undefined;
     if (req.method === "POST") {
       try {
-        const body = await readJsonBody<{ child?: string; all?: boolean }>(req);
+        const body = await readJsonBody<{ child?: string; all?: boolean; allow?: string[] }>(req);
         if (body.child) opts = { ...opts, child: body.child };
         if (body.all) opts = { ...opts, all: true };
+        if (body.allow?.length) opts = { ...opts, allow: body.allow };
       } catch {
         // No body or invalid body — proceed without apply options.
       }

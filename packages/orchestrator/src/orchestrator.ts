@@ -72,7 +72,7 @@ export interface DelegationOrchestrator {
   getRun(repo: string, id: string): Promise<RunDetails>;
   readEvents(repo: string, id: string): Promise<DelegationEvent[]>;
   cancel(repo: string, id: string): Promise<RunDetails>;
-  apply(repo: string, id: string, opts?: { child?: string; all?: boolean }): Promise<RunDetails>;
+  apply(repo: string, id: string, opts?: { child?: string; all?: boolean; allow?: string[] }): Promise<RunDetails>;
   /** On-demand merge of a group's ready children into an integration worktree. */
   integrate(repo: string, id: string): Promise<IntegrateResult>;
   /** Reclaim finished runs: remove worktrees (and, with purge, artifacts). */
@@ -208,7 +208,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
           return applyGroupMerged(repoPath, id);
         }
         if (opts?.child) {
-          return applyChild(repoPath, id, opts.child);
+          return applyChild(repoPath, id, opts.child, opts.allow);
         }
         if (details.run.mode === "split") {
           throw new DelegationError(
@@ -222,12 +222,23 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         );
       }
 
-      // Single run — existing behaviour.
+      // Single run — existing behaviour, plus a user-confirmed override for runs that
+      // failed solely on path policy (a good diff that only needs a wider --allow set).
       if (details.run.mode !== "implement") {
         throw new DelegationError("invalid_mode", `Run ${id} is ${details.run.mode}; only implement runs can be applied.`);
       }
+      let pathPolicyOverride: string[] | undefined;
       if (details.run.status !== "ready") {
-        throw new DelegationError("invalid_status", `Run ${id} is ${details.run.status}, not ready.`);
+        const override = opts?.allow?.length ? resolvePathPolicyOverride(details.result, opts.allow) : undefined;
+        if (!override?.ok) {
+          throw new DelegationError(
+            "invalid_status",
+            opts?.allow?.length
+              ? `Run ${id} is ${details.run.status}, not ready; --allow override does not apply (${override?.reason}).`
+              : `Run ${id} is ${details.run.status}, not ready.`,
+          );
+        }
+        pathPolicyOverride = opts!.allow;
       }
       if (!details.artifacts.diffPath || !existsSync(details.artifacts.diffPath)) {
         throw new DelegationError("missing_diff", `Run ${id} does not have a diff.patch artifact.`);
@@ -237,8 +248,13 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
       if (applied.code !== 0) {
         throw new DelegationError("apply_failed", (applied.stderr || applied.stdout || "git apply failed").trim());
       }
-      const run = await updateRun(details.run, { status: "applied", completedAt: new Date().toISOString() });
-      await writeJson(details.artifacts.resultPath, { ...details.result, run });
+      const appliedAt = new Date().toISOString();
+      const run = await updateRun(details.run, { status: "applied", completedAt: appliedAt });
+      await writeJson(details.artifacts.resultPath, {
+        ...details.result,
+        run,
+        ...(pathPolicyOverride ? { pathPolicyOverride: { allow: pathPolicyOverride, appliedAt } } : {}),
+      });
       return readRunDetails(repoPath, id);
     },
 
@@ -1217,15 +1233,25 @@ function extractFirstJsonObject(text: string): string | undefined {
   return undefined;
 }
 
-async function applyChild(repoPath: string, groupId: string, childId: string): Promise<RunDetails> {
+async function applyChild(repoPath: string, groupId: string, childId: string, allow?: string[]): Promise<RunDetails> {
   const group = await readRunDetails(repoPath, groupId);
   if (!group.run.childRunIds?.includes(childId)) {
     throw new DelegationError("child_not_in_group", `Child run ${childId} does not belong to group ${groupId}.`);
   }
 
   const child = await readRunDetails(repoPath, childId);
+  let pathPolicyOverride: string[] | undefined;
   if (child.run.status !== "ready") {
-    throw new DelegationError("invalid_status", `Child run ${childId} is ${child.run.status}, not ready.`);
+    const override = allow?.length ? resolvePathPolicyOverride(child.result, allow) : undefined;
+    if (!override?.ok) {
+      throw new DelegationError(
+        "invalid_status",
+        allow?.length
+          ? `Child run ${childId} is ${child.run.status}, not ready; --allow override does not apply (${override?.reason}).`
+          : `Child run ${childId} is ${child.run.status}, not ready.`,
+      );
+    }
+    pathPolicyOverride = allow;
   }
   if (!child.artifacts.diffPath || !existsSync(child.artifacts.diffPath)) {
     throw new DelegationError("missing_diff", `Child run ${childId} does not have a diff.patch artifact.`);
@@ -1240,6 +1266,13 @@ async function applyChild(repoPath: string, groupId: string, childId: string): P
   const now = new Date().toISOString();
   await updateRun(child.run, { status: "applied", completedAt: now });
   await updateRun(group.run, { status: "applied", completedAt: now });
+  if (pathPolicyOverride) {
+    await writeJson(child.artifacts.resultPath, {
+      ...child.result,
+      run: { ...child.run, status: "applied", completedAt: now },
+      pathPolicyOverride: { allow: pathPolicyOverride, appliedAt: now },
+    });
+  }
 
   return readRunDetails(repoPath, childId);
 }
@@ -2284,8 +2317,30 @@ function enforcePathPolicy(changedFiles: string[], request: DelegateRequest, def
     : "";
   throw new DelegationError(
     "path_not_allowed",
-    `Run changed non-allowed path(s): ${policy.notAllowed.join(", ")}.${fixtureHint} Retry allowing them: re-run with ${retryFlags}.`,
+    `Run changed non-allowed path(s): ${policy.notAllowed.join(", ")}.${fixtureHint} Retry allowing them: re-run with ${retryFlags}. ` +
+      `Or, if the diff is otherwise good, land it as-is: \`portico apply <id> --allow ${policy.notAllowed.join(" --allow ")}\`.`,
   );
+}
+
+/** Whether a run that failed solely on path policy can be landed via `apply --allow`: the
+ *  failure must be path-policy-only (a `forbidden` hit never overrides — that boundary stays
+ *  hard), and every out-of-scope file must be covered by a user-confirmed `--allow` pattern. */
+function resolvePathPolicyOverride(
+  result: RunResult | undefined,
+  allow: string[],
+): { ok: true } | { ok: false; reason: string } {
+  const pathPolicy = result?.pathPolicy;
+  if (!pathPolicy || pathPolicy.status !== "failed") {
+    return { ok: false, reason: "run did not fail on path policy" };
+  }
+  if (pathPolicy.forbidden.length) {
+    return { ok: false, reason: `touches forbidden path(s): ${pathPolicy.forbidden.join(", ")} (not overridable)` };
+  }
+  const uncovered = pathPolicy.notAllowed.filter((file) => !allow.some((pattern) => matchesPathPattern(file, pattern)));
+  if (uncovered.length) {
+    return { ok: false, reason: `--allow does not cover: ${uncovered.join(", ")}` };
+  }
+  return { ok: true };
 }
 
 function isLikelyTestPath(path: string): boolean {

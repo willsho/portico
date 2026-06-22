@@ -163,6 +163,14 @@ yourself, or anything where spinning up a separate agent adds no value.
      then lands the patch in the main working tree (unstaged) for the user to review and commit.
    - `failed` → read `.portico/runs/<run_id>/test.log` to diagnose, then either start a
      **new** run with a sharper task or `portico discard <run_id>`.
+   - `failed` **solely** because of `path_not_allowed` (check `## Portico Observations` /
+     `result.pathPolicy` — `status: failed` with `notAllowed` paths and no `forbidden` ones) and
+     the rest of the diff is otherwise good → no need to re-run the agent. With the user's
+     explicit confirmation of the out-of-scope path(s), land it as-is:
+     `portico apply <run_id> --allow <path>…` (one `--allow` per offending path, or a pattern that
+     covers them). This still requires a clean main tree and is recorded in `result.json` as
+     `pathPolicyOverride` for provenance. A `forbidden` hit is a hard boundary — `--allow` never
+     overrides it; that always needs a fresh run.
    - `portico discard <run_id>` removes the worktree but keeps artifacts for inspection.
 
 ## Iterating and orchestrating
@@ -235,6 +243,9 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico patch-stack <run_id> <run_id>...` — read-only summary of file overlap and apply-order across runs.
 - `portico integrate <group_id>` — merge an implement/split group's ready children into one patch (not for compare groups).
 - `portico apply <run_id>` — apply a ready single run's patch (only with user approval).
+- `portico apply <run_id> --allow <path>…` — land a `failed` run whose only problem was
+  `path_not_allowed`, after the user confirms the out-of-scope path(s) (also works with
+  `--child <child_id>` for a group child). Does not override a `forbidden` violation.
 - `portico apply <group_id> --child <child_id>` — apply one compare candidate.
 - `portico apply <group_id> --all` — apply a split/integrated group's merged patch. Tip: apply the group's merged patch first, then run/apply any small follow-up fixes as separate patches.
 - `portico discard <run_id>` — remove a run's worktree (artifacts kept).
@@ -258,5 +269,7 @@ yourself, or anything where spinning up a separate agent adds no value.
   Skill files without touching other project-level skills.
 - Agent stalled, timed out, or test failed → read the report and `.portico/runs/<run_id>/test.log`. A stalled or erroring agent may still leave partial edits in the worktree (captured in the diff); you can review the partial work or resume the run, refine the task, or re-delegate.
 - `path_not_allowed` → the run changed a file outside `--allowed`; the error and report carry a
-  copy-paste retry that pre-fills the missing `--allowed` flags.
+  copy-paste retry that pre-fills the missing `--allowed` flags. If the diff is otherwise good,
+  you can skip the retry and land it directly with user approval:
+  `portico apply <run_id> --allow <path>…` (see "Decide apply vs discard" above).
 - `working_tree_dirty` on apply → commit or stash the main tree first, then apply.

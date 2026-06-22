@@ -230,6 +230,7 @@ async function actionCommand(action: "apply" | "cancel" | "discard", args: strin
       token: { type: "string" },
       child: { type: "string" },
       all: { type: "boolean" },
+      allow: { type: "string", multiple: true },
     },
   });
 
@@ -243,6 +244,9 @@ Options:
   --token <token>          Auth token
   --child <child_id>       Specific child run ID (for apply)
   --all                    Apply the merged group patch (for apply)
+  --allow <path>           Confirm landing a path-policy-failed run despite this
+                           out-of-scope path (repeatable; for apply). Use when the
+                           diff is good but only touched files outside --allowed.
   -h, --help               Show this help message`);
     return 0;
   }
@@ -261,6 +265,9 @@ Options:
   if (action === "apply" && values.all) {
     bodyPayload.all = true;
   }
+  if (action === "apply" && values.allow?.length) {
+    bodyPayload.allow = values.allow;
+  }
   const fetchOpts: RequestInit = { method: "POST" };
   if (Object.keys(bodyPayload).length > 0) {
     fetchOpts.headers = { "Content-Type": "application/json" };
@@ -278,6 +285,9 @@ Options:
     console.log(`${action} ${body.run.id}: ${body.run.status}`);
     if (action === "apply" && (values.all || values.child)) {
       console.log(`Tip: review the applied patch, commit it, then run/apply any small follow-up fixes as separate patches rather than folding them in — keeping a reviewable, layered history.`);
+    }
+    if (action === "apply" && values.allow?.length) {
+      console.log(`Tip: landed despite a path-policy violation via --allow ${values.allow.join(" --allow ")}; recorded in result.json as pathPolicyOverride for provenance.`);
     }
   }
   return 0;
