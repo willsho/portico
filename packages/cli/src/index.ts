@@ -4,6 +4,7 @@
 import { startCommand } from "./commands/start.ts";
 import { stopCommand } from "./commands/stop.ts";
 import { agentsCommand } from "./commands/agents.ts";
+import { modelsCommand } from "./commands/models.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { delegateCommand } from "./commands/delegate.ts";
 import { resultCommand } from "./commands/result.ts";
@@ -32,6 +33,7 @@ Usage:
   portico daemon start        Alias for portico start
   portico daemon stop         Alias for portico stop
   portico agents [--json]     List Agents discovered on this machine
+  portico models [--to a] [--json]  List known models per agent
   portico delegate --to a (--task t | --task-file file) [--test cmd]
   portico delegate --mode review --to a --task t
   portico delegate --mode compare --to a --compare-to b --task t
@@ -75,6 +77,8 @@ async function main(): Promise<number> {
       return 1;
     case "agents":
       return agentsCommand(rest);
+    case "models":
+      return modelsCommand(rest);
     case "delegate":
       return delegateCommand(rest);
     case "runs":

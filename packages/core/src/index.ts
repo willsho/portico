@@ -85,3 +85,10 @@ export type {
   SessionStore,
   CreateSessionInput,
 } from "./session.ts";
+
+export {
+  discoverModels,
+  resolveModel,
+  modelSelectionSupported,
+  modelKnownIncompatible,
+} from "./models.ts";

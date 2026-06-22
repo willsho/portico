@@ -19,7 +19,14 @@ import {
 import { logsCommand } from "./runs.ts";
 import { buildRunVerdict } from "@portico/orchestrator";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
-import { discoverAgents } from "@portico/core";
+import {
+  discoverAgents,
+  discoverModels,
+  getProvider,
+  modelKnownIncompatible,
+  modelSelectionSupported,
+  resolveModel,
+} from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
 import { buildContextSections } from "./context-pack.ts";
 
@@ -97,6 +104,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "permission-profile": { type: "string" },
       model: { type: "string" },
       effort: { type: "string" },
+      "model-force": { type: "boolean" },
       "compare-to": { type: "string", multiple: true },
       child: { type: "string", multiple: true },
       merge: { type: "string" },
@@ -152,6 +160,7 @@ Options:
   --permission-profile <p> Permission profile
   --model <id>             Model for the target agent (e.g. opus, claude-opus-4-8)
   --effort <level>         Reasoning-effort level for the target agent (e.g. low|medium|high)
+  --model-force            Skip --model validation (send a custom/unknown model id as-is)
   --compare-to <agent>     Agent to compare against (repeatable)
   --child <json>           Child spec JSON (repeatable)
   --merge <strategy>       Fan-in merge strategy
@@ -420,6 +429,34 @@ Exit codes:
   }
   if (anyMissing) {
     return 1;
+  }
+
+  // Validate the chosen model for the single --to target (per-child validation is out of scope).
+  // Only reject against an authoritative static catalog; an unknown/probe/empty catalog passes
+  // through, and `--model-force` bypasses the check entirely (for newly-released ids).
+  if (values.model && request.to) {
+    const provider = getProvider(request.to);
+    if (provider && !modelSelectionSupported(provider)) {
+      console.error(
+        `[portico] note: "${request.to}" manages model selection itself — --model ${values.model} is ignored.`,
+      );
+    } else if (provider) {
+      const entry = discovered.find((a) => a.provider === request.to);
+      const models = entry ? await discoverModels(provider, entry) : [];
+      if (modelKnownIncompatible(provider, models, values.model) && !values["model-force"]) {
+        const known = models
+          .map((m) => (m.aliases?.length ? `${m.id} (${m.aliases.join(", ")})` : m.id))
+          .join(", ");
+        console.error(
+          `[portico] "${request.to}" does not recognize model "${values.model}".\n` +
+            `  Known: ${known}\n` +
+            `  Pass --model-force to send a custom id anyway.`,
+        );
+        return 1;
+      }
+      // Normalize an alias to its canonical id before sending (only when we have a catalog).
+      if (models.length > 0) request.model = resolveModel(models, values.model);
+    }
   }
 
   // Preflight: echo the resolved facts *before* any agent launches, so a wrong repo / base ref

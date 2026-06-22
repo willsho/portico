@@ -98,6 +98,7 @@ portico stop
 portico daemon start
 portico daemon stop
 portico agents [--url <url>] [--token <token>] [--json]
+portico models [--to <agent>] [--json]
 portico delegate --to <agent> --repo . (--task "<task>" | --task-file <path>) [--test "npm test"]
 portico delegate --mode review --to <agent> --repo . --task "<review task>"
 portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" --judge-to <agent-c>
@@ -221,6 +222,8 @@ Delegation controls in the MVP:
   `--effort <level>` its reasoning effort (e.g. `low|medium|high`), where the adapter supports
   them. Portico translates each to the agent's native flag; omit them to use the agent's own
   default. In a fan-out, a child's `model`/`effort` (in its `--child` spec) overrides these.
+  An unknown `--model` for an agent with a known catalog is rejected before launch; `--model-force`
+  sends a custom id as-is. Run `portico models [--to <agent>]` to see each agent's valid ids.
 - `--mode compare --compare-to <agent>` runs isolated **competing** candidate
   implementations in parallel (bounded by `maxConcurrentAgentProcesses`, default 4) and
   records a parent group report with links to each candidate run. Apply one candidate with

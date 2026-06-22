@@ -243,6 +243,52 @@ test("delegate command reads task file contents into delegate request", async ()
   }
 });
 
+test("delegate validates --model against a static catalog, with --model-force to bypass", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  let body = "";
+  let fetched = false;
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    fetched = true;
+    body = String(init?.body ?? "");
+    return new Response(
+      `${JSON.stringify({ type: "run_done", runId: "run_1", status: "ready", reportPath: "report.md", resultPath: "result.json" })}\n`,
+      { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+    );
+  };
+  console.log = () => {};
+  console.error = () => {};
+
+  try {
+    // Unknown claude model → rejected before any fetch.
+    fetched = false;
+    let code = await delegateCommand([
+      "--to", "claude", "--task", "x", "--model", "gpt-9", "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 1);
+    assert.equal(fetched, false, "no run started for an incompatible model");
+
+    // Same model with --model-force → passes through and is sent as-is.
+    code = await delegateCommand([
+      "--to", "claude", "--task", "x", "--model", "gpt-9", "--model-force", "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    assert.equal(JSON.parse(body).model, "gpt-9");
+
+    // A known alias is normalized to its canonical id before sending.
+    code = await delegateCommand([
+      "--to", "claude", "--task", "x", "--model", "opus", "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    assert.equal(JSON.parse(body).model, "claude-opus-4-8");
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
 test("delegate command threads --model / --effort into the delegate request", async () => {
   const originalFetch = globalThis.fetch;
   const originalLog = console.log;

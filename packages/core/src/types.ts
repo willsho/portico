@@ -121,6 +121,10 @@ export interface AgentEntry {
   /** How the binary path was resolved. Useful for `portico doctor`. */
   source?: "env" | "path" | "login-shell" | "config";
   capabilities?: Record<string, boolean>;
+  /** Models this provider can run, filled on demand by discoverModels() (not by discoverAgents). */
+  models?: ModelDescriptor[];
+  /** Whether the runtime accepts a model choice (provider declares modelArgs) or self-manages it. */
+  modelSelection?: "supported" | "managed-by-runtime";
 }
 
 export interface ChatMessage {

@@ -69,6 +69,7 @@ export async function discoverAgent(
     available: true,
     path: resolved.path,
     source: resolved.source,
+    modelSelection: provider.modelArgs ? "supported" : "managed-by-runtime",
   };
 
   if (options.skipVersion) {
