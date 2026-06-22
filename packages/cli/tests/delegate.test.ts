@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { delegateCommand, parseCoverageManifest, printEvent } from "../src/commands/delegate.ts";
+import { buildIterateSection, delegateCommand, parseCoverageManifest, printEvent } from "../src/commands/delegate.ts";
 import { registerProvider } from "@portico/core";
 import { buildContextSections } from "../src/commands/context-pack.ts";
+import type { RunDetails } from "@portico/orchestrator";
 
 registerProvider({
   id: "agent",
@@ -55,6 +56,49 @@ async function captureError(fn: () => Promise<number>): Promise<{ code: number; 
   } finally {
     console.error = originalError;
   }
+}
+
+function iterateRunDetails(overrides: {
+  tests?: Array<{ command: string; status: "passed" | "failed"; exitCode: number | null; output: string }>;
+  verify?: Array<{ command: string; status: "passed" | "failed"; exitCode: number | null; output: string }>;
+  changedFiles?: string[];
+} = {}): RunDetails {
+  const run = {
+    id: "run_previous",
+    repoPath: "/repo",
+    worktreePath: "/repo/.portico/worktrees/run_previous",
+    branchName: "portico/run_previous",
+    rootAgent: "codex",
+    targetAgent: "codex",
+    task: "previous task",
+    mode: "implement" as const,
+    isolation: { workspace: "worktree" as const },
+    permissionProfile: "auto-edit" as const,
+    status: "failed" as const,
+    depth: 0,
+    createdAt: "2026-06-22T00:00:00.000Z",
+    updatedAt: "2026-06-22T00:00:00.000Z",
+  };
+  const artifacts = {
+    runId: "run_previous",
+    taskPath: "task.md",
+    eventsPath: "events.ndjson",
+    agentLogPath: "agent.log",
+    reportPath: "report.md",
+    resultPath: "result.json",
+  };
+  return {
+    run,
+    artifacts,
+    result: {
+      run,
+      artifacts,
+      changedFiles: overrides.changedFiles ?? [],
+      tests: overrides.tests ?? [],
+      verify: overrides.verify,
+      agentEvents: [],
+    },
+  };
 }
 
 test("printEvent renders verdict_update as an in-progress Portico signal", () => {
@@ -315,6 +359,120 @@ test("parseCoverageManifest extracts string paths from varied manifest shapes", 
   assert.deepEqual(parseCoverageManifest('{}'), []);
   assert.deepEqual(parseCoverageManifest('{"other": ["a.ts"]}'), []);
   assert.deepEqual(parseCoverageManifest('invalid json'), []);
+});
+
+test("buildIterateSection summarizes failed checks and changed files", async () => {
+  const section = await buildIterateSection(iterateRunDetails({
+    tests: [{ command: "npm test", status: "failed", exitCode: 1, output: "line one\nfinal error" }],
+    changedFiles: ["packages/cli/src/commands/delegate.ts", "packages/cli/tests/delegate.test.ts"],
+  }));
+
+  assert.match(section, /### Previous attempt: run_previous \(failed\)/);
+  assert.match(section, /tests: 0\/1 passed/);
+  assert.match(section, /Failing checks:/);
+  assert.match(section, /npm test \(exit 1\): line one\nfinal error/);
+  assert.match(section, /Changed files in that attempt: packages\/cli\/src\/commands\/delegate\.ts, packages\/cli\/tests\/delegate\.test\.ts/);
+});
+
+test("buildIterateSection omits failing checks block when there are no failures", async () => {
+  const section = await buildIterateSection(iterateRunDetails({
+    tests: [{ command: "npm test", status: "passed", exitCode: 0, output: "ok" }],
+    changedFiles: [],
+  }));
+
+  assert.doesNotMatch(section, /Failing checks:/);
+  assert.match(section, /Changed files in that attempt: none/);
+});
+
+test("buildIterateSection truncates long summaries with an omitted-count marker", async () => {
+  const output = `${"a".repeat(2500)}LAST_ERROR`;
+  const section = await buildIterateSection(iterateRunDetails({
+    tests: [{ command: "npm test", status: "failed", exitCode: 1, output }],
+    changedFiles: ["src/a.ts"],
+  }), 500);
+
+  assert.match(section, /\[\.\.\. \d+ earlier characters omitted \.\.\.\]/);
+  assert.match(section, /\[\.\.\. summary truncated, \d+ more characters omitted \.\.\.\]/);
+});
+
+test("delegateCommand with --iterate-from splices previous run summary into delegate request", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const calls: string[] = [];
+  let delegateBody = "";
+
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/runs/run_previous")) {
+      return new Response(JSON.stringify(iterateRunDetails({
+        tests: [{ command: "npm test", status: "failed", exitCode: 1, output: "expected failure" }],
+        changedFiles: ["src/fix.ts"],
+      })), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/delegate")) {
+      delegateBody = String(init?.body ?? "");
+      return new Response(
+        `${JSON.stringify({ type: "run_done", runId: "run_2", status: "ready", reportPath: "report.md", resultPath: "result.json" })}\n`,
+        { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+      );
+    }
+    assert.fail(`unexpected fetch: ${url}`);
+  };
+  console.log = () => {};
+  console.error = () => {};
+
+  try {
+    const code = await delegateCommand([
+      "--to", "agent",
+      "--task", "Refine packages/cli/src/commands/delegate.ts. Acceptance criteria: npm test passes.",
+      "--iterate-from", "run_previous",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    assert.equal(calls.filter((url) => url.includes("/runs/run_previous")).length, 1);
+    assert.equal(calls.filter((url) => url.includes("/delegate")).length, 1);
+    const request = JSON.parse(delegateBody);
+    assert.match(request.task, /## Context/);
+    assert.match(request.task, /### Previous attempt: run_previous \(failed\)/);
+    assert.match(request.task, /npm test \(exit 1\): expected failure/);
+    assert.match(request.task, /Changed files in that attempt: src\/fix\.ts/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+test("delegateCommand with --iterate-from returns 1 on unreachable daemon and does not delegate", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  let fetchCount = 0;
+  let errOut = "";
+
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    throw Object.assign(new Error("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+  };
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+
+  try {
+    const code = await delegateCommand([
+      "--to", "agent",
+      "--task", "Refine packages/cli/src/commands/delegate.ts. Acceptance criteria: npm test passes.",
+      "--iterate-from", "run_previous",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 1);
+    assert.equal(fetchCount, 2);
+    assert.match(errOut, /daemon not running|daemon is running|fetch failed/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
 });
 
 test("delegateCommand with --dry-run prints report and returns code based on heuristics", async () => {

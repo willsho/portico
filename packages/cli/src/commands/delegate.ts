@@ -45,6 +45,40 @@ export function parseCoverageManifest(raw: string): string[] {
   }
 }
 
+export async function buildIterateSection(details: RunDetails, maxChars = 20000): Promise<string> {
+  const { run, result } = details;
+  const verdict = buildRunVerdict(run, result);
+  const lines: string[] = [
+    `### Previous attempt: ${run.id} (${run.status})`,
+    verdict.topRisks.length ? verdict.topRisks.join("\n") : "no risks recorded.",
+  ];
+
+  const failedChecks = [...(result?.tests ?? []), ...(result?.verify ?? [])].filter((check) => check.status === "failed");
+  if (failedChecks.length) {
+    lines.push("", "Failing checks:");
+    for (const check of failedChecks) {
+      lines.push(`- ${check.command} (exit ${check.exitCode ?? "unknown"}): ${lastCharsWithMarker(check.output, 2000)}`);
+    }
+  }
+
+  lines.push("", `Changed files in that attempt: ${result?.changedFiles?.length ? result.changedFiles.join(", ") : "none"}`);
+  const fullText = lines.join("\n");
+  if (fullText.length > maxChars) {
+    const omitted = fullText.length - maxChars;
+    const truncated = fullText.slice(0, maxChars);
+    const newline = truncated.endsWith("\n") ? "" : "\n";
+    return truncated + newline + `[... summary truncated, ${omitted} more characters omitted ...]`;
+  }
+
+  return fullText;
+}
+
+function lastCharsWithMarker(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const omitted = text.length - maxChars;
+  return `[... ${omitted} earlier characters omitted ...]\n${text.slice(-maxChars)}`;
+}
+
 export async function delegateCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -67,6 +101,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "judge-to": { type: "string" },
       "judge-instruction": { type: "string" },
       resume: { type: "string" },
+      "iterate-from": { type: "string" },
       context: { type: "string", multiple: true },
       "context-diff": { type: "string", multiple: true },
       "dry-run": { type: "boolean" },
@@ -118,6 +153,7 @@ Options:
   --judge-to <agent>       Agent to judge fan-in
   --judge-instruction <t>  Instruction for the judge
   --resume <run_id>        Resume a child run with a new task
+  --iterate-from <run_id>  Prepend a failure/result summary from a previous run into this task
   --test <cmd>             Test command to run (repeatable)
   --verify <cmd>           Verification check, reported separately from tests (repeatable)
   --allowed <path>         Allowed path (repeatable)
@@ -169,13 +205,30 @@ Exit codes:
   }
 
   const repo = resolveRepoArg(values.repo);
+  const contextBlocks: string[] = [];
+  if (values["iterate-from"] && !values.resume) {
+    const runId = values["iterate-from"];
+    const target = `${daemonUrl(values.url)}/runs/${encodeURIComponent(runId)}?repo=${encodeURIComponent(repo)}`;
+    let details: RunDetails;
+    try {
+      details = await requestJson<RunDetails>(target, {}, values.token);
+    } catch (err) {
+      if (err instanceof DaemonUnreachableError) return 1;
+      console.error(`[portico] Error reading --iterate-from run "${runId}": ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+    contextBlocks.push(await buildIterateSection(details));
+  }
   const contextSections = await buildContextSections(
     repo,
     values.context ?? [],
     values["context-diff"] ?? [],
   );
   if (contextSections) {
-    task.value = task.value + "\n\n## Context\n" + contextSections;
+    contextBlocks.push(contextSections);
+  }
+  if (contextBlocks.length) {
+    task.value = task.value + "\n\n## Context\n" + contextBlocks.join("\n\n");
   }
 
 
