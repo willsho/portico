@@ -112,7 +112,8 @@ portico delegate --to <agent> --repo . --task "<task>" --allowed "src/**" --appl
 portico delegate --to <agent> --repo . --task "<task>" --detach   # exit at run_start, keep running
 portico delegate --to <agent> --repo . --task "<task>" --detach --notify  # OS-notify on terminal state
 portico delegate --to <agent> --repo . --task "<task>" --name dark-mode   # human-readable run name
-portico delegate --to <agent> --repo . --task "<task>" --auto-start  # start loopback daemon if down
+portico delegate --to <agent> --repo . --task "<task>"  # auto-starts a loopback daemon if down (default)
+portico delegate --to <agent> --repo . --task "<task>" --no-auto-start  # fail fast instead
 portico delegate --mode split --to <agent> --repo . --task "<task>" --child '{...}' --child '{...}' -y  # skip fan-out confirm
 portico delegate --follow <run_id>           # re-attach to a detached run's event log
 portico runs [--repo .] [--flat] [--status failed,cancelled] [--since 2h] [--watch]
@@ -270,8 +271,10 @@ Delegation controls in the MVP:
   (`ready` / `partial` / `conflict` / `failed`). Pairs with `--detach` — a detached background
   watcher delivers the notification after the foreground process has exited. macOS only for now;
   a no-op elsewhere.
-- `--auto-start` (delegate) starts a loopback daemon and retries once if none is running.
-  Loopback only — LAN/remote daemons are never auto-started.
+- `delegate` (and `delegate --resume`) auto-starts a loopback daemon and retries once if none is
+  reachable — no prior `portico start` needed. Loopback only — LAN/remote daemons are never
+  auto-started, so a non-loopback `--url`/`PORTICO_URL` still fails fast. Pass
+  `--no-auto-start` to fail fast on loopback too.
 - `runs --status <s1,s2>` and `runs --since <dur>` filter the listing server-side; runs with a
   live agent are tagged `[active]`, and group rows show `children <ready>/<total> ready`. `status`
   also reports live progress (phase, whether an agent is still running, and the last recorded event).

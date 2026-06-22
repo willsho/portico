@@ -33,9 +33,15 @@
 
 ### 计划
 
-- **P0**：让 `run_done` 事件与 `status --json` **内嵌完整可信判读块**——changedFiles、diff stat、tests/verify tally、
+- **P0**✅：让 `run_done` 事件与 `status --json` **内嵌完整可信判读块**——changedFiles、diff stat、tests/verify tally、
   pathPolicy、sandboxEscaped、`reviewDecision`、`readiness`、top risks——**一次读取即可**，不必再开三个文件。
-  本质是把现有 `--review-summary` 结构化，并默认随终态返回。
+  本质是把现有 `--review-summary` 结构化，并默认随终态返回。已落地：`packages/orchestrator/src/verdict.ts`
+  的 `buildRunVerdict()` 产出 `RunVerdict`（含 `readiness: ready|needs_attention|not_ready` 与 `topRisks`），
+  挂在单 run 的 `run_done`/`run_error` 事件（`run_error` 同时补上了 `status`/`reportPath`/`resultPath`，此前几乎
+  是空的）以及 `portico status --json`（默认与 `--summary`/`--fields` 两种形态）上；`--review-summary` 改为复用
+  同一函数，不再重复计算。范围说明：group 级 `run_done`（fan-out 父 run）未挂 `verdict`——其形状与单 run 不同
+  （无单一 pathPolicy/tests），仍用 `portico review <group_id>` 看聚合；daemon 原始 `GET /runs/:id` 也未挂
+  `verdict`（那是 CLI 侧基于同一 `RunResult` 派生的呈现层），按 `docs/daemon-api.md` 的说明执行。
 - **P1**：流式过程在终态前发一个结构化 `verdict` 事件（Portico 的结论，而非 agent narration）；follow/CLI 默认
   把 agent 日志折叠为「非权威」。让「跟一条 run」看到的是可信信号。
 - **P1**：规范一个 `portico result <run_id> --json` 作为「这就是结果」的**唯一**机器入口（聚合 observations + readiness + 风险）。
@@ -53,9 +59,15 @@
 
 ### 计划
 
-- **P0**：**`delegate` 默认零配置**——无可达 daemon 时先 pidfile 发现（[#17]），否则自动起 loopback 并重试一次；
+- **P0**✅：**`delegate` 默认零配置**——无可达 daemon 时先 pidfile 发现（[#17]），否则自动起 loopback 并重试一次；
   即把 `--auto-start` 设为默认（loopback-only，LAN 仍须显式）。目标：一条 `delegate` 自洽，不需要我管 start/port。
-- **P0**：**默认超时即合理**（[#17] 已拆分 agent 900s / test 120s / idle 120s）——验证它就是开箱体验，我永不再写 `--timeout 1800000`。
+  已落地：`delegate`/`delegate --resume` 的 auto-start 默认开启；新增 `--no-auto-start` 显式关闭（CI 等期望
+  daemon 已存在的场景），`--auto-start` 保留为显式 no-op。loopback-only 的安全护栏（`isLoopbackHost` 拒绝
+  LAN/远程 URL）未变。已做端到端烟雾验证：默认场景成功自动起 daemon 完成一次 delegate（用后即 `stop`/`discard`
+  清理），`--no-auto-start` 在 ~0.2s 内快速失败、不产生 pidfile。
+- **P0**✅：**默认超时即合理**（[#17] 已拆分 agent 900s / test 120s / idle 120s）——验证它就是开箱体验，我永不再写 `--timeout 1800000`。
+  复核确认：`packages/daemon/src/routes.ts` 的 `handleDelegate` 已对 `timeoutMs`/`testTimeoutMs`/`idleTimeoutMs`
+  做 `??=` 兜底，端到端生效；本轮未改动。
 - **P1**：**<1s 预检健康门**——`delegate` 冷启动前对解析到的 daemon 做 health-check + 目标 agent 可用性检查，
   端口错 / agent 缺在烧掉冷启动前就拦下（复用 `portico doctor`）。
 
@@ -72,7 +84,13 @@
 
 ### 计划
 
-- **P0**：**`cancel` 也 salvage**——主动叫停时同样抓 worktree diff，中途纠偏不等于全损。
+- **P0**✅：**`cancel` 也 salvage**——主动叫停时同样抓 worktree diff，中途纠偏不等于全损。已落地：
+  `orchestrator.ts` 新增 `cancelAndSalvage()`，替换原先「abort 后直接写一个不含 diff 的 result.json，
+  靠和后台 catch 路径赛跑」的写法——改为 cancel 调用本身同步抓 diff、写出完整 `result.json`/`report.md`
+  （复用既有 `buildRunResult`/`attachReviewArtifacts`），不再依赖与生成器 catch 块的时序竞争；单 run 与
+  group 级联中的每个 child 走同一函数。`buildRunResult` 的 gate-warning 文案也按 `run.status` 区分
+  「was cancelled」与「errored/timed out」。已加单测：mid-flight cancel 一个真实写文件后挂起的 agent，
+  断言 `changedFiles`/`diffSummary`/`diff.patch`/`report.md` 均落地。
 - **P0**：承接 [#18]——`apply --allow`（policy-failed 的好 diff 经确认落地）、`delegate --continue`（在部分产物上续跑），
   让「叫停 → 看半成品 → 接着做」成为**便宜回路**。
 - **P1**：**iterate 模板**——把「引用上一次 `report.md` / `test.log` 的失败要点、细化任务再委派」做成一条命令（预填失败摘要），
@@ -110,7 +128,7 @@
 
 | 阶段 | 重点 | 目标 |
 | --- | --- | --- |
-| P0 | 终态内联可信判读（差距1）+ 零配置 daemon/默认超时（差距2）+ cancel salvage / policy-failed 落地（差距3，承接 [#18]） | 删掉「读盘 + 运维 + 全损」三大附带税 |
+| P0 | 终态内联可信判读（差距1，✅已完成）+ 零配置 daemon/默认超时（差距2，✅已完成）+ cancel salvage（差距3，✅已完成）/ policy-failed 落地（差距3，承接 [#18]，未开始） | 删掉「读盘 + 运维 + 全损」三大附带税 |
 | P1 | `verdict` 事件 / `result --json`、预检健康门、iterate 模板、context 打包、`--dry-run` task 自检、CLI 一致性 | 把冷启动税与 papercut 也压低 |
 | P2 | （探索）更紧的续跑 / 跨 run 组合编排 | 大任务多趟协作接近无缝 |
 
@@ -124,16 +142,20 @@
 
 ## 验收标准
 
-- 单次 `delegate`（不带 `--url` / `--timeout` / `--auto-start`）在 daemon 未起或在非默认端口时仍自洽跑通。
-- 拿到终态后，**一次结构化读取**即可知道：改了什么、tests/verify、`reviewDecision`、`readiness`、风险——
-  无需打开 `report.md` / `result.json` / 手跑 `git diff`。
-- 一个 policy-failed 或被截断的 run，能在**不重跑 agent、不离开 Portico** 的前提下叫停 → 保留半成品 → 续跑。
+- ✅ 单次 `delegate`（不带 `--url` / `--timeout` / `--auto-start`）在 daemon 未起或在非默认端口时仍自洽跑通。
+- ✅ 拿到终态后，**一次结构化读取**即可知道：改了什么、tests/verify、`reviewDecision`、`readiness`、风险——
+  无需打开 `report.md` / `result.json` / 手跑 `git diff`。（单 run / child 终态；group 父 run 仍用 `review` 聚合。）
+- 部分达成：被主动 `cancel` 的 run 能在**不重跑 agent、不离开 Portico** 的前提下叫停 → 保留半成品（已落地）。
+  policy-failed 的好 diff 一等落地（`apply --allow`）与 `delegate --continue` 续跑仍未做（承接 [#18]）。
 - `delegate --dry-run` 能对一个弱 task 指出缺了文件 / 验收标准 / 测试命令。
 
 ## 未决问题
 
 - 「终态内联可信判读块」主入口放 `run_done` 事件还是单独 `result` 命令？要不要都给（事件给流式、命令给随取）？
-- `--auto-start` 设为默认有无安全顾虑（沙箱 / 多 repo 下意外起 daemon）？默认 loopback-only 够不够？
+  本轮选了「事件 + `status --json`」两个入口（均已落地）；P1 的独立 `portico result --json` 仍未做。
+- ~~`--auto-start` 设为默认有无安全顾虑（沙箱 / 多 repo 下意外起 daemon）？默认 loopback-only 够不够？~~
+  已决策并落地：默认开启，loopback-only 护栏不变，新增 `--no-auto-start` 兜底；本机端到端验证过默认开启
+  自动起 daemon、跑完后清理，以及 `--no-auto-start` 快速失败两条路径。
 - context 打包的边界在哪——打多少算「确定性帮忙」、多少算「替 orchestrator 做了它该做的判断」？
 - iterate 模板、现有 `--resume`（child-only、需 session）、[#18] 的 `--continue` 如何归一，避免三套语义？
 - 有没有一个**可量化的体验指标**来判断「是否已接近 spawn subagent」？候选：从 `delegate` launch 到拿到可信结论所需的**人工步数 / 读取次数**——目标把它降到 1。

@@ -12,7 +12,8 @@ import {
 import { parseDuration } from "../duration.ts";
 import { printEvent } from "./delegate.ts";
 import { watchCommand } from "./watch.ts";
-import type { CleanupResult, IntegrateResult, Run, RunDetails, RunResult } from "@portico/orchestrator";
+import { buildRunVerdict } from "@portico/orchestrator";
+import type { CleanupResult, IntegrateResult, Run, RunDetails, RunResult, RunVerdict } from "@portico/orchestrator";
 
 export async function runsCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -516,12 +517,15 @@ function printDetails(details: RunDetails): void {
 
 type CompactRunResult = Omit<RunResult, "run" | "artifacts">;
 
-function compactDetails(details: RunDetails): Omit<RunDetails, "result"> & { result?: CompactRunResult } {
+function compactDetails(
+  details: RunDetails,
+): Omit<RunDetails, "result"> & { result?: CompactRunResult; verdict: RunVerdict } {
   const result = details.result ? compactResult(details.result) : undefined;
   return {
     run: details.run,
     artifacts: details.artifacts,
     ...(result ? { result } : {}),
+    verdict: buildRunVerdict(details.run, details.result),
   };
 }
 
@@ -546,6 +550,7 @@ function summarizeDetails(details: RunDetails): Record<string, unknown> {
     telemetry: details.result?.telemetry,
     reportPath: details.artifacts.reportPath,
     resultPath: details.artifacts.resultPath,
+    verdict: buildRunVerdict(details.run, details.result),
   };
 }
 

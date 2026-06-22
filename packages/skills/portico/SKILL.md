@@ -77,8 +77,11 @@ yourself, or anything where spinning up a separate agent adds no value.
    adds a Coverage section and an untouched expected path becomes a coverage gap → the run is
    `needs_attention`, catching a task that silently skipped part of its scope);
    `--coverage-manifest <path>` (supply expected-change paths from a JSON file);
-   `--review-summary` (after the run, print a one-click apply command + risk summary);
-   `--auto-start` (start a loopback daemon and retry once if it isn't running);
+   `--review-summary` (after the run, print a one-click apply command + risk summary —
+   the same data the terminal `run_done`/`run_error` event already carries under `verdict`,
+   useful for re-printing it later from a fetched run);
+   `--no-auto-start` (by default `delegate` auto-starts a loopback daemon and retries once if
+   none is reachable; pass this to fail fast instead, e.g. in CI expecting a pre-existing daemon);
    `--detach` (exit as soon as the run registers, printing its id; the run keeps going on the
    daemon — re-attach later with `portico delegate --follow <run_id>` or `portico logs <run_id> --follow`);
    `--notify` (fire an OS notification when the run reaches a terminal state — pairs with
@@ -116,14 +119,17 @@ yourself, or anything where spinning up a separate agent adds no value.
      --child '{"to":"codex","task":"frontend part","allowedPaths":["src/web/**"]}'
    ```
 
-5. **Read the result, don't trust the stream alone.** The final `run_done` event carries the
-   report path. Read `report.md`, and `result.json` for the structured `changedFiles` and
-   `tests`. `portico status <run_id>` re-prints a summary (`--json` for structured fields).
-   The report's `## Portico Observations` section is the trustworthy block: it carries
-   Portico's own measurements (changed files, diff check, tests/verify tallies, path policy,
-   sandbox escape, and the `Review Decision`). Trust those over the agent's narration — the
-   streamed agent log can show mojibake, internal sub-agent chatter, or timeouts that don't
-   reflect the files on disk. The agent log (`agent.ndjson`) is a log, not a status source.
+5. **Read the result, don't trust the stream alone.** The terminal `run_done` / `run_error`
+   event carries a `verdict` block — `status`, `reviewDecision`, `readiness`
+   (`ready` / `needs_attention` / `not_ready`), `changedFiles`, `diffSummary`, `tests`/`verify`
+   tallies, `pathPolicy`, `sandboxEscaped`, and `topRisks` — Portico's own measurements, not the
+   agent's self-report. With `--json` this is one read, no need to open `report.md` /
+   `result.json` or shell out to `git diff`. `portico status <run_id> --json` (or `--summary`)
+   embeds the same `verdict` for a run you didn't stream yourself. For the human-readable form,
+   read `report.md`'s `## Portico Observations` section, or `result.json` directly. Trust these
+   over the agent's narration — the streamed agent log can show mojibake, internal sub-agent
+   chatter, or timeouts that don't reflect the files on disk. The agent log (`agent.ndjson`) is
+   a log, not a status source.
    The report's `## Telemetry` section buckets wall time by phase (worktree setup, agent, diff,
    tests, verify, and — for groups — fan-in), and a group's candidate list shows each child's
    agent duration; use these to see whether time went to the agent, the checks, or fan-in
@@ -232,14 +238,17 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico apply <group_id> --child <child_id>` — apply one compare candidate.
 - `portico apply <group_id> --all` — apply a split/integrated group's merged patch. Tip: apply the group's merged patch first, then run/apply any small follow-up fixes as separate patches.
 - `portico discard <run_id>` — remove a run's worktree (artifacts kept).
-- `portico cancel <run_id>` — cancel an in-flight run.
+- `portico cancel <run_id>` — cancel an in-flight run. Salvages whatever diff is already
+  sitting in the worktree (same artifacts an error/timeout leaves) instead of discarding it —
+  inspect the partial work or resume it, it isn't a total loss.
 - `portico cleanup [--failed] [--older-than <dur>] [--purge]` — reclaim finished run worktrees
   (default keeps artifacts; `--purge` removes them too). Never touches ready/applied or in-flight runs.
 
 ## Troubleshooting
 
-- `daemon not running` → start it: `portico start`, or pass `--auto-start` to `portico delegate`
-  to have it start a loopback daemon and retry once. If a daemon is running elsewhere, Portico will suggest its URL. A `permission denied` / sandbox variant
+- `daemon not running` → `portico delegate` auto-starts a loopback daemon and retries once by
+  default; pass `--no-auto-start` to fail fast instead, or start it yourself with `portico start`.
+  If a daemon is running elsewhere, Portico will suggest its URL. A `permission denied` / sandbox variant
   means loopback access is blocked, not that the daemon is down. If `portico start` warns that
   the pidfile or `.portico`/`.git` dirs aren't writable, a sandbox is blocking writes — grant
   write access or run outside the sandbox (the daemon may still be usable, but `stop`/discovery

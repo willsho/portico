@@ -1,4 +1,5 @@
 import type { RuntimeEvent } from "@portico/core";
+import type { RunVerdict } from "./verdict.ts";
 
 export type DelegationMode = "implement" | "review" | "compare" | "split";
 
@@ -246,8 +247,17 @@ export type DelegationEvent =
   | { type: "fanin_start"; runId: string; strategy: "merge" | "judge" }
   | { type: "merge_done"; runId: string; status: "ready" | "conflict"; conflicts?: string[] }
   | { type: "judge_done"; runId: string; recommendedChildId?: string; verdict?: "approve" | "needs_attention" }
-  | { type: "run_done"; runId: string; status: RunStatus; reportPath: string; resultPath: string }
-  | { type: "run_error"; runId?: string; error: string; code?: string };
+  | { type: "run_done"; runId: string; status: RunStatus; reportPath: string; resultPath: string; verdict?: RunVerdict }
+  | {
+      type: "run_error";
+      runId?: string;
+      error: string;
+      code?: string;
+      status?: RunStatus;
+      reportPath?: string;
+      resultPath?: string;
+      verdict?: RunVerdict;
+    };
 
 export interface RunResult {
   run: Run;

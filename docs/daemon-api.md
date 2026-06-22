@@ -288,8 +288,17 @@ Event examples:
 {"type":"diff_ready","runId":"run_...","path":".portico/runs/run_.../diff.patch","changedFiles":["delegated.txt"]}
 {"type":"test_start","runId":"run_...","command":"npm test"}
 {"type":"test_done","runId":"run_...","command":"npm test","status":"passed","exitCode":0}
-{"type":"run_done","runId":"run_...","status":"ready","reportPath":"...","resultPath":"..."}
+{"type":"run_done","runId":"run_...","status":"ready","reportPath":"...","resultPath":"...","verdict":{"status":"ready","reviewDecision":"approve","readiness":"ready","changedFiles":["delegated.txt"],"tests":{"total":1,"passed":1,"failed":0},"verify":{"total":0,"passed":0,"failed":0},"sandboxEscaped":false,"topRisks":["tests: 1/1 passed"]}}
 ```
+
+A single (non-group) run's terminal event — `run_done` on success, `run_error` on a crash,
+timeout, or cancellation — carries this `verdict` block so a caller never has to re-derive it
+from `result.json`, `report.md`, or a separate review call: `changedFiles`, `diffSummary`
+(`git diff --name-status`/`--stat`/`--check`), `tests`/`verify` tallies, `pathPolicy`,
+`sandboxEscaped`, `reviewDecision`, a single `readiness` readout
+(`ready`/`needs_attention`/`not_ready`), and `topRisks` (flattened, human-readable risk lines).
+Group-run `run_done` (below) does not carry `verdict` — aggregate the children's own verdicts
+via `GET /runs/<group_id>` or `portico review <group_id>` instead.
 
 `sandbox_escape_detected` is emitted only when a worktree-isolated run changes the
 caller's main checkout. Such a run is marked `failed`; the worktree diff remains separate
@@ -297,7 +306,15 @@ from the out-of-tree changes.
 
 ```json
 {"type":"sandbox_escape_detected","runId":"run_...","changes":[{"path":"docs/generated.md","status":"??","raw":"?? docs/generated.md"}]}
-{"type":"run_done","runId":"run_...","status":"failed","reportPath":"...","resultPath":"..."}
+{"type":"run_done","runId":"run_...","status":"failed","reportPath":"...","resultPath":"...","verdict":{"status":"failed","reviewDecision":"needs_attention","readiness":"not_ready","changedFiles":["delegated.txt"],"sandboxEscaped":true,"tests":{"total":0,"passed":0,"failed":0},"verify":{"total":0,"passed":0,"failed":0},"topRisks":["sandbox escape: DETECTED"]}}
+```
+
+A run that errors, times out, or is cancelled mid-flight surfaces via `run_error` instead of
+`run_done`, now carrying the same terminal fields (when the run got far enough to have a
+result):
+
+```json
+{"type":"run_error","runId":"run_...","error":"Run cancelled by caller.","code":"cancelled","status":"cancelled","reportPath":"...","resultPath":"...","verdict":{"status":"cancelled","readiness":"not_ready","changedFiles":["delegated.txt"],"tests":{"total":0,"passed":0,"failed":0},"verify":{"total":0,"passed":0,"failed":0},"sandboxEscaped":false,"topRisks":["warning: Agent was cancelled but left 1 uncommitted file(s) in the worktree (partial work — review or resume)."]}}
 ```
 
 For fan-out groups, the fan-in phase emits its own events on the group id after the
@@ -464,6 +481,12 @@ interface UsageTelemetry {
 extracts common token and cost fields when present, but it does not estimate missing
 costs.
 
+This raw `RunDetails` response has no computed `verdict` field — `portico status --json` (and
+`--summary`) fetches it and derives `verdict` client-side with the same logic the `run_done` /
+`run_error` events use, so a non-CLI HTTP client gets the readout by computing it from these
+same `result` fields (or by replaying the run's `run_done`/`run_error` event, which already
+carries it).
+
 ## `GET /runs/:id/events?repo=<path>`
 
 Returns the stored delegation event log as NDJSON.
@@ -533,7 +556,10 @@ curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/discard?repo=$(pwd)"
 
 ## `POST /runs/:id/cancel?repo=<path>`
 
-Cancels an active run. For group runs, cascades to cancel all active children.
+Cancels an active run. If it had already made progress, the worktree diff is salvaged into
+`result.json` / `report.md` (same shape an error or timeout produces), so a cancelled run can
+still be inspected or resumed. For group runs, cascades to cancel (and salvage) all active
+children.
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8787/runs/<run_id>/cancel?repo=$(pwd)"

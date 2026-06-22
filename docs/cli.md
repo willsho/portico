@@ -183,9 +183,10 @@ Common options:
 | `--timeout <ms>` | Agent run timeout (total task wall-clock). Test/verify commands use their own, shorter timeout; a separate **idle watchdog** also stops an agent that produces no output for too long. Defaults come from the daemon's `defaultAgentTimeoutMs` / `defaultTimeoutMs` / `idleTimeoutMs` limits |
 | `--expect-no-changes` | Treat a no-change result as acceptable: suppress the implement-mode no-change warning and keep the review decision `approve` |
 | `--json` | Print delegation events as JSON lines |
-| `--review-summary` | After the run, print a one-click apply command plus a risk summary |
+| `--review-summary` | After the run, print a one-click apply command plus a risk summary (the same data the terminal event's `verdict` carries) |
 | `--apply-on-ready` | Auto-apply a single ready run when all safety guards pass (opt-in; see below) |
-| `--auto-start` | If the loopback daemon isn't running, start it and retry the request once |
+| `--auto-start` | Kept for explicit clarity; auto-starting a loopback daemon is the default (see below) |
+| `--no-auto-start` | Fail fast instead of auto-starting a loopback daemon when none is reachable |
 | `--detach` | Exit as soon as the run registers, printing its id; the run keeps running on the daemon |
 | `--notify` | OS-notify when the run reaches a terminal state (`ready`/`partial`/`conflict`/`failed`); pairs with `--detach`. macOS only for now |
 | `-y, --yes` | Skip the fan-out preflight confirmation prompt |
@@ -205,8 +206,13 @@ corrupts a `--json` stdout stream.
 `--apply-on-ready` only applies a **single** ready run, and only when every guard holds: you
 passed `--allowed` (a path boundary), the main tree's tracked files are clean, path policy
 passed, no sandbox escape was detected, and all tests + verify checks passed. If any guard is
-unmet it applies nothing and prints the unmet items plus the review summary. `--auto-start` is
-loopback-only — LAN/remote daemons are never auto-started.
+unmet it applies nothing and prints the unmet items plus the review summary.
+
+`delegate` and `delegate --resume` auto-start a loopback daemon and retry once when none is
+reachable — no prior `portico start` needed for the common case. This is loopback-only:
+LAN/remote daemons are never auto-started, so a non-loopback `--url`/`PORTICO_URL` always fails
+fast instead. Pass `--no-auto-start` to fail fast on loopback too (e.g. CI expecting a
+pre-existing daemon).
 
 Exit codes (the streaming client):
 
@@ -388,6 +394,11 @@ test summaries.
 `--json` returns `RunDetails` (including a `progress` object) with duplicate nested
 `result.run` and `result.artifacts` removed. `--summary` returns a compact top-level object
 for scripts and LLM callers. `--fields` selects comma-separated fields from the summary view.
+Both forms embed a `verdict` object — `status`, `reviewDecision`, `readiness`
+(`ready`/`needs_attention`/`not_ready`), `changedFiles`, `diffSummary`, `tests`/`verify`
+tallies, `pathPolicy`, `sandboxEscaped`, and `topRisks` — so a single read tells you whether a
+run is safe to apply without re-deriving it from `result.json` or a separate `--review-summary`
+call.
 
 ## `portico review`
 
@@ -517,7 +528,11 @@ portico cancel <run_id>
 ```
 
 Cancellation aborts the tracked process when the run is still active and marks the run
-`cancelled`. For a group run, cancel cascades to every active child; it is idempotent.
+`cancelled`. If the run had already made progress, cancel salvages whatever diff is sitting in
+the worktree — the same `diff.patch` / `result.json` / `report.md` an error or timeout would
+have produced — so a stopped run isn't a total loss; inspect it with `portico status <run_id>`
+or resume it. For a group run, cancel cascades to every active child, salvaging each one the
+same way; it is idempotent.
 
 ## `portico cleanup`
 

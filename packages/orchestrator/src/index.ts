@@ -5,6 +5,8 @@ export {
   slugifyTask,
 } from "./orchestrator.ts";
 export type { DelegationOrchestrator } from "./orchestrator.ts";
+export { buildRunVerdict } from "./verdict.ts";
+export type { RunVerdict, TestTally } from "./verdict.ts";
 export type {
   ChildSpec,
   CleanupOptions,
