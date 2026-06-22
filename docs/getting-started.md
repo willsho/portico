@@ -21,6 +21,7 @@ Supported built-in providers include:
 | `gemini` | `gemini` |
 | `antigravity` | `agy`, `antigravity` |
 | `opencode` | `opencode` |
+| `cursor` | `cursor-agent` |
 | `openclaw` | `openclaw` |
 | `hermes` | `hermes` |
 

@@ -48,7 +48,7 @@ test("discoverAgent reports unavailable when nothing resolves", async () => {
 test("discoverAgents returns one entry per registered provider", async () => {
   const entries = await discoverAgents({ env: { PATH: "" }, skipLoginShell: true, skipVersion: true });
   const ids = entries.map((e) => e.provider).sort();
-  assert.deepEqual(ids, ["antigravity", "claude", "codex", "gemini", "hermes", "openclaw", "opencode"]);
+  assert.deepEqual(ids, ["antigravity", "claude", "codex", "cursor", "gemini", "hermes", "openclaw", "opencode"]);
 });
 
 test("runAgent streams start -> content -> done through the generic-cli engine", async () => {

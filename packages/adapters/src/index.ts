@@ -8,6 +8,7 @@ import { claudeAdapter, claudeProvider } from "./claude.ts";
 import { geminiAdapter, geminiProvider } from "./gemini.ts";
 import { antigravityAdapter, antigravityProvider } from "./antigravity.ts";
 import { opencodeAdapter, opencodeProvider } from "./opencode.ts";
+import { cursorAdapter, cursorProvider } from "./cursor.ts";
 import { openclawAdapter, openclawProvider } from "./openclaw.ts";
 import { hermesAdapter, hermesProvider } from "./hermes.ts";
 
@@ -19,6 +20,7 @@ export { claudeAdapter, claudeProvider } from "./claude.ts";
 export { geminiAdapter, geminiProvider } from "./gemini.ts";
 export { antigravityAdapter, antigravityProvider } from "./antigravity.ts";
 export { opencodeAdapter, opencodeProvider } from "./opencode.ts";
+export { cursorAdapter, cursorProvider } from "./cursor.ts";
 export { openclawAdapter, openclawProvider } from "./openclaw.ts";
 export { hermesAdapter, hermesProvider } from "./hermes.ts";
 
@@ -29,6 +31,7 @@ export const builtinAdapters: AgentAdapter[] = [
   geminiAdapter,
   antigravityAdapter,
   opencodeAdapter,
+  cursorAdapter,
   openclawAdapter,
   hermesAdapter,
 ];
@@ -39,6 +42,7 @@ export const builtinProviders = [
   geminiProvider,
   antigravityProvider,
   opencodeProvider,
+  cursorProvider,
   openclawProvider,
   hermesProvider,
 ];

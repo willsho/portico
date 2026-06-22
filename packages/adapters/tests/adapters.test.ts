@@ -10,6 +10,8 @@ import {
   codexAdapter,
   codexProvider,
   claudeAdapter,
+  createGenericCliAdapter,
+  cursorProvider,
   openclawProvider,
   openclawAdapter,
   translateCodexJsonLine,
@@ -35,7 +37,7 @@ async function collect(gen: AsyncIterable<RuntimeEvent>): Promise<RuntimeEvent[]
 test("installBuiltinAdapters registers every provider adapter", () => {
   clearAdapters();
   installBuiltinAdapters();
-  for (const id of ["codex", "claude", "gemini", "antigravity", "opencode", "openclaw", "hermes"]) {
+  for (const id of ["codex", "claude", "gemini", "antigravity", "opencode", "cursor", "openclaw", "hermes"]) {
     assert.ok(getAdapter(id), `expected an adapter for ${id}`);
   }
 });
@@ -146,6 +148,38 @@ test("antigravity adapter uses print mode and passes the prompt through stdin", 
   assert.deepEqual(payload.args, ["-p", "-", "--dangerously-skip-permissions"]);
   assert.match(payload.stdin, /User: design a button/);
   assert.equal(events.at(-1)?.type, "done");
+});
+
+test("cursor adapter passes the prompt as an argv value and adds --force only on autoEdit", async () => {
+  // A cursor-shaped provider whose args echo back as JSON so we can read exactly
+  // which flags the adapter assembled.
+  const echo = createGenericCliAdapter({ ...cursorProvider, defaultArgs: ["--echo-argv"] });
+  const entry: AgentEntry = {
+    provider: "cursor",
+    displayName: "Cursor CLI",
+    available: true,
+    path: FAKE_AGENT,
+    protocols: ["generic-cli"],
+  };
+
+  const argvWith = async (autoEdit: boolean): Promise<string[]> => {
+    const events = await collect(
+      echo.run(
+        { provider: "cursor", messages: [{ role: "user", content: "do x" }], options: { autoEdit } },
+        entry,
+      ),
+    );
+    return JSON.parse(contentText(events)) as string[];
+  };
+
+  // Without autoEdit the prompt is passed as the trailing argv value and --force is absent.
+  const withoutForce = await argvWith(false);
+  assert.ok(!withoutForce.includes("--force"), "expected no --force without autoEdit");
+  assert.match(withoutForce.at(-1) ?? "", /do x/);
+
+  // With autoEdit the --force override is appended.
+  const withForce = await argvWith(true);
+  assert.ok(withForce.includes("--force"), "expected --force with autoEdit");
 });
 
 test("claude adapter parses stream-json into reasoning / tool_call / tool_result", async () => {
