@@ -95,9 +95,10 @@ and emits a `sandbox_escape_detected` event.
 
 If the agent errors, times out, or is stopped by the **idle watchdog** (no output for too long,
 reported as `agent_stalled`), Portico still captures the worktree diff before finalizing the run.
-Any partial edits show up in `changedFiles` / `diff.patch` and a gate warning notes "left N
-uncommitted file(s) in the worktree (partial work — review or resume)", so a cut-short run is
-reviewable or resumable instead of being silently discarded.
+The run is `failed` (a stall is a failure, not a user cancellation), but any partial edits show up
+in `changedFiles` / `diff.patch` and a gate warning notes "left N uncommitted file(s) in the
+worktree (partial work — review or resume)", so a cut-short run is reviewable or resumable instead
+of being silently discarded.
 
 The idle watchdog resets on **any** subprocess output — stdout *or* stderr — so an agent that
 works silently (writing files while logging progress only to stderr) is not falsely flagged as

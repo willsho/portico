@@ -1628,7 +1628,9 @@ async function* rerunExistingWorktree(
       }
     }
     details.run = await updateRun(details.run, {
-      status: controller.signal.aborted ? "cancelled" : "failed",
+      // A watchdog stall aborts the controller to kill the subprocess, but it's a failure,
+      // not a user cancellation — only a genuine cancel (no agent_stalled) reads as cancelled.
+      status: controller.signal.aborted && code !== "agent_stalled" ? "cancelled" : "failed",
       completedAt: new Date().toISOString(),
     });
     const result = attachReviewArtifacts(
@@ -2056,7 +2058,9 @@ async function* runSingleDelegation(
     const error = err instanceof Error ? err.message : String(err);
     const code = err instanceof DelegationError ? err.code : "internal";
     if (run && artifacts) {
-      const status = controller?.signal.aborted ? "cancelled" : "failed";
+      // A watchdog stall aborts the controller to kill the subprocess, but it's a failure,
+      // not a user cancellation — only a genuine cancel (no agent_stalled) reads as cancelled.
+      const status = controller?.signal.aborted && code !== "agent_stalled" ? "cancelled" : "failed";
       run = await updateRun(run, { status, completedAt: new Date().toISOString() });
       if (run.mode !== "review") {
         try {

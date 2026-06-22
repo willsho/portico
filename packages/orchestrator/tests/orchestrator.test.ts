@@ -2093,6 +2093,8 @@ test("a silent hung agent is stopped by the idle watchdog with agent_stalled", a
     const last = events.at(-1);
     assert.equal(last?.type, "run_error");
     assert.equal(last?.type === "run_error" ? last.code : "", "agent_stalled");
+    // A stall is a failure, not a user cancellation, even though the watchdog aborts the process.
+    assert.equal(last?.type === "run_error" ? last.status : "", "failed");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
