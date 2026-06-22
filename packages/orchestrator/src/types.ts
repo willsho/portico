@@ -123,6 +123,10 @@ export interface Run {
   mode: DelegationMode;
   isolation: WorkspaceIsolation;
   permissionProfile: PermissionProfile;
+  /** Model the run was launched with (from DelegateRequest.model), if any. */
+  model?: string;
+  /** Reasoning effort the run was launched with (from DelegateRequest.effort), if any. */
+  effort?: string;
   status: RunStatus;
   depth: number;
   createdAt: string;

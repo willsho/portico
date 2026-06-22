@@ -14,6 +14,7 @@ import {
   createGenericCliAdapter,
   cursorProvider,
   geminiProvider,
+  opencodeProvider,
   openclawProvider,
   openclawAdapter,
   translateCodexJsonLine,
@@ -376,4 +377,32 @@ test("detect-only adapter explains why it cannot run", async () => {
   const last = events.at(-1);
   assert.equal(last?.type, "error");
   assert.equal(last?.type === "error" ? last.code : "", "adapter_unsupported");
+});
+
+// ---- Phase 4: probe-type model catalogs (cursor / opencode) -------------------------
+
+test("cursor declares modelArgs and parses `--list-models` output into a catalog", () => {
+  assert.equal(typeof cursorProvider.modelArgs, "function");
+  const parse = cursorProvider.models?.probe?.parse;
+  assert.equal(typeof parse, "function");
+  // Verified `cursor-agent --list-models` shape: header, blank line, then `<id> - <label>` rows.
+  const sample = "Available models\n\nauto - Auto\ngpt-5.3-codex - Codex 5.3\nsonnet-4.5-thinking - Sonnet 4.5 Thinking\n";
+  assert.deepEqual(parse!(sample, ""), [
+    { id: "auto", label: "Auto" },
+    { id: "gpt-5.3-codex", label: "Codex 5.3" },
+    { id: "sonnet-4.5-thinking", label: "Sonnet 4.5 Thinking" },
+  ]);
+});
+
+test("opencode declares modelArgs and parses `models` output into provider/model ids", () => {
+  assert.equal(typeof opencodeProvider.modelArgs, "function");
+  const parse = opencodeProvider.models?.probe?.parse;
+  assert.equal(typeof parse, "function");
+  // Verified `opencode models` shape: one `provider/model` id per line.
+  const sample = "opencode/big-pickle\ndeepseek/deepseek-chat\nstepfun/step-2-16k\n";
+  assert.deepEqual(parse!(sample, ""), [
+    { id: "opencode/big-pickle" },
+    { id: "deepseek/deepseek-chat" },
+    { id: "stepfun/step-2-16k" },
+  ]);
 });

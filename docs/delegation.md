@@ -65,6 +65,13 @@ portico delegate --mode split --to claude --repo . --task "..." --model opus \
   --child '{"to":"codex","task":"frontend"}'
 ```
 
+To see which ids an agent accepts, run `portico models [--to <agent>]`. Claude exposes a fixed
+catalog; cursor and opencode are probed live from their CLIs on demand. An unknown `--model` for
+an agent with a known catalog is rejected before launch — pass `--model-force` to send a custom
+id anyway (e.g. a newly released model). The model and effort a run actually used are recorded in
+its `report.md` (`## Summary`), and per child in a group's candidate list, so a compare of the
+same agent across models is easy to tell apart.
+
 ## Run Lifecycle
 
 Every delegation run moves through the same broad lifecycle:

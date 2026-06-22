@@ -223,7 +223,9 @@ Delegation controls in the MVP:
   them. Portico translates each to the agent's native flag; omit them to use the agent's own
   default. In a fan-out, a child's `model`/`effort` (in its `--child` spec) overrides these.
   An unknown `--model` for an agent with a known catalog is rejected before launch; `--model-force`
-  sends a custom id as-is. Run `portico models [--to <agent>]` to see each agent's valid ids.
+  sends a custom id as-is. Run `portico models [--to <agent>]` to see each agent's valid ids
+  (claude has a fixed catalog; cursor and opencode are probed live from their CLIs). The model
+  and effort a run used are recorded in its `report.md`.
 - `--mode compare --compare-to <agent>` runs isolated **competing** candidate
   implementations in parallel (bounded by `maxConcurrentAgentProcesses`, default 4) and
   records a parent group report with links to each candidate run. Apply one candidate with

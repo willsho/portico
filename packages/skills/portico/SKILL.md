@@ -260,7 +260,7 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico init` — create Portico repo metadata and refresh the generated Portico Skill files
   under `.claude/skills/portico/` and `.agents/skills/portico/`.
 - `portico agents [--url <url>] [--token <token>] [--json]` — list local agents you can delegate to (does not require a running daemon).
-- `portico models [--to <agent>] [--json]` — list the models each agent can run (id, default, aliases). Agents that self-manage model choice show "model selection managed by runtime". Probes are run on demand, so this is slower than `portico agents`.
+- `portico models [--to <agent>] [--json]` — list the models each agent can run (id, default, aliases). claude has a fixed catalog; cursor and opencode are probed live from the CLI on demand (so this is slower than `portico agents`); agents that self-manage model choice show "model selection managed by runtime". The model/effort a run actually used is recorded in its `report.md` (and per child in a group's candidate list).
 - `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation (exit 0 success, 1 fail, 3 client disconnected).
 - `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
 - `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" [--judge-to <agent>]` — run candidate implementations for comparison.

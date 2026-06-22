@@ -2005,3 +2005,29 @@ test("a child's model overrides the group's; a child without one inherits it", a
     await rm(repo, { recursive: true, force: true });
   }
 });
+
+test("a run records the model/effort it used, on run.json and in the report", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "claude", repo, task: "echo", model: "claude-opus-4-8", effort: "high", expectNoChanges: true },
+      { findEntry: () => agentEntry("claude", FAKE_AGENT) },
+    )) {
+      events.push(event);
+    }
+
+    const done = events.at(-1);
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.equal(details.run.model, "claude-opus-4-8");
+    assert.equal(details.run.effort, "high");
+    const report = await readFile(details.artifacts.reportPath, "utf8");
+    assert.match(report, /Model: claude-opus-4-8 \(effort: high\)/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});

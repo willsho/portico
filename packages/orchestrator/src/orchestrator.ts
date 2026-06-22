@@ -2517,6 +2517,8 @@ function createRun(
     mode: options.mode,
     isolation: options.isolation,
     permissionProfile: options.permissionProfile,
+    ...(request.model ? { model: request.model } : {}),
+    ...(request.effort ? { effort: request.effort } : {}),
     status: "created",
     depth: request.depth ?? 0,
     createdAt: now,
@@ -2948,6 +2950,8 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
     "",
     `Target Agent: ${run.targetAgent}`,
     "",
+    run.model ? `Model: ${run.model}${run.effort ? ` (effort: ${run.effort})` : ""}` : undefined,
+    run.model ? "" : undefined,
     `Mode: ${run.mode}`,
     "",
     `Workspace Isolation: ${run.isolation.workspace}`,
@@ -2987,7 +2991,8 @@ async function writeReport(path: string, result: RunResult): Promise<void> {
                 ? " — apply: ok"
                 : ` — apply: FAILS (${candidate.applyCheck.reason ?? "does not apply to base"})`
               : "";
-            return `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status} — ${candidate.changedFiles.length} changed file(s)${agentMs}${apply} — ${candidate.artifacts.reportPath}`;
+            const model = candidate.run.model ? ` — model ${candidate.run.model}` : "";
+            return `${index + 1}. ${candidate.run.targetAgent} — ${candidate.run.status}${model} — ${candidate.changedFiles.length} changed file(s)${agentMs}${apply} — ${candidate.artifacts.reportPath}`;
           })
           .join("\n")
       : undefined,
