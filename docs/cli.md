@@ -173,6 +173,9 @@ Common options:
 | `--judge-to <agent>` | Optional read-only judge over the candidates / merged result |
 | `--judge-instruction <text>` | Override the judge's default review instruction |
 | `--resume <child_id>` | Re-run a child in its existing worktree with a new task (requires `--task` or `--task-file`) |
+| `--dry-run` | Lint the task for a named file, acceptance criteria, and a test command, then exit (code 0 if all three pass, 1 otherwise) — no network call, no worktree |
+| `--context <path-or-glob>` | File or glob to splice into the task as a `### Context: <path>` section before sending; repeatable |
+| `--context-diff <ref>` | `git diff <ref>` output to splice into the task as a `### Context diff: <ref>` section; repeatable |
 | `--name <slug>` | Human-readable run name shown in `runs` / `watch` (defaults to a slug of the task) |
 | `--test <cmd>` | Test command; repeatable |
 | `--verify <cmd>` | Verification check, reported separately from tests (e.g. doc/policy checks); repeatable |
@@ -194,7 +197,21 @@ Common options:
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
 
-Before any agent launches, `delegate` prints a **preflight** to stderr — the resolved daemon
+`--context` / `--context-diff` packing is explicit and deterministic — no retrieval or ranking.
+Sections are appended in flag order under a `## Context` heading, capped at 40,000 combined
+characters (further content is replaced with a `[... context truncated ...]` marker). A glob with
+no matches, an unreadable file, or a failing `git diff <ref>` prints a warning to stderr and is
+skipped rather than failing the whole delegation. `--dry-run` lints the fully packed task text
+(after context injection), so it reports what the agent would actually receive.
+
+Before any agent launches, `delegate` also runs a fast local agent-availability check
+(`discoverAgents({ skipVersion: true })`, no `--version` probes) against every target the request
+would launch — `--to`, each `--compare-to`, and each child's `to` — and fails fast with no
+worktree created if any of them isn't installed. This catches a misspelled or missing agent
+before burning a cold start, rather than after. (Skipped for `--dry-run`, which never contacts
+the daemon or checks agent availability.)
+
+Then, before any agent launches, `delegate` prints a **preflight** to stderr — the resolved daemon
 URL, the **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can never
 retarget the daemon's own cwd), the base ref, the worktree root, the effective timeout, and the
 agents about to run.

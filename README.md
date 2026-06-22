@@ -253,6 +253,14 @@ Delegation controls in the MVP:
   auto-merge. On a conflict it records the conflicting files, their source child, and a
   suggested review order; apply the merged result with `apply <group_id> --all`. Compare
   groups are rejected (their children are competing implementations — pick one with `--child`).
+- `--dry-run` (delegate) lints the task text for a named file, acceptance criteria, and a test
+  command, then exits (0 if all three pass, 1 otherwise) — no network call, no worktree.
+  `--context <path-or-glob>` / `--context-diff <ref>` (repeatable) deterministically splice file
+  contents or a `git diff` into the task before sending, capped at 40,000 combined characters.
+- Before any agent launches, `delegate` also runs a fast local agent-availability check
+  (no `--version` probes) against every target the request would launch, failing fast with no
+  worktree created if one is missing — instead of surfacing as `agent_unavailable` after a
+  cold start is already burned.
 - Before launching, `delegate` prints a **preflight** to stderr — resolved daemon URL,
   **absolute** repo path (a relative `--repo .` is resolved CLI-side so it can't retarget the
   daemon's cwd), base ref, worktree root, and the agents about to run — and, for a multi-agent

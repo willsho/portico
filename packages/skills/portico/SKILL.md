@@ -87,9 +87,21 @@ yourself, or anything where spinning up a separate agent adds no value.
    `--notify` (fire an OS notification when the run reaches a terminal state — pairs with
    `--detach`; macOS only for now); `--json` for machine-readable events;
    `-y`/`--yes` (skip the fan-out confirmation prompt — confirmation is interactive-only, so
-   agent-driven runs never block).
+   agent-driven runs never block);
+   `--dry-run` (lint the task text for a named file, acceptance criteria, and a test command,
+   then exit — code 0 if all three pass, 1 otherwise; no network call, no worktree created; use
+   this before launching a task you're unsure is self-contained enough);
+   repeatable `--context <path-or-glob>` / `--context-diff <ref>` (deterministically splice file
+   contents or a `git diff` into the task before sending, instead of hand-copying excerpts —
+   capped at 40,000 combined characters; a glob with no matches or a failing diff ref warns to
+   stderr and is skipped, not a hard failure; no retrieval/ranking, just explicit enumeration).
 
-   Before launching, `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
+   Before launching, `delegate` also runs a fast local agent-availability check (no `--version`
+   probes) against every target the request would launch — `--to`, each `--compare-to`, each
+   child's `to` — and fails with no worktree created if one is missing, instead of surfacing as
+   `agent_unavailable` after a cold start is already burned. (Skipped for `--dry-run`.)
+
+   Then `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
    **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can't retarget the
    daemon's cwd), the base ref, the worktree root, the effective timeout, and the agents about to run. Read it back to
    confirm the run is pointed at the repo you intended before agents start working.
