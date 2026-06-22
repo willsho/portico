@@ -173,6 +173,10 @@ Common options:
 | `--judge-to <agent>` | Optional read-only judge over the candidates / merged result |
 | `--judge-instruction <text>` | Override the judge's default review instruction |
 | `--resume <child_id>` | Re-run a child in its existing worktree with a new task (requires `--task` or `--task-file`) |
+| `--iterate-from <run_id>` | Prepend a failure/result summary from a previous run (top risks, failing test/verify output, changed files) into this task's `## Context` section, then launch as a brand-new run |
+| `--dry-run` | Lint the task for a named file, acceptance criteria, and a test command, then exit (code 0 if all three pass, 1 otherwise) — no network call, no worktree |
+| `--context <path-or-glob>` | File or glob to splice into the task as a `### Context: <path>` section before sending; repeatable |
+| `--context-diff <ref>` | `git diff <ref>` output to splice into the task as a `### Context diff: <ref>` section; repeatable |
 | `--name <slug>` | Human-readable run name shown in `runs` / `watch` (defaults to a slug of the task) |
 | `--test <cmd>` | Test command; repeatable |
 | `--verify <cmd>` | Verification check, reported separately from tests (e.g. doc/policy checks); repeatable |
@@ -194,7 +198,32 @@ Common options:
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
 
-Before any agent launches, `delegate` prints a **preflight** to stderr — the resolved daemon
+`--iterate-from <run_id>` is deliberately **not** a continuation mechanism — it never reuses a
+worktree or session. It fetches that run's result, builds a `### Previous attempt: <run_id>
+(<status>)` summary (top risks, each failing test/verify command's last ~2,000 characters of
+output, changed files), and splices it into the new task's `## Context` section — composing
+cleanly with `--context`/`--context-diff` if both are given — then launches a perfectly ordinary
+new run. This is orthogonal to `--resume <child_id>` (re-runs a child in its *existing*
+worktree/session) and to any future continuation flag; it only ever bootstraps the prompt for a
+brand-new delegation, so re-delegating after a failure doesn't require hand-copying
+`report.md`/`test.log` excerpts. The summary is capped at 20,000 combined characters, same
+truncation-marker approach as `--context`.
+
+`--context` / `--context-diff` packing is explicit and deterministic — no retrieval or ranking.
+Sections are appended in flag order under a `## Context` heading, capped at 40,000 combined
+characters (further content is replaced with a `[... context truncated ...]` marker). A glob with
+no matches, an unreadable file, or a failing `git diff <ref>` prints a warning to stderr and is
+skipped rather than failing the whole delegation. `--dry-run` lints the fully packed task text
+(after context injection), so it reports what the agent would actually receive.
+
+Before any agent launches, `delegate` also runs a fast local agent-availability check
+(`discoverAgents({ skipVersion: true })`, no `--version` probes) against every target the request
+would launch — `--to`, each `--compare-to`, and each child's `to` — and fails fast with no
+worktree created if any of them isn't installed. This catches a misspelled or missing agent
+before burning a cold start, rather than after. (Skipped for `--dry-run`, which never contacts
+the daemon or checks agent availability.)
+
+Then, before any agent launches, `delegate` prints a **preflight** to stderr — the resolved daemon
 URL, the **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can never
 retarget the daemon's own cwd), the base ref, the worktree root, the effective timeout, and the
 agents about to run.
@@ -372,8 +401,10 @@ never relaxes a gate:
 | `--notify` | OS-notify when a run transitions into a decision-needed or failed state |
 | `--once` / `--json` | Print a single snapshot (the default when stdout is not a TTY) and exit |
 
-The board is a hand-written ANSI TUI with no extra dependencies. When stdout is not a TTY (a pipe
-or redirect), or with `--once` / `--json`, it prints one snapshot and exits so it stays scriptable.
+The board is a hand-written ANSI TUI with no extra dependencies. In an interactive terminal it uses
+the terminal's alternate screen and skips unchanged redraws, so the live refresh does not fill your
+scrollback. When stdout is not a TTY (a pipe or redirect), or with `--once` / `--json`, it prints one
+snapshot and exits so it stays scriptable.
 
 ## `portico status`
 

@@ -286,6 +286,7 @@ Event examples:
 {"type":"agent_start","runId":"run_...","agent":"codex"}
 {"type":"agent_event","runId":"run_...","event":{"type":"content","delta":"..."}}
 {"type":"diff_ready","runId":"run_...","path":".portico/runs/run_.../diff.patch","changedFiles":["delegated.txt"]}
+{"type":"verdict_update","runId":"run_...","verdict":{"status":"running","reviewDecision":"needs_attention","readiness":"not_ready","changedFiles":["delegated.txt"],"tests":{"total":0,"passed":0,"failed":0},"verify":{"total":0,"passed":0,"failed":0},"sandboxEscaped":false,"topRisks":["path policy: passed"]}}
 {"type":"test_start","runId":"run_...","command":"npm test"}
 {"type":"test_done","runId":"run_...","command":"npm test","status":"passed","exitCode":0}
 {"type":"run_done","runId":"run_...","status":"ready","reportPath":"...","resultPath":"...","verdict":{"status":"ready","reviewDecision":"approve","readiness":"ready","changedFiles":["delegated.txt"],"tests":{"total":1,"passed":1,"failed":0},"verify":{"total":0,"passed":0,"failed":0},"sandboxEscaped":false,"topRisks":["tests: 1/1 passed"]}}
@@ -299,6 +300,18 @@ from `result.json`, `report.md`, or a separate review call: `changedFiles`, `dif
 (`ready`/`needs_attention`/`not_ready`), and `topRisks` (flattened, human-readable risk lines).
 Group-run `run_done` (below) does not carry `verdict` — aggregate the children's own verdicts
 via `GET /runs/<group_id>` or `portico review <group_id>` instead.
+
+`verdict_update` is a single-run-only mid-flight checkpoint: emitted once, right after
+`diff_ready` and before any test/verify command runs, carrying the same `RunVerdict` shape as
+`run_done` but necessarily `readiness: "not_ready"` (the run isn't done yet — this is an honest
+in-progress snapshot, not a prediction). It exists so a caller watching a run through a
+potentially long test phase has a trustworthy, Portico-authored signal (`changedFiles`,
+`diffSummary`, `pathPolicy`, `sandboxEscaped`) to look at instead of only raw `agent_event`
+narration. Group/child runs never emit `verdict_update`. In the CLI's default (non-`--json`)
+rendering, this prints as a clearly Portico-labeled line, and the first `agent_event`
+content/reasoning delta for a run is preceded by an "agent narration (unverified, not Portico's
+verdict)" banner — printed once per run, not per chunk — so raw agent text is never visually
+confused with Portico's own structured events.
 
 `sandbox_escape_detected` is emitted only when a worktree-isolated run changes the
 caller's main checkout. Such a run is marked `failed`; the worktree diff remains separate

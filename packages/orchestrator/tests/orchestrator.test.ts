@@ -37,6 +37,19 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     const done = events.at(-1);
     assert.equal(done?.type, "run_done");
     assert.equal(done?.type === "run_done" ? done.status : "", "ready");
+    const diffReadyIndex = events.findIndex((event) => event.type === "diff_ready");
+    const verdictUpdateIndex = events.findIndex((event) => event.type === "verdict_update");
+    const runDoneIndex = events.findIndex((event) => event.type === "run_done");
+    assert.ok(diffReadyIndex >= 0, "single run should emit diff_ready");
+    assert.ok(verdictUpdateIndex > diffReadyIndex, "single run should emit verdict_update after diff_ready");
+    assert.ok(runDoneIndex > verdictUpdateIndex, "single run should emit run_done after verdict_update");
+    const diffReady = events[diffReadyIndex];
+    const verdictUpdate = events[verdictUpdateIndex];
+    assert.equal(verdictUpdate?.type === "verdict_update" ? verdictUpdate.verdict.readiness : "", "not_ready");
+    assert.deepEqual(
+      verdictUpdate?.type === "verdict_update" ? verdictUpdate.verdict.changedFiles : [],
+      diffReady?.type === "diff_ready" ? diffReady.changedFiles : [],
+    );
     const runId = done?.type === "run_done" ? done.runId : "";
     const details = await orchestrator.getRun(repo, runId);
     assert.equal(details.run.status, "ready");
@@ -527,6 +540,7 @@ test("compareTargets are normalized to children and produce group+child lineage"
 
     const done = events.at(-1);
     assert.equal(done?.type, "run_done");
+    assert.equal(events.some((event) => event.type === "verdict_update"), false);
     const groupId = done?.type === "run_done" ? done.runId : "";
     const group = await orchestrator.getRun(repo, groupId);
     assert.equal(group.run.role, "group");

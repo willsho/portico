@@ -244,6 +244,7 @@ export type DelegationEvent =
   | { type: "test_start"; runId: string; command: string }
   | { type: "test_done"; runId: string; command: string; status: "passed" | "failed"; exitCode: number | null }
   | { type: "diff_ready"; runId: string; path: string; changedFiles: string[] }
+  | { type: "verdict_update"; runId: string; verdict: RunVerdict }
   | { type: "fanin_start"; runId: string; strategy: "merge" | "judge" }
   | { type: "merge_done"; runId: string; status: "ready" | "conflict"; conflicts?: string[] }
   | { type: "judge_done"; runId: string; recommendedChildId?: string; verdict?: "approve" | "needs_attention" }

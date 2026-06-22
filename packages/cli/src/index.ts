@@ -6,6 +6,7 @@ import { stopCommand } from "./commands/stop.ts";
 import { agentsCommand } from "./commands/agents.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { delegateCommand } from "./commands/delegate.ts";
+import { resultCommand } from "./commands/result.ts";
 import {
   runsCommand,
   statusCommand,
@@ -37,6 +38,7 @@ Usage:
   portico runs [--repo .]     List delegation runs (--status, --since filters; --watch for the board)
   portico watch [--repo .]    Live status board of runs (grouped, inline apply/discard/follow)
   portico status <run_id>     Show a delegation run
+  portico result <run_id>     Minimal machine-readable verdict for a run
   portico review <run_id>     Aggregate a group's children for review
   portico patch-stack <run_id> <run_id>... Read-only file-overlap & apply-order summary across runs
   portico integrate <grp_id>  Merge a group's ready children into one patch
@@ -81,6 +83,8 @@ async function main(): Promise<number> {
       return watchCommand(rest);
     case "status":
       return statusCommand(rest);
+    case "result":
+      return resultCommand(rest);
     case "review":
       return reviewCommand(rest);
     case "patch-stack":

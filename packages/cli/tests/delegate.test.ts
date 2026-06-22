@@ -3,7 +3,47 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { delegateCommand, parseCoverageManifest } from "../src/commands/delegate.ts";
+import { buildIterateSection, delegateCommand, parseCoverageManifest, printEvent } from "../src/commands/delegate.ts";
+import { registerProvider } from "@portico/core";
+import { buildContextSections } from "../src/commands/context-pack.ts";
+import type { RunDetails } from "@portico/orchestrator";
+
+registerProvider({
+  id: "agent",
+  displayName: "Agent",
+  commandNames: ["nonexistent-command-name-here-12345"],
+  envPathNames: ["PORTICO_AGENT_PATH"],
+  protocols: ["generic-cli"],
+});
+process.env.PORTICO_AGENT_PATH = process.execPath;
+process.env.PORTICO_CODEX_PATH = process.execPath;
+process.env.PORTICO_CLAUDE_PATH = process.execPath;
+
+
+function capturePrintEvent(fn: () => void): string {
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWrite = process.stdout.write;
+  let output = "";
+  console.log = (msg?: unknown) => {
+    output += String(msg ?? "") + "\n";
+  };
+  console.error = (msg?: unknown) => {
+    output += String(msg ?? "") + "\n";
+  };
+  process.stdout.write = ((chunk: unknown) => {
+    output += String(chunk ?? "");
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    fn();
+    return output;
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    process.stdout.write = originalWrite;
+  }
+}
 
 async function captureError(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
   const originalError = console.error;
@@ -17,6 +57,89 @@ async function captureError(fn: () => Promise<number>): Promise<{ code: number; 
     console.error = originalError;
   }
 }
+
+function iterateRunDetails(overrides: {
+  tests?: Array<{ command: string; status: "passed" | "failed"; exitCode: number | null; output: string }>;
+  verify?: Array<{ command: string; status: "passed" | "failed"; exitCode: number | null; output: string }>;
+  changedFiles?: string[];
+} = {}): RunDetails {
+  const run = {
+    id: "run_previous",
+    repoPath: "/repo",
+    worktreePath: "/repo/.portico/worktrees/run_previous",
+    branchName: "portico/run_previous",
+    rootAgent: "codex",
+    targetAgent: "codex",
+    task: "previous task",
+    mode: "implement" as const,
+    isolation: { workspace: "worktree" as const },
+    permissionProfile: "auto-edit" as const,
+    status: "failed" as const,
+    depth: 0,
+    createdAt: "2026-06-22T00:00:00.000Z",
+    updatedAt: "2026-06-22T00:00:00.000Z",
+  };
+  const artifacts = {
+    runId: "run_previous",
+    taskPath: "task.md",
+    eventsPath: "events.ndjson",
+    agentLogPath: "agent.log",
+    reportPath: "report.md",
+    resultPath: "result.json",
+  };
+  return {
+    run,
+    artifacts,
+    result: {
+      run,
+      artifacts,
+      changedFiles: overrides.changedFiles ?? [],
+      tests: overrides.tests ?? [],
+      verify: overrides.verify,
+      agentEvents: [],
+    },
+  };
+}
+
+test("printEvent renders verdict_update as an in-progress Portico signal", () => {
+  const verdict = {
+    status: "running" as const,
+    readiness: "not_ready" as const,
+    changedFiles: ["delegated.txt"],
+    tests: { total: 0, passed: 0, failed: 0 },
+    verify: { total: 0, passed: 0, failed: 0 },
+    sandboxEscaped: false,
+    topRisks: ["path policy: passed"],
+  };
+  const verdictOutput = capturePrintEvent(() => {
+    printEvent({ type: "verdict_update", runId: "run_verdict", verdict });
+  });
+  const doneOutput = capturePrintEvent(() => {
+    printEvent({
+      type: "run_done",
+      runId: "run_verdict",
+      status: "ready",
+      reportPath: "report.md",
+      resultPath: "result.json",
+      verdict: { ...verdict, status: "ready", readiness: "ready" },
+    });
+  });
+
+  assert.match(verdictOutput, /\[run_verdict\] verdict \(Portico, in progress\): path policy: passed/);
+  assert.doesNotMatch(doneOutput, /Portico, in progress/);
+});
+
+test("printEvent labels agent narration once per run before the first delta", () => {
+  const output = capturePrintEvent(() => {
+    printEvent({ type: "agent_event", runId: "run_narration_once", event: { type: "content", delta: "first " } });
+    printEvent({ type: "agent_event", runId: "run_narration_once", event: { type: "content", delta: "second" } });
+  });
+
+  const banner = "[run_narration_once] agent narration (unverified, not Portico's verdict):";
+  assert.equal(output.split(banner).length - 1, 1);
+  assert.ok(output.indexOf(banner) < output.indexOf("first "));
+  assert.equal(output.endsWith("first second"), true);
+});
 
 test("delegate command requires exactly one of --task and --task-file", async () => {
   let result = await captureError(() => delegateCommand(["--to", "agent"]));
@@ -236,4 +359,230 @@ test("parseCoverageManifest extracts string paths from varied manifest shapes", 
   assert.deepEqual(parseCoverageManifest('{}'), []);
   assert.deepEqual(parseCoverageManifest('{"other": ["a.ts"]}'), []);
   assert.deepEqual(parseCoverageManifest('invalid json'), []);
+});
+
+test("buildIterateSection summarizes failed checks and changed files", async () => {
+  const section = await buildIterateSection(iterateRunDetails({
+    tests: [{ command: "npm test", status: "failed", exitCode: 1, output: "line one\nfinal error" }],
+    changedFiles: ["packages/cli/src/commands/delegate.ts", "packages/cli/tests/delegate.test.ts"],
+  }));
+
+  assert.match(section, /### Previous attempt: run_previous \(failed\)/);
+  assert.match(section, /tests: 0\/1 passed/);
+  assert.match(section, /Failing checks:/);
+  assert.match(section, /npm test \(exit 1\): line one\nfinal error/);
+  assert.match(section, /Changed files in that attempt: packages\/cli\/src\/commands\/delegate\.ts, packages\/cli\/tests\/delegate\.test\.ts/);
+});
+
+test("buildIterateSection omits failing checks block when there are no failures", async () => {
+  const section = await buildIterateSection(iterateRunDetails({
+    tests: [{ command: "npm test", status: "passed", exitCode: 0, output: "ok" }],
+    changedFiles: [],
+  }));
+
+  assert.doesNotMatch(section, /Failing checks:/);
+  assert.match(section, /Changed files in that attempt: none/);
+});
+
+test("buildIterateSection truncates long summaries with an omitted-count marker", async () => {
+  const output = `${"a".repeat(2500)}LAST_ERROR`;
+  const section = await buildIterateSection(iterateRunDetails({
+    tests: [{ command: "npm test", status: "failed", exitCode: 1, output }],
+    changedFiles: ["src/a.ts"],
+  }), 500);
+
+  assert.match(section, /\[\.\.\. \d+ earlier characters omitted \.\.\.\]/);
+  assert.match(section, /\[\.\.\. summary truncated, \d+ more characters omitted \.\.\.\]/);
+});
+
+test("delegateCommand with --iterate-from splices previous run summary into delegate request", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const calls: string[] = [];
+  let delegateBody = "";
+
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/runs/run_previous")) {
+      return new Response(JSON.stringify(iterateRunDetails({
+        tests: [{ command: "npm test", status: "failed", exitCode: 1, output: "expected failure" }],
+        changedFiles: ["src/fix.ts"],
+      })), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/delegate")) {
+      delegateBody = String(init?.body ?? "");
+      return new Response(
+        `${JSON.stringify({ type: "run_done", runId: "run_2", status: "ready", reportPath: "report.md", resultPath: "result.json" })}\n`,
+        { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+      );
+    }
+    assert.fail(`unexpected fetch: ${url}`);
+  };
+  console.log = () => {};
+  console.error = () => {};
+
+  try {
+    const code = await delegateCommand([
+      "--to", "agent",
+      "--task", "Refine packages/cli/src/commands/delegate.ts. Acceptance criteria: npm test passes.",
+      "--iterate-from", "run_previous",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    assert.equal(calls.filter((url) => url.includes("/runs/run_previous")).length, 1);
+    assert.equal(calls.filter((url) => url.includes("/delegate")).length, 1);
+    const request = JSON.parse(delegateBody);
+    assert.match(request.task, /## Context/);
+    assert.match(request.task, /### Previous attempt: run_previous \(failed\)/);
+    assert.match(request.task, /npm test \(exit 1\): expected failure/);
+    assert.match(request.task, /Changed files in that attempt: src\/fix\.ts/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+test("delegateCommand with --iterate-from returns 1 on unreachable daemon and does not delegate", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  let fetchCount = 0;
+  let errOut = "";
+
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    throw Object.assign(new Error("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+  };
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+
+  try {
+    const code = await delegateCommand([
+      "--to", "agent",
+      "--task", "Refine packages/cli/src/commands/delegate.ts. Acceptance criteria: npm test passes.",
+      "--iterate-from", "run_previous",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 1);
+    assert.equal(fetchCount, 2);
+    assert.match(errOut, /daemon not running|daemon is running|fetch failed/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
+});
+
+test("delegateCommand with --dry-run prints report and returns code based on heuristics", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    assert.fail("fetch should not be called in dry-run mode");
+  };
+
+  const originalLog = console.log;
+  let logOut = "";
+  console.log = (msg?: unknown) => {
+    logOut += String(msg ?? "") + "\n";
+  };
+
+  try {
+    // 1. Missing all three signals prints all three as failing and returns 1
+    const result1 = await delegateCommand([
+      "--to", "agent",
+      "--task", "clean task with no paths or criteria or tests",
+      "--dry-run",
+    ]);
+    assert.equal(result1, 1);
+    assert.match(logOut, /\[✗\] names a concrete file or path/);
+    assert.match(logOut, /\[✗\] states acceptance criteria/);
+    assert.match(logOut, /\[✗\] specifies a test command/);
+
+    logOut = "";
+    // 2. Task with a file path, "acceptance criteria:", and --test passed returns 0
+    const result2 = await delegateCommand([
+      "--to", "agent",
+      "--task", "Please modify packages/cli/src/main.ts. Acceptance criteria: it must work.",
+      "--test", "npm run test",
+      "--dry-run",
+    ]);
+    assert.equal(result2, 0);
+    assert.match(logOut, /\[✓\] names a concrete file or path/);
+    assert.match(logOut, /\[✓\] states acceptance criteria/);
+    assert.match(logOut, /\[✓\] specifies a test command/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+});
+
+test("delegateCommand agent availability preflight fails when agent is not available", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    assert.fail("fetch should not be called when preflight availability check fails");
+  };
+
+  const originalError = console.error;
+  let errOut = "";
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+
+  const origAgentPath = process.env.PORTICO_AGENT_PATH;
+  delete process.env.PORTICO_AGENT_PATH;
+
+  try {
+    const code = await delegateCommand([
+      "--to", "agent",
+      "--task", "do something",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 1);
+    assert.match(errOut, /agent "agent" is not available/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+    if (origAgentPath !== undefined) {
+      process.env.PORTICO_AGENT_PATH = origAgentPath;
+    }
+  }
+});
+
+test("buildContextSections handles file globs, file content, git diff, and character limits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "portico-context-"));
+  const fileA = join(dir, "a.txt");
+  const fileB = join(dir, "b.txt");
+  await writeFile(fileA, "hello from a");
+  await writeFile(fileB, "hello from b");
+
+  try {
+    // 1. One file glob match gets spliced in with the ### Context: <path> header
+    const res1 = await buildContextSections(dir, ["*.txt"]);
+    assert.match(res1, /### Context: a\.txt/);
+    assert.match(res1, /hello from a/);
+    assert.match(res1, /### Context: b\.txt/);
+    assert.match(res1, /hello from b/);
+
+    // 2. A --context-diff with a bad ref produces a stderr warning but doesn't throw
+    const originalError = console.error;
+    let errOut = "";
+    console.error = (msg?: unknown) => {
+      errOut += String(msg ?? "") + "\n";
+    };
+    try {
+      const resDiff = await buildContextSections(dir, [], ["invalid-ref-12345"]);
+      assert.equal(resDiff, "");
+      assert.match(errOut, /warning: git diff for ref "invalid-ref-12345" failed/);
+    } finally {
+      console.error = originalError;
+    }
+
+    // 3. Combined cap truncates and appends the marker when content exceeds it
+    const resCap = await buildContextSections(dir, ["a.txt"], [], 15);
+    assert.equal(resCap.length, 15 + "\n[... context truncated, 26 more characters omitted ...]".length);
+    assert.match(resCap, /\[\.\.\. context truncated, \d+ more characters omitted \.\.\.\]/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

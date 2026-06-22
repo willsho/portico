@@ -126,7 +126,7 @@ export function classifyFetchError(err: unknown, url: string, env: NodeJS.Proces
     }
     return {
       message: `daemon not running at ${url}`,
-      hint: "start it with `portico start` (or pass `--auto-start`), or set PORTICO_URL to a running daemon.",
+      hint: "start it with `portico start`, or set PORTICO_URL to a running daemon. `portico delegate` auto-starts one for you.",
     };
   }
   if (code === "EACCES" || code === "EPERM") {

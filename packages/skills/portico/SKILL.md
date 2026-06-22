@@ -87,9 +87,21 @@ yourself, or anything where spinning up a separate agent adds no value.
    `--notify` (fire an OS notification when the run reaches a terminal state — pairs with
    `--detach`; macOS only for now); `--json` for machine-readable events;
    `-y`/`--yes` (skip the fan-out confirmation prompt — confirmation is interactive-only, so
-   agent-driven runs never block).
+   agent-driven runs never block);
+   `--dry-run` (lint the task text for a named file, acceptance criteria, and a test command,
+   then exit — code 0 if all three pass, 1 otherwise; no network call, no worktree created; use
+   this before launching a task you're unsure is self-contained enough);
+   repeatable `--context <path-or-glob>` / `--context-diff <ref>` (deterministically splice file
+   contents or a `git diff` into the task before sending, instead of hand-copying excerpts —
+   capped at 40,000 combined characters; a glob with no matches or a failing diff ref warns to
+   stderr and is skipped, not a hard failure; no retrieval/ranking, just explicit enumeration).
 
-   Before launching, `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
+   Before launching, `delegate` also runs a fast local agent-availability check (no `--version`
+   probes) against every target the request would launch — `--to`, each `--compare-to`, each
+   child's `to` — and fails with no worktree created if one is missing, instead of surfacing as
+   `agent_unavailable` after a cold start is already burned. (Skipped for `--dry-run`.)
+
+   Then `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
    **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can't retarget the
    daemon's cwd), the base ref, the worktree root, the effective timeout, and the agents about to run. Read it back to
    confirm the run is pointed at the repo you intended before agents start working.
@@ -129,7 +141,13 @@ yourself, or anything where spinning up a separate agent adds no value.
    read `report.md`'s `## Portico Observations` section, or `result.json` directly. Trust these
    over the agent's narration — the streamed agent log can show mojibake, internal sub-agent
    chatter, or timeouts that don't reflect the files on disk. The agent log (`agent.ndjson`) is
-   a log, not a status source.
+   a log, not a status source. While a single (non-group) run is still in progress, a
+   `verdict_update` event (same `RunVerdict` shape, but necessarily `readiness: "not_ready"`) is
+   emitted once, right after the diff is ready and before tests run — an honest mid-flight
+   Portico signal, not the agent's self-report. In the default (non-`--json`) terminal rendering
+   it prints as a clearly Portico-labeled line, and raw agent narration (the `content`/`reasoning`
+   deltas) is preceded by an "agent narration (unverified, not Portico's verdict)" banner once per
+   run, so the two are never visually confused while watching a stream live.
    The report's `## Telemetry` section buckets wall time by phase (worktree setup, agent, diff,
    tests, verify, and — for groups — fan-in), and a group's candidate list shows each child's
    agent duration; use these to see whether time went to the agent, the checks, or fan-in
@@ -176,8 +194,12 @@ yourself, or anything where spinning up a separate agent adds no value.
 ## Iterating and orchestrating
 
 - The delegate has no memory between runs. To iterate, launch a **new** `portico delegate`
-  with a refined task that folds in what the previous run got wrong — quote lines from its
-  `report.md` / `test.log` directly into the new task.
+  with a refined task that folds in what the previous run got wrong. `--iterate-from <run_id>`
+  automates the "quote lines from its `report.md` / `test.log`" part — it deterministically
+  splices that run's top risks, failing test/verify output, and changed files into the new
+  task's `## Context` section (composes with `--context`/`--context-diff`), then launches an
+  ordinary new run. It is **not** a continuation — no shared worktree or session — so it's
+  orthogonal to `--resume` below; still write your own refinement in `--task`.
 - To iterate on a **child of a group** without re-running the whole group, use
   `portico delegate --resume <child_id> --task "<refinement>"`. It re-runs that child in its
   existing worktree, regenerates the diff, re-runs tests, and recomputes the group (for a
@@ -236,7 +258,9 @@ yourself, or anything where spinning up a separate agent adds no value.
   follow/review/integrate the selected run. Active rows show `idle <ago>` (time since the run's
   last event) so a stalled or silent run is obvious at a glance. Filter with `--status` /
   `--needs-review` / `--to <agent>` / `--since`. Non-TTY (or `--once` / `--json`) prints a
-  one-shot snapshot instead, so it stays scriptable. Useful when several delegations run in parallel.
+  one-shot snapshot instead, so it stays scriptable. Interactive terminals use the alternate screen
+  and skip unchanged redraws, so live refreshes do not fill scrollback. Useful when several
+  delegations run in parallel.
 - `portico status <run_id>` — show a run's artifacts, changed files, tests, and live progress
   (current phase, whether an agent is still running, last event).
 - `portico review <group_id>` — aggregate a group's children for review, with cross-child file overlap and a per-child apply check against the group base (`--ready-only` / `--json` / `--open-diff`).

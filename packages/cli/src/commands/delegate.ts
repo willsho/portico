@@ -19,8 +19,13 @@ import {
 import { logsCommand } from "./runs.ts";
 import { buildRunVerdict } from "@portico/orchestrator";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
+import { discoverAgents } from "@portico/core";
+import { installBuiltinAdapters } from "@portico/adapters";
+import { buildContextSections } from "./context-pack.ts";
+
 
 export const EXIT_CLIENT_DISCONNECTED = 3;
+const narratedRuns = new Set<string>();
 
 export function parseCoverageManifest(raw: string): string[] {
   try {
@@ -38,6 +43,40 @@ export function parseCoverageManifest(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+export async function buildIterateSection(details: RunDetails, maxChars = 20000): Promise<string> {
+  const { run, result } = details;
+  const verdict = buildRunVerdict(run, result);
+  const lines: string[] = [
+    `### Previous attempt: ${run.id} (${run.status})`,
+    verdict.topRisks.length ? verdict.topRisks.join("\n") : "no risks recorded.",
+  ];
+
+  const failedChecks = [...(result?.tests ?? []), ...(result?.verify ?? [])].filter((check) => check.status === "failed");
+  if (failedChecks.length) {
+    lines.push("", "Failing checks:");
+    for (const check of failedChecks) {
+      lines.push(`- ${check.command} (exit ${check.exitCode ?? "unknown"}): ${lastCharsWithMarker(check.output, 2000)}`);
+    }
+  }
+
+  lines.push("", `Changed files in that attempt: ${result?.changedFiles?.length ? result.changedFiles.join(", ") : "none"}`);
+  const fullText = lines.join("\n");
+  if (fullText.length > maxChars) {
+    const omitted = fullText.length - maxChars;
+    const truncated = fullText.slice(0, maxChars);
+    const newline = truncated.endsWith("\n") ? "" : "\n";
+    return truncated + newline + `[... summary truncated, ${omitted} more characters omitted ...]`;
+  }
+
+  return fullText;
+}
+
+function lastCharsWithMarker(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const omitted = text.length - maxChars;
+  return `[... ${omitted} earlier characters omitted ...]\n${text.slice(-maxChars)}`;
 }
 
 export async function delegateCommand(args: string[]): Promise<number> {
@@ -62,6 +101,11 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "judge-to": { type: "string" },
       "judge-instruction": { type: "string" },
       resume: { type: "string" },
+      "iterate-from": { type: "string" },
+      context: { type: "string", multiple: true },
+      "context-diff": { type: "string", multiple: true },
+      "dry-run": { type: "boolean" },
+
       test: { type: "string", multiple: true },
       verify: { type: "string", multiple: true },
       allowed: { type: "string", multiple: true },
@@ -93,6 +137,10 @@ Options:
   --repo <path>            Repository path (default: cwd)
   --task <task>            The task description
   --task-file <path>       Read task from a UTF-8 file, or stdin with -
+  --dry-run                Lint the task for files/acceptance-criteria/test-command, then exit
+  --context <path>         File or glob to splice into the task as context (repeatable)
+  --context-diff <ref>     \`git diff <ref>\` output to splice into the task as context (repeatable)
+
   --name <name>            Human-readable run name shown in runs/watch (default: slug of task)
   --mode <mode>            Delegation mode
   --isolation <mode>       Isolation mode
@@ -105,6 +153,7 @@ Options:
   --judge-to <agent>       Agent to judge fan-in
   --judge-instruction <t>  Instruction for the judge
   --resume <run_id>        Resume a child run with a new task
+  --iterate-from <run_id>  Prepend a failure/result summary from a previous run into this task
   --test <cmd>             Test command to run (repeatable)
   --verify <cmd>           Verification check, reported separately from tests (repeatable)
   --allowed <path>         Allowed path (repeatable)
@@ -155,6 +204,34 @@ Exit codes:
     return 1;
   }
 
+  const repo = resolveRepoArg(values.repo);
+  const contextBlocks: string[] = [];
+  if (values["iterate-from"] && !values.resume) {
+    const runId = values["iterate-from"];
+    const target = `${daemonUrl(values.url)}/runs/${encodeURIComponent(runId)}?repo=${encodeURIComponent(repo)}`;
+    let details: RunDetails;
+    try {
+      details = await requestJson<RunDetails>(target, {}, values.token);
+    } catch (err) {
+      if (err instanceof DaemonUnreachableError) return 1;
+      console.error(`[portico] Error reading --iterate-from run "${runId}": ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+    contextBlocks.push(await buildIterateSection(details));
+  }
+  const contextSections = await buildContextSections(
+    repo,
+    values.context ?? [],
+    values["context-diff"] ?? [],
+  );
+  if (contextSections) {
+    contextBlocks.push(contextSections);
+  }
+  if (contextBlocks.length) {
+    task.value = task.value + "\n\n## Context\n" + contextBlocks.join("\n\n");
+  }
+
+
   // Resume mode: resume a child run with a new task.
   if (values.resume) {
     const base = daemonUrl(values.url);
@@ -195,6 +272,24 @@ Exit codes:
     console.error("Usage: portico delegate --to <agent> (--task <task> | --task-file <path>) [--repo .] [--test <cmd>]");
     return 1;
   }
+
+  if (values["dry-run"]) {
+    const packedText = task.value;
+    const hasFilePath = /[\w.-]+\/[\w.-]+\.[A-Za-z0-9]{1,5}\b/.test(packedText);
+    const lowerText = packedText.toLowerCase();
+    const hasAcceptance = ["acceptance criteria", "done when", "definition of done", "acceptance:", "criteria:"].some(s => lowerText.includes(s));
+    const hasTestFlag = (values.test?.length ?? 0) > 0;
+    const hasTestCmd = hasTestFlag || /\b(npm (run|test)|pytest|go test|cargo test|yarn test|pnpm test)\b/i.test(packedText);
+
+    console.log(`[portico] dry-run task self-check (--to ${values.to}):`);
+    console.log(`  [${hasFilePath ? "✓" : "✗"}] names a concrete file or path`);
+    console.log(`  [${hasAcceptance ? "✓" : "✗"}] states acceptance criteria`);
+    console.log(`  [${hasTestCmd ? "✓" : "✗"}] specifies a test command`);
+
+    const allPass = hasFilePath && hasAcceptance && hasTestCmd;
+    return allPass ? 0 : 1;
+  }
+
 
   // Fan-in policy: merge strategy (split defaults to integration) + optional judge.
   let fanIn: FanInPolicy | undefined;
@@ -255,11 +350,46 @@ Exit codes:
 
   const base = daemonUrl(values.url);
 
+  installBuiltinAdapters();
+  const discovered = await discoverAgents({ skipVersion: true });
+  const availableProviders = new Set(
+    discovered.filter((a) => a.available).map((a) => a.provider)
+  );
+
+  const targets = new Set<string>();
+  if (request.to) {
+    targets.add(request.to);
+  }
+  if (request.compareTargets) {
+    for (const t of request.compareTargets) {
+      targets.add(t);
+    }
+  }
+  if (request.children) {
+    for (const c of request.children) {
+      if (c.to) {
+        targets.add(c.to);
+      }
+    }
+  }
+
+  let anyMissing = false;
+  for (const target of targets) {
+    if (!availableProviders.has(target)) {
+      console.error(`[portico] agent "${target}" is not available — check: portico agents`);
+      anyMissing = true;
+    }
+  }
+  if (anyMissing) {
+    return 1;
+  }
+
   // Preflight: echo the resolved facts *before* any agent launches, so a wrong repo / base ref
   // is caught up front instead of after N fan-out agents have already burned time. For a
   // multi-agent fan-out at an interactive terminal, also require confirmation (skip with
   // --yes / non-TTY so agent-driven and scripted use never blocks).
   if (!(await printPreflightAndConfirm(request, base, values.yes ?? false))) {
+
     console.error("[portico] aborted before launch (no agents started).");
     return 0;
   }
@@ -389,6 +519,22 @@ async function maybeApplyOnReady(
   }
 }
 
+export function getNextActionHint(
+  run: { id: string; status: RunStatus; role?: string },
+  reviewDecision?: "approve" | "needs_attention" | null
+): string {
+  const isGroup = (run.role ?? "single") === "group";
+  if (run.status === "ready" && reviewDecision === "needs_attention") {
+    return `needs attention before apply; inspect: portico status ${run.id}`;
+  } else if (run.status === "ready") {
+    return isGroup ? `apply: portico apply ${run.id} --all` : `apply: portico apply ${run.id}`;
+  } else if (run.status === "partial" || isGroup) {
+    return `review children: portico review ${run.id}`;
+  } else {
+    return `not ready (${run.status}); inspect: portico status ${run.id}`;
+  }
+}
+
 /**
  * After a run finishes, print a copy-paste apply command plus a risk summary
  * (path policy, tests/verify, gate warnings). Lets an authorized reviewer act in one
@@ -405,23 +551,13 @@ async function printReviewSummary(runId: string, repo: string, url?: string, tok
   }
 
   const { run, result } = details;
-  const isGroup = (run.role ?? "single") === "group";
   const verdict = buildRunVerdict(run, result);
 
   console.log("\n── Review summary ──────────────────────────────");
   console.log(`run ${run.id}: ${run.status}`);
   console.log(verdict.topRisks.length ? verdict.topRisks.join("\n") : "no risks recorded.");
   console.log("");
-  if (run.status === "ready" && result?.reviewDecision === "needs_attention") {
-    // Ready by gate, but Portico flagged it (e.g. no file changes) — don't lead with apply.
-    console.log(`needs attention before apply; inspect: portico status ${run.id}`);
-  } else if (run.status === "ready") {
-    console.log(isGroup ? `apply: portico apply ${run.id} --all` : `apply: portico apply ${run.id}`);
-  } else if (run.status === "partial" || isGroup) {
-    console.log(`review children: portico review ${run.id}`);
-  } else {
-    console.log(`not ready (${run.status}); inspect: portico status ${run.id}`);
-  }
+  console.log(getNextActionHint(run, result?.reviewDecision));
   console.log(`discard: portico discard ${run.id}`);
 }
 
@@ -601,9 +737,13 @@ export function printEvent(event: DelegationEvent): void {
       console.log(`[${event.runId}] agent ${event.agent} started`);
       return;
     case "agent_event":
-      if (event.event.type === "content") process.stdout.write(event.event.delta);
-      else if (event.event.type === "reasoning") process.stdout.write(event.event.delta);
-      else if (event.event.type === "tool_call") console.log(`\n[${event.runId}] tool: ${event.event.name}`);
+      if (event.event.type === "content" || event.event.type === "reasoning") {
+        if (!narratedRuns.has(event.runId)) {
+          console.log(`[${event.runId}] agent narration (unverified, not Portico's verdict):`);
+          narratedRuns.add(event.runId);
+        }
+        process.stdout.write(event.event.delta);
+      } else if (event.event.type === "tool_call") console.log(`\n[${event.runId}] tool: ${event.event.name}`);
       else if (event.event.type === "tool_result") console.log(`\n[${event.runId}] tool result: ${event.event.name}`);
       else if (event.event.type === "done") console.log(`\n[${event.runId}] agent done`);
       else if (event.event.type === "error") console.log(`\n[${event.runId}] agent error: ${event.event.error}`);
@@ -615,6 +755,11 @@ export function printEvent(event: DelegationEvent): void {
     case "diff_ready":
       console.log(`\n[${event.runId}] diff ${event.path}`);
       console.log(`changed files: ${event.changedFiles.length ? event.changedFiles.join(", ") : "none"}`);
+      return;
+    case "verdict_update":
+      console.log(
+        `[${event.runId}] verdict (Portico, in progress): ${event.verdict.topRisks.length ? event.verdict.topRisks.join("; ") : "no risks yet"}`,
+      );
       return;
     case "fanin_start":
       console.log(`[${event.runId}] fan-in: ${event.strategy}`);

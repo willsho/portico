@@ -253,6 +253,18 @@ Delegation controls in the MVP:
   auto-merge. On a conflict it records the conflicting files, their source child, and a
   suggested review order; apply the merged result with `apply <group_id> --all`. Compare
   groups are rejected (their children are competing implementations — pick one with `--child`).
+- `--iterate-from <run_id>` (delegate) splices a previous run's failure/result summary (top
+  risks, failing test/verify output, changed files) into the new task's `## Context` section,
+  then launches an ordinary new run — never a continuation. Orthogonal to `--resume`, which
+  re-runs a child in its existing worktree/session.
+- `--dry-run` (delegate) lints the task text for a named file, acceptance criteria, and a test
+  command, then exits (0 if all three pass, 1 otherwise) — no network call, no worktree.
+  `--context <path-or-glob>` / `--context-diff <ref>` (repeatable) deterministically splice file
+  contents or a `git diff` into the task before sending, capped at 40,000 combined characters.
+- Before any agent launches, `delegate` also runs a fast local agent-availability check
+  (no `--version` probes) against every target the request would launch, failing fast with no
+  worktree created if one is missing — instead of surfacing as `agent_unavailable` after a
+  cold start is already burned.
 - Before launching, `delegate` prints a **preflight** to stderr — resolved daemon URL,
   **absolute** repo path (a relative `--repo .` is resolved CLI-side so it can't retarget the
   daemon's cwd), base ref, worktree root, and the agents about to run — and, for a multi-agent
@@ -285,8 +297,9 @@ Delegation controls in the MVP:
   `i` integrate, `enter` status); `apply` first shows a one-line guard check and asks to confirm.
   `--needs-review` / `--to <agent>` / `--status` / `--since` filter the board. With no TTY (or
   `--once` / `--json`) it prints a single snapshot instead, so it stays scriptable. The board is a
-  hand-written ANSI TUI with no extra dependencies, and delegates every action to the existing
-  commands — it never relaxes a gate (`apply` still requires a clean tracked tree).
+  hand-written ANSI TUI with no extra dependencies; in interactive terminals it uses the alternate
+  screen and skips unchanged redraws so refreshes do not fill scrollback. It delegates every action
+  to the existing commands — it never relaxes a gate (`apply` still requires a clean tracked tree).
 - `cleanup` reclaims finished runs: by default it removes only the worktree and keeps
   artifacts (`report.md` / `diff.patch` / `events.ndjson`); `--purge` also deletes artifacts.
   It targets failed + cancelled runs by default (`--status` to override, `--older-than <dur>`
