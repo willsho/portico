@@ -445,6 +445,56 @@ test("delegateCommand with --iterate-from splices previous run summary into dele
   }
 });
 
+test("delegateCommand with --continue posts to continue endpoint with resolved repo", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const calls: string[] = [];
+  let continueBody = "";
+
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/runs/run_previous/continue")) {
+      continueBody = String(init?.body ?? "");
+      return new Response(
+        `${JSON.stringify({ type: "run_done", runId: "run_previous", status: "ready", reportPath: "report.md", resultPath: "result.json" })}\n`,
+        { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+      );
+    }
+    assert.fail(`unexpected fetch: ${url}`);
+  };
+  console.log = () => {};
+  console.error = () => {};
+
+  try {
+    const code = await delegateCommand([
+      "--continue", "run_previous",
+      "--task", "Refine the existing worktree. Acceptance criteria: npm test passes.",
+      "--repo", ".",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0] ?? "", /\/runs\/run_previous\/continue\?repo=/);
+    assert.equal(JSON.parse(continueBody).task, "Refine the existing worktree. Acceptance criteria: npm test passes.");
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+test("delegateCommand rejects combined continuation modes", async () => {
+  const result = await captureError(() => delegateCommand([
+    "--continue", "run_previous",
+    "--iterate-from", "run_other",
+    "--task", "Refine packages/cli/src/commands/delegate.ts. Acceptance criteria: npm test passes.",
+  ]));
+  assert.equal(result.code, 1);
+  assert.match(result.output, /mutually exclusive/);
+});
+
 test("delegateCommand with --iterate-from returns 1 on unreachable daemon and does not delegate", async () => {
   const originalFetch = globalThis.fetch;
   const originalError = console.error;

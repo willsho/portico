@@ -101,6 +101,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "judge-to": { type: "string" },
       "judge-instruction": { type: "string" },
       resume: { type: "string" },
+      continue: { type: "string" },
       "iterate-from": { type: "string" },
       context: { type: "string", multiple: true },
       "context-diff": { type: "string", multiple: true },
@@ -153,6 +154,7 @@ Options:
   --judge-to <agent>       Agent to judge fan-in
   --judge-instruction <t>  Instruction for the judge
   --resume <run_id>        Resume a child run with a new task
+  --continue <run_id>      Re-run a run in its existing worktree without session resume
   --iterate-from <run_id>  Prepend a failure/result summary from a previous run into this task
   --test <cmd>             Test command to run (repeatable)
   --verify <cmd>           Verification check, reported separately from tests (repeatable)
@@ -206,7 +208,17 @@ Exit codes:
 
   const repo = resolveRepoArg(values.repo);
   const contextBlocks: string[] = [];
-  if (values["iterate-from"] && !values.resume) {
+  const continuationFlags = [
+    values.resume ? "--resume" : undefined,
+    values.continue ? "--continue" : undefined,
+    values["iterate-from"] ? "--iterate-from" : undefined,
+  ].filter(Boolean);
+  if (continuationFlags.length > 1) {
+    console.error(`[portico] ${continuationFlags.join(", ")} are mutually exclusive.`);
+    return 1;
+  }
+
+  if (values["iterate-from"]) {
     const runId = values["iterate-from"];
     const target = `${daemonUrl(values.url)}/runs/${encodeURIComponent(runId)}?repo=${encodeURIComponent(repo)}`;
     let details: RunDetails;
@@ -239,6 +251,26 @@ Exit codes:
     // its own cwd (`repoFromUrl` → `process.cwd()`) and resumes against the wrong run store.
     const repo = encodeURIComponent(resolveRepoArg(values.repo));
     const url = `${base}/runs/${encodeURIComponent(values.resume)}/resume?repo=${repo}`;
+    const res = await postDelegationStream(
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(values.token) },
+        body: JSON.stringify({ task: task.value }),
+      },
+      base,
+      autoStart,
+      values.token,
+    );
+    if (!res) return 1;
+    return (await consumeRunStream(res, values.json ?? false, values.detach ?? false)).code;
+  }
+
+  // Continue mode: re-run a run in its existing worktree with a fresh agent session.
+  if (values.continue) {
+    const base = daemonUrl(values.url);
+    const repo = encodeURIComponent(resolveRepoArg(values.repo));
+    const url = `${base}/runs/${encodeURIComponent(values.continue)}/continue?repo=${repo}`;
     const res = await postDelegationStream(
       url,
       {

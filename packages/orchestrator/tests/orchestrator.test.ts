@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -503,6 +503,32 @@ async function createRepo(): Promise<string> {
   await git(repo, "add", "README.md");
   await git(repo, "commit", "-m", "init");
   return repo;
+}
+
+async function createContinueAgent(repo: string): Promise<string> {
+  const agentPath = join(repo, "continue-agent.mjs");
+  await writeFile(agentPath, `#!/usr/bin/env node
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+let prompt = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) prompt += chunk;
+
+let previous = "";
+try {
+  previous = await readFile(join(process.cwd(), "delegated.txt"), "utf8");
+} catch {
+  previous = "";
+}
+
+const phase = prompt.includes("[continue]") ? "continue" : "initial";
+await writeFile(join(process.cwd(), "delegated.txt"), previous + phase + "\\n");
+await writeFile(join(process.cwd(), "agent-args.json"), JSON.stringify(process.argv.slice(2)));
+process.stdout.write("ran " + phase + "\\n");
+`);
+  await chmod(agentPath, 0o755);
+  return agentPath;
 }
 
 async function git(cwd: string, ...args: string[]): Promise<void> {
@@ -1157,6 +1183,52 @@ test("generic adapters do not capture session id and yield resume_unsupported", 
   }
 });
 
+test("continue re-runs a no-session run in its existing worktree", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+
+  try {
+    const agentPath = await createContinueAgent(repo);
+    const entry = agentEntry("codex", agentPath);
+    const events: DelegationEvent[] = [];
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create initial delegated file", testCommands: ["test -f delegated.txt"] },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const runDetails = await orchestrator.getRun(repo, runId);
+    assert.equal(runDetails.run.agentSessionId, undefined);
+
+    const continueEvents: DelegationEvent[] = [];
+    for await (const event of orchestrator.continueRun(
+      repo, runId, "append the continue marker",
+      { findEntry: () => entry },
+    )) {
+      continueEvents.push(event);
+    }
+    const continueDone = continueEvents.at(-1);
+    assert.equal(continueDone?.type, "run_done");
+    assert.equal(continueDone?.type === "run_done" ? continueDone.status : "", "ready");
+    assert.ok(continueEvents.some((event) => event.type === "test_done" && event.command === "test -f delegated.txt"));
+
+    const continued = await orchestrator.getRun(repo, runId);
+    const file = await readFile(join(continued.run.worktreePath, "delegated.txt"), "utf8");
+    assert.match(file, /initial/);
+    assert.match(file, /continue/);
+    assert.ok(continued.result?.changedFiles.includes("delegated.txt"));
+
+    const argv = JSON.parse(await readFile(join(continued.run.worktreePath, "agent-args.json"), "utf8")) as string[];
+    assert.equal(argv.includes("--resume"), false);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("stream-json adapter captures native session id and passes resume args on resume", async () => {
   installBuiltinAdapters();
   const repo = await createRepo();
@@ -1237,6 +1309,43 @@ test("resume with a cleaned worktree errors", async () => {
       // May also throw
     }
     assert.ok(sawWorktreeError || resumeEvents.some((e) => e.type === "run_error" && (e.code === "worktree_missing" || e.code === "resume_unsupported")));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("continue with a cleaned worktree errors", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+
+  try {
+    const events: DelegationEvent[] = [];
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file" },
+      { findEntry: (provider) => agentEntry(provider, EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const runDetails = await orchestrator.getRun(repo, runId);
+
+    if (runDetails.run.isolation.workspace === "worktree") {
+      await rm(runDetails.run.worktreePath, { recursive: true, force: true });
+    }
+
+    const continueEvents: DelegationEvent[] = [];
+    for await (const event of orchestrator.continueRun(
+      repo, runId, "continue anyway",
+      { findEntry: (provider) => agentEntry(provider, EDIT_AGENT) },
+    )) {
+      continueEvents.push(event);
+    }
+    const errorEvent = continueEvents.at(-1);
+    assert.equal(errorEvent?.type, "run_error");
+    assert.equal(errorEvent?.type === "run_error" ? errorEvent.code : "", "worktree_missing");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

@@ -28,6 +28,7 @@ import {
   handleCancelRun,
   handleDiscardRun,
   handleResumeRun,
+  handleContinueRun,
   writeJson,
 } from "./routes.ts";
 import type { DaemonContext } from "./routes.ts";
@@ -178,6 +179,7 @@ async function handleRequest(
       if (req.method === "POST" && action === "cancel") return await handleCancelRun(req, res, ctx, id);
       if (req.method === "POST" && action === "discard") return await handleDiscardRun(req, res, ctx, id);
       if (req.method === "POST" && action === "resume") return await handleResumeRun(req, res, ctx, id);
+      if (req.method === "POST" && action === "continue") return await handleContinueRun(req, res, ctx, id);
     }
 
     switch (route) {

@@ -94,7 +94,10 @@ yourself, or anything where spinning up a separate agent adds no value.
    repeatable `--context <path-or-glob>` / `--context-diff <ref>` (deterministically splice file
    contents or a `git diff` into the task before sending, instead of hand-copying excerpts —
    capped at 40,000 combined characters; a glob with no matches or a failing diff ref warns to
-   stderr and is skipped, not a hard failure; no retrieval/ranking, just explicit enumeration).
+   stderr and is skipped, not a hard failure; no retrieval/ranking, just explicit enumeration);
+   `--iterate-from <run_id>` (new run with previous failure context); `--resume <child_id>`
+   (same worktree plus native session resume); `--continue <run_id>` (same worktree, fresh
+   agent session, no `agentSessionId` required).
 
    Before launching, `delegate` also runs a fast local agent-availability check (no `--version`
    probes) against every target the request would launch — `--to`, each `--compare-to`, each
@@ -199,12 +202,18 @@ yourself, or anything where spinning up a separate agent adds no value.
   splices that run's top risks, failing test/verify output, and changed files into the new
   task's `## Context` section (composes with `--context`/`--context-diff`), then launches an
   ordinary new run. It is **not** a continuation — no shared worktree or session — so it's
-  orthogonal to `--resume` below; still write your own refinement in `--task`.
+  orthogonal to `--resume` and `--continue` below; still write your own refinement in `--task`.
 - To iterate on a **child of a group** without re-running the whole group, use
   `portico delegate --resume <child_id> --task "<refinement>"`. It re-runs that child in its
   existing worktree, regenerates the diff, re-runs tests, and recomputes the group (for a
   split group it also re-runs the fan-in merge). Needs an adapter that supports session
   resume (Claude does) and the worktree still present.
+- To continue partial work when the adapter has no native session to resume, use
+  `portico delegate --continue <run_id> --task "<refinement>"`. It re-runs the target agent in
+  the same existing worktree, appends the new task with a `[continue]` marker, regenerates the
+  diff, re-runs the stored tests/verify checks, and refreshes the report. It starts a fresh
+  agent session and never passes `resumeSessionId`, so it works for no-session adapters as
+  long as the worktree still exists.
 - To compare approaches, prefer `--mode compare --to <agent-a> --compare-to <agent-b>`.
   Portico records a parent compare report plus separate candidate runs; apply only the
   chosen implement candidate via `portico apply <group_id> --child <child_id>`, never the
@@ -212,7 +221,8 @@ yourself, or anything where spinning up a separate agent adds no value.
 - To divide a large task, prefer `--mode split` with a `--child` per sub-task. Portico
   merges the children's patches; apply the merged result with `portico apply <group_id> --all`.
   A `conflict` group (never force-merged) reports a `Conflict Kind`: `overlap` means two
-  children edited the same region — narrow one with `--resume` and Portico re-merges
+  children edited the same region — narrow one with `--resume` when session resume is available,
+  or `--continue` when only the worktree remains, and Portico re-merges
   automatically; `apply_failure` means a single child's own patch did not apply to the group
   base (drifted context / malformed diff), so re-run *that* child rather than narrowing.
   The report's `Git Reason` line and `conflicts.json` (`reason`, `failingChild`, first failing
@@ -248,7 +258,8 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
 - `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" [--judge-to <agent>]` — run candidate implementations for comparison.
 - `portico delegate --mode split --to <agent> --repo . --task "<task>" --child '{…,"task":"…"}' --child '{…}'` — split into complementary sub-tasks and merge.
-- `portico delegate --resume <child_id> --task "<refinement>"` — iterate on one child in place.
+- `portico delegate --resume <child_id> --task "<refinement>"` — iterate on one child in place with native session resume.
+- `portico delegate --continue <run_id> --task "<refinement>"` — iterate in an existing worktree with a fresh agent session.
 - `portico delegate --follow <run_id>` — re-attach to a run's event log (e.g. after `--detach`).
 - `portico runs [--repo .]` — list runs (folded; `--flat` for the legacy flat list). Filter with
   `--status <s1,s2>` and `--since <dur>` (e.g. `30m`, `2h`, `1d`); active runs are tagged `[active]`.
@@ -291,7 +302,7 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `agent_unavailable` → the target isn't found: check `portico agents`; it may not be installed.
 - Stale generated Skill → rerun `portico init` in the repo. It refreshes Portico's generated
   Skill files without touching other project-level skills.
-- Agent stalled, timed out, or test failed → read the report and `.portico/runs/<run_id>/test.log`. A stalled or erroring agent may still leave partial edits in the worktree (captured in the diff); you can review the partial work or resume the run, refine the task, or re-delegate.
+- Agent stalled, timed out, or test failed → read the report and `.portico/runs/<run_id>/test.log`. A stalled or erroring agent may still leave partial edits in the worktree (captured in the diff); you can review the partial work, resume the run when it has a native agent session, continue it from the existing worktree, refine the task, or re-delegate.
 - `path_not_allowed` → the run changed a file outside `--allowed`; the error and report carry a
   copy-paste retry that pre-fills the missing `--allowed` flags. If the diff is otherwise good,
   you can skip the retry and land it directly with user approval:

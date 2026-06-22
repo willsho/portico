@@ -606,6 +606,22 @@ Streams `DelegationEvent` NDJSON. Regenerates the diff, re-runs tests, refreshes
 `report.md` / `result.json`, and recomputes the parent group's status. For a split group it
 also re-runs the fan-in merge, so narrowing a child can clear a prior `conflict`.
 
+## `POST /runs/:id/continue?repo=<path>`
+
+Re-runs a run in its existing worktree with a fresh agent session. Unlike `resume`, this does
+not require a stored `agentSessionId` and does not pass a native resume id to the adapter; the
+continuation comes from the partial files already in the worktree plus the new `[continue]`
+task text. The worktree must still exist.
+
+```bash
+curl -N "http://127.0.0.1:8787/runs/<run_id>/continue?repo=$(pwd)" \
+  -H 'Content-Type: application/json' \
+  -d '{"task": "keep the existing partial work, but refine X"}'
+```
+
+Streams `DelegationEvent` NDJSON. Regenerates the diff, re-runs the run's stored test/verify
+commands, and refreshes `report.md` / `result.json`.
+
 ## `POST /cleanup?repo=<path>`
 
 Reclaims finished runs. By default removes only the worktree and keeps artifacts; ready /

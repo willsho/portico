@@ -342,6 +342,39 @@ export async function handleResumeRun(
   }
 }
 
+export async function handleContinueRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: DaemonContext,
+  id: string,
+): Promise<void> {
+  let body: { task: string };
+  try {
+    body = await readJsonBody<{ task: string }>(req);
+  } catch (err) {
+    writeJson(res, 400, { error: (err as Error).message, code: "bad_request" });
+    return;
+  }
+  if (!body.task) {
+    writeJson(res, 400, { error: "Body must include a string `task`.", code: "bad_request" });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  try {
+    for await (const event of ctx.delegation.continueRun(repoFromUrl(req), id, body.task, { findEntry: ctx.findEntry })) {
+      res.write(encodeDelegationEvent(event));
+    }
+  } finally {
+    res.end();
+  }
+}
+
 export async function handleCancelRun(
   req: IncomingMessage,
   res: ServerResponse,

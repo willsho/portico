@@ -172,7 +172,8 @@ Common options:
 | `--merge none|sequential|integration` | Fan-in merge strategy (split → `integration`, compare → `none`) |
 | `--judge-to <agent>` | Optional read-only judge over the candidates / merged result |
 | `--judge-instruction <text>` | Override the judge's default review instruction |
-| `--resume <child_id>` | Re-run a child in its existing worktree with a new task (requires `--task` or `--task-file`) |
+| `--resume <child_id>` | Re-run a child in its existing worktree and native agent session with a new task (requires `--task` or `--task-file`) |
+| `--continue <run_id>` | Re-run a run in its existing worktree with a fresh agent session; does not require `agentSessionId` |
 | `--iterate-from <run_id>` | Prepend a failure/result summary from a previous run (top risks, failing test/verify output, changed files) into this task's `## Context` section, then launch as a brand-new run |
 | `--dry-run` | Lint the task for a named file, acceptance criteria, and a test command, then exit (code 0 if all three pass, 1 otherwise) — no network call, no worktree |
 | `--context <path-or-glob>` | File or glob to splice into the task as a `### Context: <path>` section before sending; repeatable |
@@ -204,8 +205,9 @@ worktree or session. It fetches that run's result, builds a `### Previous attemp
 output, changed files), and splices it into the new task's `## Context` section — composing
 cleanly with `--context`/`--context-diff` if both are given — then launches a perfectly ordinary
 new run. This is orthogonal to `--resume <child_id>` (re-runs a child in its *existing*
-worktree/session) and to any future continuation flag; it only ever bootstraps the prompt for a
-brand-new delegation, so re-delegating after a failure doesn't require hand-copying
+worktree/session) and `--continue <run_id>` (reuses the existing worktree but starts a fresh
+agent session); it only ever bootstraps the prompt for a brand-new delegation, so re-delegating
+after a failure doesn't require hand-copying
 `report.md`/`test.log` excerpts. The summary is capped at 20,000 combined characters, same
 truncation-marker approach as `--context`.
 
@@ -237,7 +239,7 @@ passed `--allowed` (a path boundary), the main tree's tracked files are clean, p
 passed, no sandbox escape was detected, and all tests + verify checks passed. If any guard is
 unmet it applies nothing and prints the unmet items plus the review summary.
 
-`delegate` and `delegate --resume` auto-start a loopback daemon and retry once when none is
+`delegate`, `delegate --resume`, and `delegate --continue` auto-start a loopback daemon and retry once when none is
 reachable — no prior `portico start` needed for the common case. This is loopback-only:
 LAN/remote daemons are never auto-started, so a non-loopback `--url`/`PORTICO_URL` always fails
 fast instead. Pass `--no-auto-start` to fail fast on loopback too (e.g. CI expecting a
@@ -291,7 +293,8 @@ portico delegate \
 ```
 
 Iterate on a single child run in place (re-runs it in its existing worktree, regenerates
-the diff, re-runs tests, and recomputes the group):
+the diff, re-runs tests, and recomputes the group). This uses the adapter's native session
+resume and requires a stored `agentSessionId`:
 
 ```bash
 portico delegate --resume <child_id> --task "the test fails because X; fix only Y"
@@ -301,6 +304,17 @@ cat feedback.md | portico delegate --resume <child_id> --task-file -
 
 Resume requires the child's adapter to support native session resume (Claude does;
 generic-CLI adapters may not) and the worktree to still exist.
+
+Continue a run in place without native session resume:
+
+```bash
+portico delegate --continue <run_id> --task "keep the existing partial work, but refine X"
+```
+
+Continue reuses the run's existing worktree and stored test/verify commands, appends the new
+task text with a `[continue]` marker, regenerates the diff, re-runs tests, and refreshes
+`result.json` / `report.md`. It starts a fresh agent session, so it works even when `--resume`
+would fail with `resume_unsupported`; the worktree must still exist.
 
 If a worktree-isolated run changes files in the caller's main checkout, human output
 prints a `WARNING: sandbox escape detected` block. JSON output includes a
@@ -570,8 +584,8 @@ portico cancel <run_id>
 Cancellation aborts the tracked process when the run is still active and marks the run
 `cancelled`. If the run had already made progress, cancel salvages whatever diff is sitting in
 the worktree — the same `diff.patch` / `result.json` / `report.md` an error or timeout would
-have produced — so a stopped run isn't a total loss; inspect it with `portico status <run_id>`
-or resume it. For a group run, cancel cascades to every active child, salvaging each one the
+have produced — so a stopped run isn't a total loss; inspect it with `portico status <run_id>`,
+resume it when a native session exists, or continue it from the salvaged worktree. For a group run, cancel cascades to every active child, salvaging each one the
 same way; it is idempotent.
 
 ## `portico cleanup`

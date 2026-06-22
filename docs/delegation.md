@@ -166,6 +166,17 @@ and recomputing the parent group's status. Only works when the target adapter su
 native session resume (Claude does; generic-CLI adapters may not) and the worktree still
 exists.
 
+If the worktree exists but the run has no native agent session to resume, use `--continue`
+instead:
+
+```bash
+portico delegate --continue <run_id> --task "keep the partial work, then refine X"
+```
+
+Continue re-runs the target agent in the same worktree with a fresh agent session. It appends
+the new task with a `[continue]` marker, regenerates the diff, re-runs the stored test/verify
+commands, and refreshes the report without requiring or passing `agentSessionId`.
+
 ## Task Split and Fan-in
 
 `split` mode turns a single large task into N **complementary** sub-tasks, runs them in
@@ -208,7 +219,8 @@ moves the group to a `conflict` status. `apply --all` is refused while a group i
 The report and `conflicts.json` classify the failure so you know how to fix it:
 
 - **`overlap`** — two children edited the same region (a real three-way merge conflict).
-  Narrow one child with `--resume`; Portico re-merges automatically.
+  Narrow one child with `--resume` when session resume is available, or `--continue` when only
+  the worktree remains; Portico re-merges automatically.
 - **`apply_failure`** — a single child's *own* patch did not apply to the group base at all
   (drifted context or a malformed diff), even on a file no other child touched. This is why a
   non-overlapping child can still conflict. Re-run that child rather than narrowing it.

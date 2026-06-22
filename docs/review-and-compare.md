@@ -194,7 +194,8 @@ integration worktree branched from the shared base ref:
 - Clean merge → the group becomes `ready` and `apply --all` lands the merged patch.
 - Conflict → Portico records `conflicts.json`, moves the group to `conflict`, and refuses
   `apply --all`. The report's `Conflict Kind` distinguishes `overlap` (two children edited the
-  same region — narrow one with `--resume`, Portico re-merges automatically) from
+  same region — narrow one with `--resume` when session resume is available, or `--continue`
+  when only the worktree remains; Portico re-merges automatically) from
   `apply_failure` (a single child's patch did not apply to the group base — re-run that child).
 
 To catch an `apply_failure` *before* the merge, `portico review <group_id>` runs a per-child
@@ -238,6 +239,9 @@ the group status, so a mixed group can converge to all-ready):
 portico delegate --resume <candidate_run_id> --task "the typecheck fails at line 42; fix it"
 ```
 
+Use `portico delegate --continue <candidate_run_id> --task "..."` for the same existing-worktree
+rerun when the candidate has no stored native session id.
+
 Discard losing candidates:
 
 ```bash
@@ -246,4 +250,3 @@ portico discard <candidate_run_id>
 
 Keep the parent compare run artifacts. They are useful historical context even after
 candidate worktrees are discarded.
-
