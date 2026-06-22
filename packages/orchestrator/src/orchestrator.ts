@@ -1899,6 +1899,29 @@ async function* runSingleDelegation(
       path: artifacts.diffPath as string,
       changedFiles,
     });
+    if ((run.role ?? "single") === "single") {
+      const interimResult = attachReviewArtifacts(
+        buildRunResult(
+          run,
+          artifacts,
+          changedFiles,
+          [],
+          agentEvents,
+          outOfTreeChanges,
+          buildTelemetry({ runStartedMs, agentEvents, agentDurationMs, worktreeSetupMs, diffMs, testDurationMs: 0, verifyDurationMs: 0 }),
+        ),
+        changedFiles,
+        request,
+        deps.defaultForbidden,
+        diffSummary,
+        [],
+      );
+      yield await recordEvent(artifacts.eventsPath, {
+        type: "verdict_update",
+        runId: run.id,
+        verdict: buildRunVerdict(run, interimResult),
+      });
+    }
 
     run = await updateRun(run, { status: "testing" });
     for (const command of request.testCommands ?? []) {

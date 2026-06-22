@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { delegateCommand, parseCoverageManifest } from "../src/commands/delegate.ts";
+import { delegateCommand, parseCoverageManifest, printEvent } from "../src/commands/delegate.ts";
 import { registerProvider } from "@portico/core";
 import { buildContextSections } from "../src/commands/context-pack.ts";
 
@@ -19,6 +19,31 @@ process.env.PORTICO_CODEX_PATH = process.execPath;
 process.env.PORTICO_CLAUDE_PATH = process.execPath;
 
 
+function capturePrintEvent(fn: () => void): string {
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWrite = process.stdout.write;
+  let output = "";
+  console.log = (msg?: unknown) => {
+    output += String(msg ?? "") + "\n";
+  };
+  console.error = (msg?: unknown) => {
+    output += String(msg ?? "") + "\n";
+  };
+  process.stdout.write = ((chunk: unknown) => {
+    output += String(chunk ?? "");
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    fn();
+    return output;
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    process.stdout.write = originalWrite;
+  }
+}
+
 async function captureError(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
   const originalError = console.error;
   let output = "";
@@ -31,6 +56,46 @@ async function captureError(fn: () => Promise<number>): Promise<{ code: number; 
     console.error = originalError;
   }
 }
+
+test("printEvent renders verdict_update as an in-progress Portico signal", () => {
+  const verdict = {
+    status: "running" as const,
+    readiness: "not_ready" as const,
+    changedFiles: ["delegated.txt"],
+    tests: { total: 0, passed: 0, failed: 0 },
+    verify: { total: 0, passed: 0, failed: 0 },
+    sandboxEscaped: false,
+    topRisks: ["path policy: passed"],
+  };
+  const verdictOutput = capturePrintEvent(() => {
+    printEvent({ type: "verdict_update", runId: "run_verdict", verdict });
+  });
+  const doneOutput = capturePrintEvent(() => {
+    printEvent({
+      type: "run_done",
+      runId: "run_verdict",
+      status: "ready",
+      reportPath: "report.md",
+      resultPath: "result.json",
+      verdict: { ...verdict, status: "ready", readiness: "ready" },
+    });
+  });
+
+  assert.match(verdictOutput, /\[run_verdict\] verdict \(Portico, in progress\): path policy: passed/);
+  assert.doesNotMatch(doneOutput, /Portico, in progress/);
+});
+
+test("printEvent labels agent narration once per run before the first delta", () => {
+  const output = capturePrintEvent(() => {
+    printEvent({ type: "agent_event", runId: "run_narration_once", event: { type: "content", delta: "first " } });
+    printEvent({ type: "agent_event", runId: "run_narration_once", event: { type: "content", delta: "second" } });
+  });
+
+  const banner = "[run_narration_once] agent narration (unverified, not Portico's verdict):";
+  assert.equal(output.split(banner).length - 1, 1);
+  assert.ok(output.indexOf(banner) < output.indexOf("first "));
+  assert.equal(output.endsWith("first second"), true);
+});
 
 test("delegate command requires exactly one of --task and --task-file", async () => {
   let result = await captureError(() => delegateCommand(["--to", "agent"]));
@@ -363,4 +428,3 @@ test("buildContextSections handles file globs, file content, git diff, and chara
     await rm(dir, { recursive: true, force: true });
   }
 });
-

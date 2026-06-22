@@ -25,6 +25,7 @@ import { buildContextSections } from "./context-pack.ts";
 
 
 export const EXIT_CLIENT_DISCONNECTED = 3;
+const narratedRuns = new Set<string>();
 
 export function parseCoverageManifest(raw: string): string[] {
   try {
@@ -683,9 +684,13 @@ export function printEvent(event: DelegationEvent): void {
       console.log(`[${event.runId}] agent ${event.agent} started`);
       return;
     case "agent_event":
-      if (event.event.type === "content") process.stdout.write(event.event.delta);
-      else if (event.event.type === "reasoning") process.stdout.write(event.event.delta);
-      else if (event.event.type === "tool_call") console.log(`\n[${event.runId}] tool: ${event.event.name}`);
+      if (event.event.type === "content" || event.event.type === "reasoning") {
+        if (!narratedRuns.has(event.runId)) {
+          console.log(`[${event.runId}] agent narration (unverified, not Portico's verdict):`);
+          narratedRuns.add(event.runId);
+        }
+        process.stdout.write(event.event.delta);
+      } else if (event.event.type === "tool_call") console.log(`\n[${event.runId}] tool: ${event.event.name}`);
       else if (event.event.type === "tool_result") console.log(`\n[${event.runId}] tool result: ${event.event.name}`);
       else if (event.event.type === "done") console.log(`\n[${event.runId}] agent done`);
       else if (event.event.type === "error") console.log(`\n[${event.runId}] agent error: ${event.event.error}`);
@@ -697,6 +702,11 @@ export function printEvent(event: DelegationEvent): void {
     case "diff_ready":
       console.log(`\n[${event.runId}] diff ${event.path}`);
       console.log(`changed files: ${event.changedFiles.length ? event.changedFiles.join(", ") : "none"}`);
+      return;
+    case "verdict_update":
+      console.log(
+        `[${event.runId}] verdict (Portico, in progress): ${event.verdict.topRisks.length ? event.verdict.topRisks.join("; ") : "no risks yet"}`,
+      );
       return;
     case "fanin_start":
       console.log(`[${event.runId}] fan-in: ${event.strategy}`);
