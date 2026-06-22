@@ -10,8 +10,10 @@ import {
   codexAdapter,
   codexProvider,
   claudeAdapter,
+  claudeProvider,
   createGenericCliAdapter,
   cursorProvider,
+  geminiProvider,
   openclawProvider,
   openclawAdapter,
   translateCodexJsonLine,
@@ -180,6 +182,83 @@ test("cursor adapter passes the prompt as an argv value and adds --force only on
   // With autoEdit the --force override is appended.
   const withForce = await argvWith(true);
   assert.ok(withForce.includes("--force"), "expected --force with autoEdit");
+});
+
+test("generic-cli engine injects --model / --effort from options, and only when set", async () => {
+  // A provider with both arg-builders (claude shape) whose args echo back as JSON.
+  const echo = createGenericCliAdapter({
+    ...cursorProvider,
+    defaultArgs: ["--echo-argv"],
+    modelArgs: (m) => ["--model", m],
+    effortArgs: (e) => ["--effort", e],
+  });
+  const entry: AgentEntry = {
+    provider: "cursor",
+    displayName: "Cursor CLI",
+    available: true,
+    path: FAKE_AGENT,
+    protocols: ["generic-cli"],
+  };
+  const argvWith = async (options: Record<string, unknown>): Promise<string[]> => {
+    const events = await collect(
+      echo.run({ provider: "cursor", messages: [{ role: "user", content: "do x" }], options }, entry),
+    );
+    return JSON.parse(contentText(events)) as string[];
+  };
+
+  const bare = await argvWith({});
+  assert.ok(!bare.includes("--model"), "no --model when unset");
+  assert.ok(!bare.includes("--effort"), "no --effort when unset");
+
+  const withSelection = await argvWith({ model: "claude-opus-4-8", effort: "high" });
+  assert.deepEqual(withSelection.slice(0, 3), ["--echo-argv", "--model", "claude-opus-4-8"]);
+  assert.ok(
+    withSelection.includes("--effort") && withSelection[withSelection.indexOf("--effort") + 1] === "high",
+    "effort flag forwarded",
+  );
+});
+
+test("stream-json engine (claude) forwards --model / --effort to the CLI", async () => {
+  const entry: AgentEntry = {
+    provider: "claude",
+    displayName: "Claude Code",
+    available: true,
+    path: FAKE_AGENT,
+    protocols: ["stream-json"],
+  };
+  const events = await collect(
+    claudeAdapter.run(
+      {
+        provider: "claude",
+        messages: [{ role: "user", content: "go" }],
+        options: { model: "claude-opus-4-8", effort: "high" },
+      },
+      entry,
+    ),
+  );
+  const text = contentText(events);
+  assert.match(text, /model claude-opus-4-8/);
+  assert.match(text, /effort high/);
+});
+
+test("claude / codex / gemini providers declare model injection metadata", () => {
+  // Arg-builders present (so model selection is "supported", not runtime-managed).
+  assert.equal(typeof claudeProvider.modelArgs, "function");
+  assert.equal(typeof claudeProvider.effortArgs, "function");
+  assert.equal(typeof codexProvider.modelArgs, "function");
+  assert.equal(typeof codexProvider.effortArgs, "function");
+  assert.equal(typeof geminiProvider.modelArgs, "function");
+
+  // claude ships a static catalog with exactly one default and resolvable aliases.
+  const statics = claudeProvider.models?.static ?? [];
+  assert.ok(statics.length >= 3, "claude advertises a static model catalog");
+  assert.equal(statics.filter((m) => m.default).length, 1, "exactly one default model");
+  assert.ok(statics.some((m) => m.aliases?.includes("opus")), "opus alias present");
+
+  // The verified native flags.
+  assert.deepEqual(claudeProvider.modelArgs?.("opus"), ["--model", "opus"]);
+  assert.deepEqual(claudeProvider.effortArgs?.("high"), ["--effort", "high"]);
+  assert.deepEqual(codexProvider.effortArgs?.("high"), ["-c", "model_reasoning_effort=high"]);
 });
 
 test("claude adapter parses stream-json into reasoning / tool_call / tool_result", async () => {

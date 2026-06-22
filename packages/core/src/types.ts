@@ -32,6 +32,32 @@ export type AgentProtocol =
   | "acp"
   | "app-server";
 
+/** One model a provider can run. `id` is the value handed to the CLI's model flag. */
+export interface ModelDescriptor {
+  id: string;
+  /** Human- / agent-friendly name; defaults to `id` when omitted. */
+  label?: string;
+  /** The provider's own default. Informational only — Portico never auto-injects it
+   *  (omitting the flag lets the CLI pick its default, which survives CLI upgrades). */
+  default?: boolean;
+  /** Accepted shorthands, e.g. "opus" -> "claude-opus-4-8". */
+  aliases?: string[];
+  /** Reasoning-effort levels this model supports; falls back to the provider's. */
+  effortLevels?: string[];
+}
+
+/** How a provider advertises its model catalog: a static list, a live probe, or both. */
+export interface AgentModelCatalog {
+  /** Hardcoded models with stable, controllable ids (claude / codex / gemini). */
+  static?: ModelDescriptor[];
+  /** Ask the CLI for its live catalog (cursor / opencode …). Reuses the probe runner. */
+  probe?: {
+    args: string[];
+    timeoutMs?: number;
+    parse: (stdout: string, stderr: string) => ModelDescriptor[];
+  };
+}
+
 /** Static metadata describing a provider Portico knows how to look for. */
 export interface AgentProvider {
   id: string;
@@ -44,6 +70,16 @@ export interface AgentProvider {
   protocols: AgentProtocol[];
   /** Default arguments passed to the binary in generic-cli mode. */
   defaultArgs?: string[];
+  /** Model catalog (static list and/or live probe). Absent → unknown, pass through. */
+  models?: AgentModelCatalog;
+  /**
+   * Translate a chosen model into native CLI args, appended only when a request sets
+   * `options.model` (claude: `m => ["--model", m]`). Absent → model selection is
+   * "managed by runtime": the flag is ignored. Mirrors `resumeArgs` / `autoEditArgs`.
+   */
+  modelArgs?: (model: string) => string[];
+  /** Translate a chosen reasoning effort into native CLI args (claude: `e => ["--effort", e]`). */
+  effortArgs?: (effort: string) => string[];
   /**
    * How the generic-cli engine passes the rendered prompt. Defaults to stdin.
    * Use "argument" for CLIs whose non-interactive mode requires the prompt in argv.
@@ -97,6 +133,8 @@ export interface ChatRequestOptions {
   timeoutMs?: number;
   stream?: boolean;
   model?: string;
+  /** Reasoning-effort override, injected via `provider.effortArgs` when supported. */
+  effort?: string;
   maxContextChars?: number;
   /** Maximum bytes of stdout to buffer before aborting the child. */
   maxOutputChars?: number;

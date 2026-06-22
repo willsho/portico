@@ -17,6 +17,22 @@ import type {
 
 export const MAX_ARG_PROMPT_BYTES = 128 * 1024;
 
+/**
+ * Native CLI args for a request's model / effort selection, via the provider's declared
+ * arg-builders. Empty when unset or when the provider doesn't support that knob — so an
+ * omitted model leaves the CLI on its own default. Shared by every engine; provider
+ * knowledge stays declarative (no per-provider switch in the engines).
+ */
+export function modelInjectionArgs(
+  provider: AgentProvider,
+  options: ChatRequest["options"],
+): string[] {
+  const args: string[] = [];
+  if (options?.model && provider.modelArgs) args.push(...provider.modelArgs(options.model));
+  if (options?.effort && provider.effortArgs) args.push(...provider.effortArgs(options.effort));
+  return args;
+}
+
 /** Wrap a provider's static metadata into a generic-cli AgentAdapter. */
 export function createGenericCliAdapter(provider: AgentProvider): AgentAdapter {
   return {
@@ -61,7 +77,7 @@ export async function* runGenericCli(
     return;
   }
 
-  const args = [...(provider.defaultArgs ?? []), ...editArgs];
+  const args = [...(provider.defaultArgs ?? []), ...editArgs, ...modelInjectionArgs(provider, request.options)];
   if (promptMode === "argument") args.push(prompt);
 
   let full = "";
