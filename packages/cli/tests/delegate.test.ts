@@ -4,6 +4,20 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { delegateCommand, parseCoverageManifest } from "../src/commands/delegate.ts";
+import { registerProvider } from "@portico/core";
+import { buildContextSections } from "../src/commands/context-pack.ts";
+
+registerProvider({
+  id: "agent",
+  displayName: "Agent",
+  commandNames: ["nonexistent-command-name-here-12345"],
+  envPathNames: ["PORTICO_AGENT_PATH"],
+  protocols: ["generic-cli"],
+});
+process.env.PORTICO_AGENT_PATH = process.execPath;
+process.env.PORTICO_CODEX_PATH = process.execPath;
+process.env.PORTICO_CLAUDE_PATH = process.execPath;
+
 
 async function captureError(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
   const originalError = console.error;
@@ -237,3 +251,116 @@ test("parseCoverageManifest extracts string paths from varied manifest shapes", 
   assert.deepEqual(parseCoverageManifest('{"other": ["a.ts"]}'), []);
   assert.deepEqual(parseCoverageManifest('invalid json'), []);
 });
+
+test("delegateCommand with --dry-run prints report and returns code based on heuristics", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    assert.fail("fetch should not be called in dry-run mode");
+  };
+
+  const originalLog = console.log;
+  let logOut = "";
+  console.log = (msg?: unknown) => {
+    logOut += String(msg ?? "") + "\n";
+  };
+
+  try {
+    // 1. Missing all three signals prints all three as failing and returns 1
+    const result1 = await delegateCommand([
+      "--to", "agent",
+      "--task", "clean task with no paths or criteria or tests",
+      "--dry-run",
+    ]);
+    assert.equal(result1, 1);
+    assert.match(logOut, /\[✗\] names a concrete file or path/);
+    assert.match(logOut, /\[✗\] states acceptance criteria/);
+    assert.match(logOut, /\[✗\] specifies a test command/);
+
+    logOut = "";
+    // 2. Task with a file path, "acceptance criteria:", and --test passed returns 0
+    const result2 = await delegateCommand([
+      "--to", "agent",
+      "--task", "Please modify packages/cli/src/main.ts. Acceptance criteria: it must work.",
+      "--test", "npm run test",
+      "--dry-run",
+    ]);
+    assert.equal(result2, 0);
+    assert.match(logOut, /\[✓\] names a concrete file or path/);
+    assert.match(logOut, /\[✓\] states acceptance criteria/);
+    assert.match(logOut, /\[✓\] specifies a test command/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+});
+
+test("delegateCommand agent availability preflight fails when agent is not available", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    assert.fail("fetch should not be called when preflight availability check fails");
+  };
+
+  const originalError = console.error;
+  let errOut = "";
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+
+  const origAgentPath = process.env.PORTICO_AGENT_PATH;
+  delete process.env.PORTICO_AGENT_PATH;
+
+  try {
+    const code = await delegateCommand([
+      "--to", "agent",
+      "--task", "do something",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 1);
+    assert.match(errOut, /agent "agent" is not available/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+    if (origAgentPath !== undefined) {
+      process.env.PORTICO_AGENT_PATH = origAgentPath;
+    }
+  }
+});
+
+test("buildContextSections handles file globs, file content, git diff, and character limits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "portico-context-"));
+  const fileA = join(dir, "a.txt");
+  const fileB = join(dir, "b.txt");
+  await writeFile(fileA, "hello from a");
+  await writeFile(fileB, "hello from b");
+
+  try {
+    // 1. One file glob match gets spliced in with the ### Context: <path> header
+    const res1 = await buildContextSections(dir, ["*.txt"]);
+    assert.match(res1, /### Context: a\.txt/);
+    assert.match(res1, /hello from a/);
+    assert.match(res1, /### Context: b\.txt/);
+    assert.match(res1, /hello from b/);
+
+    // 2. A --context-diff with a bad ref produces a stderr warning but doesn't throw
+    const originalError = console.error;
+    let errOut = "";
+    console.error = (msg?: unknown) => {
+      errOut += String(msg ?? "") + "\n";
+    };
+    try {
+      const resDiff = await buildContextSections(dir, [], ["invalid-ref-12345"]);
+      assert.equal(resDiff, "");
+      assert.match(errOut, /warning: git diff for ref "invalid-ref-12345" failed/);
+    } finally {
+      console.error = originalError;
+    }
+
+    // 3. Combined cap truncates and appends the marker when content exceeds it
+    const resCap = await buildContextSections(dir, ["a.txt"], [], 15);
+    assert.equal(resCap.length, 15 + "\n[... context truncated, 26 more characters omitted ...]".length);
+    assert.match(resCap, /\[\.\.\. context truncated, \d+ more characters omitted \.\.\.\]/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+

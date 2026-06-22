@@ -19,6 +19,10 @@ import {
 import { logsCommand } from "./runs.ts";
 import { buildRunVerdict } from "@portico/orchestrator";
 import type { DelegateRequest, DelegationEvent, ChildSpec, FanInPolicy, RunDetails, RunStatus, TestResult } from "@portico/orchestrator";
+import { discoverAgents } from "@portico/core";
+import { installBuiltinAdapters } from "@portico/adapters";
+import { buildContextSections } from "./context-pack.ts";
+
 
 export const EXIT_CLIENT_DISCONNECTED = 3;
 
@@ -62,6 +66,10 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "judge-to": { type: "string" },
       "judge-instruction": { type: "string" },
       resume: { type: "string" },
+      context: { type: "string", multiple: true },
+      "context-diff": { type: "string", multiple: true },
+      "dry-run": { type: "boolean" },
+
       test: { type: "string", multiple: true },
       verify: { type: "string", multiple: true },
       allowed: { type: "string", multiple: true },
@@ -93,6 +101,10 @@ Options:
   --repo <path>            Repository path (default: cwd)
   --task <task>            The task description
   --task-file <path>       Read task from a UTF-8 file, or stdin with -
+  --dry-run                Lint the task for files/acceptance-criteria/test-command, then exit
+  --context <path>         File or glob to splice into the task as context (repeatable)
+  --context-diff <ref>     \`git diff <ref>\` output to splice into the task as context (repeatable)
+
   --name <name>            Human-readable run name shown in runs/watch (default: slug of task)
   --mode <mode>            Delegation mode
   --isolation <mode>       Isolation mode
@@ -155,6 +167,17 @@ Exit codes:
     return 1;
   }
 
+  const repo = resolveRepoArg(values.repo);
+  const contextSections = await buildContextSections(
+    repo,
+    values.context ?? [],
+    values["context-diff"] ?? [],
+  );
+  if (contextSections) {
+    task.value = task.value + "\n\n## Context\n" + contextSections;
+  }
+
+
   // Resume mode: resume a child run with a new task.
   if (values.resume) {
     const base = daemonUrl(values.url);
@@ -195,6 +218,24 @@ Exit codes:
     console.error("Usage: portico delegate --to <agent> (--task <task> | --task-file <path>) [--repo .] [--test <cmd>]");
     return 1;
   }
+
+  if (values["dry-run"]) {
+    const packedText = task.value;
+    const hasFilePath = /[\w.-]+\/[\w.-]+\.[A-Za-z0-9]{1,5}\b/.test(packedText);
+    const lowerText = packedText.toLowerCase();
+    const hasAcceptance = ["acceptance criteria", "done when", "definition of done", "acceptance:", "criteria:"].some(s => lowerText.includes(s));
+    const hasTestFlag = (values.test?.length ?? 0) > 0;
+    const hasTestCmd = hasTestFlag || /\b(npm (run|test)|pytest|go test|cargo test|yarn test|pnpm test)\b/i.test(packedText);
+
+    console.log(`[portico] dry-run task self-check (--to ${values.to}):`);
+    console.log(`  [${hasFilePath ? "✓" : "✗"}] names a concrete file or path`);
+    console.log(`  [${hasAcceptance ? "✓" : "✗"}] states acceptance criteria`);
+    console.log(`  [${hasTestCmd ? "✓" : "✗"}] specifies a test command`);
+
+    const allPass = hasFilePath && hasAcceptance && hasTestCmd;
+    return allPass ? 0 : 1;
+  }
+
 
   // Fan-in policy: merge strategy (split defaults to integration) + optional judge.
   let fanIn: FanInPolicy | undefined;
@@ -255,11 +296,46 @@ Exit codes:
 
   const base = daemonUrl(values.url);
 
+  installBuiltinAdapters();
+  const discovered = await discoverAgents({ skipVersion: true });
+  const availableProviders = new Set(
+    discovered.filter((a) => a.available).map((a) => a.provider)
+  );
+
+  const targets = new Set<string>();
+  if (request.to) {
+    targets.add(request.to);
+  }
+  if (request.compareTargets) {
+    for (const t of request.compareTargets) {
+      targets.add(t);
+    }
+  }
+  if (request.children) {
+    for (const c of request.children) {
+      if (c.to) {
+        targets.add(c.to);
+      }
+    }
+  }
+
+  let anyMissing = false;
+  for (const target of targets) {
+    if (!availableProviders.has(target)) {
+      console.error(`[portico] agent "${target}" is not available — check: portico agents`);
+      anyMissing = true;
+    }
+  }
+  if (anyMissing) {
+    return 1;
+  }
+
   // Preflight: echo the resolved facts *before* any agent launches, so a wrong repo / base ref
   // is caught up front instead of after N fan-out agents have already burned time. For a
   // multi-agent fan-out at an interactive terminal, also require confirmation (skip with
   // --yes / non-TTY so agent-driven and scripted use never blocks).
   if (!(await printPreflightAndConfirm(request, base, values.yes ?? false))) {
+
     console.error("[portico] aborted before launch (no agents started).");
     return 0;
   }
