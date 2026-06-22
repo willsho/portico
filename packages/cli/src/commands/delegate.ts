@@ -389,6 +389,22 @@ async function maybeApplyOnReady(
   }
 }
 
+export function getNextActionHint(
+  run: { id: string; status: RunStatus; role?: string },
+  reviewDecision?: "approve" | "needs_attention" | null
+): string {
+  const isGroup = (run.role ?? "single") === "group";
+  if (run.status === "ready" && reviewDecision === "needs_attention") {
+    return `needs attention before apply; inspect: portico status ${run.id}`;
+  } else if (run.status === "ready") {
+    return isGroup ? `apply: portico apply ${run.id} --all` : `apply: portico apply ${run.id}`;
+  } else if (run.status === "partial" || isGroup) {
+    return `review children: portico review ${run.id}`;
+  } else {
+    return `not ready (${run.status}); inspect: portico status ${run.id}`;
+  }
+}
+
 /**
  * After a run finishes, print a copy-paste apply command plus a risk summary
  * (path policy, tests/verify, gate warnings). Lets an authorized reviewer act in one
@@ -405,23 +421,13 @@ async function printReviewSummary(runId: string, repo: string, url?: string, tok
   }
 
   const { run, result } = details;
-  const isGroup = (run.role ?? "single") === "group";
   const verdict = buildRunVerdict(run, result);
 
   console.log("\n── Review summary ──────────────────────────────");
   console.log(`run ${run.id}: ${run.status}`);
   console.log(verdict.topRisks.length ? verdict.topRisks.join("\n") : "no risks recorded.");
   console.log("");
-  if (run.status === "ready" && result?.reviewDecision === "needs_attention") {
-    // Ready by gate, but Portico flagged it (e.g. no file changes) — don't lead with apply.
-    console.log(`needs attention before apply; inspect: portico status ${run.id}`);
-  } else if (run.status === "ready") {
-    console.log(isGroup ? `apply: portico apply ${run.id} --all` : `apply: portico apply ${run.id}`);
-  } else if (run.status === "partial" || isGroup) {
-    console.log(`review children: portico review ${run.id}`);
-  } else {
-    console.log(`not ready (${run.status}); inspect: portico status ${run.id}`);
-  }
+  console.log(getNextActionHint(run, result?.reviewDecision));
   console.log(`discard: portico discard ${run.id}`);
 }
 
