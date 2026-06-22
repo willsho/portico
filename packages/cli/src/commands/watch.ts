@@ -142,15 +142,18 @@ async function runInteractive(ctx: WatchCtx, opts: FetchOpts, interval: number, 
   let keyResolver: ((key: string) => void) | undefined;
   let suspended = false;
   let stopped = false;
+  let lastFrame = "";
 
   const stdin = process.stdin;
   const stdout = process.stdout;
 
-  const repaint = () => {
+  const repaint = (force = false) => {
     if (suspended) return;
     const repoLabel = ctx.repo === process.cwd() ? "" : ctx.repo;
-    const frame = renderFrame(runs, selectedId, { repoLabel });
-    stdout.write("\x1b[2J\x1b[H" + frame + (banner ? `\n\n${banner}` : "") + "\n");
+    const frame = `${renderFrame(runs, selectedId, { repoLabel })}${banner ? `\n\n${banner}` : ""}\n`;
+    if (!force && frame === lastFrame) return;
+    lastFrame = frame;
+    stdout.write("\x1b[H" + frame + "\x1b[J");
   };
 
   const poll = async () => {
@@ -191,6 +194,7 @@ async function runInteractive(ctx: WatchCtx, opts: FetchOpts, interval: number, 
   const suspend = async (fn: () => Promise<unknown>) => {
     suspended = true;
     stdin.setRawMode(false);
+    lastFrame = "";
     stdout.write("\x1b[2J\x1b[H\x1b[?25h");
     try {
       await fn();
@@ -292,29 +296,31 @@ async function runInteractive(ctx: WatchCtx, opts: FetchOpts, interval: number, 
   stdin.setRawMode(true);
   stdin.resume();
   stdin.on("data", onData);
-  stdout.write("\x1b[?25l"); // hide cursor
+  stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H"); // alternate screen + hide cursor
 
-  await poll();
-  const timer = setInterval(() => {
-    if (!suspended && mode === "normal") void poll();
-  }, interval);
+  let timer: NodeJS.Timeout | undefined;
+  let check: NodeJS.Timeout | undefined;
+  try {
+    await poll();
+    timer = setInterval(() => {
+      if (!suspended && mode === "normal") void poll();
+    }, interval);
 
-  // Spin until quit. onKey sets `stopped`; we resolve and clean up.
-  await new Promise<void>((resolve) => {
-    const check = setInterval(() => {
-      if (stopped) {
-        clearInterval(check);
-        resolve();
-      }
-    }, 50);
-  });
-
-  clearInterval(timer);
-  stdin.off("data", onData);
-  stdin.setRawMode(false);
-  stdin.pause();
-  stdout.write("\x1b[?25h\x1b[2J\x1b[H"); // show cursor, clear
-  return 0;
+    // Spin until quit. onKey sets `stopped`; we resolve and clean up.
+    await new Promise<void>((resolve) => {
+      check = setInterval(() => {
+        if (stopped) resolve();
+      }, 50);
+    });
+    return 0;
+  } finally {
+    if (timer) clearInterval(timer);
+    if (check) clearInterval(check);
+    stdin.off("data", onData);
+    stdin.setRawMode(false);
+    stdin.pause();
+    stdout.write("\x1b[?25h\x1b[?1049l"); // show cursor + restore main screen
+  }
 }
 
 function scope(ctx: WatchCtx): string[] {

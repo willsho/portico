@@ -258,7 +258,9 @@ yourself, or anything where spinning up a separate agent adds no value.
   follow/review/integrate the selected run. Active rows show `idle <ago>` (time since the run's
   last event) so a stalled or silent run is obvious at a glance. Filter with `--status` /
   `--needs-review` / `--to <agent>` / `--since`. Non-TTY (or `--once` / `--json`) prints a
-  one-shot snapshot instead, so it stays scriptable. Useful when several delegations run in parallel.
+  one-shot snapshot instead, so it stays scriptable. Interactive terminals use the alternate screen
+  and skip unchanged redraws, so live refreshes do not fill scrollback. Useful when several
+  delegations run in parallel.
 - `portico status <run_id>` — show a run's artifacts, changed files, tests, and live progress
   (current phase, whether an agent is still running, last event).
 - `portico review <group_id>` — aggregate a group's children for review, with cross-child file overlap and a per-child apply check against the group base (`--ready-only` / `--json` / `--open-diff`).

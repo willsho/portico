@@ -297,8 +297,9 @@ Delegation controls in the MVP:
   `i` integrate, `enter` status); `apply` first shows a one-line guard check and asks to confirm.
   `--needs-review` / `--to <agent>` / `--status` / `--since` filter the board. With no TTY (or
   `--once` / `--json`) it prints a single snapshot instead, so it stays scriptable. The board is a
-  hand-written ANSI TUI with no extra dependencies, and delegates every action to the existing
-  commands — it never relaxes a gate (`apply` still requires a clean tracked tree).
+  hand-written ANSI TUI with no extra dependencies; in interactive terminals it uses the alternate
+  screen and skips unchanged redraws so refreshes do not fill scrollback. It delegates every action
+  to the existing commands — it never relaxes a gate (`apply` still requires a clean tracked tree).
 - `cleanup` reclaims finished runs: by default it removes only the worktree and keeps
   artifacts (`report.md` / `diff.patch` / `events.ndjson`); `--purge` also deletes artifacts.
   It targets failed + cancelled runs by default (`--status` to override, `--older-than <dur>`

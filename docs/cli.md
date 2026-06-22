@@ -401,8 +401,10 @@ never relaxes a gate:
 | `--notify` | OS-notify when a run transitions into a decision-needed or failed state |
 | `--once` / `--json` | Print a single snapshot (the default when stdout is not a TTY) and exit |
 
-The board is a hand-written ANSI TUI with no extra dependencies. When stdout is not a TTY (a pipe
-or redirect), or with `--once` / `--json`, it prints one snapshot and exits so it stays scriptable.
+The board is a hand-written ANSI TUI with no extra dependencies. In an interactive terminal it uses
+the terminal's alternate screen and skips unchanged redraws, so the live refresh does not fill your
+scrollback. When stdout is not a TTY (a pipe or redirect), or with `--once` / `--json`, it prints one
+snapshot and exits so it stays scriptable.
 
 ## `portico status`
 
