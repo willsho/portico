@@ -2,7 +2,7 @@
 // feeds it the folded runs list + the selected row id and writes the returned frame.
 // Kept pure so the bucketing, summary, and row layout are unit-testable.
 
-import { formatAgo } from "../duration.ts";
+import { formatAgo, formatDuration } from "../duration.ts";
 import type { Run } from "@portico/orchestrator";
 
 export type Bucket = "decide" | "active" | "done";
@@ -20,6 +20,11 @@ export interface BoardRun {
   groupId?: string;
   updatedAt: string;
   createdAt: string;
+  /** When the agent started working — the duration clock's start (falls back to createdAt). */
+  startedAt?: string;
+  /** When the run finished computing — preserved across apply/discard, so it's the true
+   *  end of the duration clock for a done run. */
+  completedAt?: string;
   active: boolean;
   /** Event-log mtime for in-flight runs — lets the board flag silence (time since last event). */
   lastEventAt?: string;
@@ -65,6 +70,8 @@ export function normalizeRun(raw: Run): BoardRun {
     groupId: raw.groupId ?? raw.parentRunId,
     updatedAt: raw.updatedAt,
     createdAt: raw.createdAt,
+    ...(raw.startedAt ? { startedAt: raw.startedAt } : {}),
+    ...(raw.completedAt ? { completedAt: raw.completedAt } : {}),
     active: rec["_active"] === true,
     ...(typeof rec["_lastEventAt"] === "string" ? { lastEventAt: rec["_lastEventAt"] as string } : {}),
     children: children.map(normalizeRun),
@@ -174,6 +181,17 @@ function color(status: string): string {
   }
 }
 
+/** Duration shown in the rightmost time column: elapsed-so-far while in flight, else the
+ *  finished span (startedAt → completedAt). Both endpoints survive apply/discard, so the
+ *  column always means the same thing — "how long the run took" — regardless of state. */
+function durationMs(run: BoardRun, now: number): number {
+  const start = Date.parse(run.startedAt ?? run.createdAt);
+  if (!Number.isFinite(start)) return 0;
+  const endRaw = run.active ? now : Date.parse(run.completedAt ?? run.updatedAt);
+  const end = Number.isFinite(endRaw) ? endRaw : now;
+  return Math.max(0, end - start);
+}
+
 function pad(text: string, width: number): string {
   const t = text.length > width ? text.slice(0, width - 1) + "…" : text;
   return t.padEnd(width);
@@ -197,9 +215,9 @@ function rowLine(row: RunRow, selected: boolean, now: number): string {
     // the task text is truncated; the idle marker survives the pad/truncate below.
     info = run.active && run.lastEventAt ? `⏱ ${formatAgo(run.lastEventAt, now)} idle · ${task}` : task;
   }
-  // For an active run, the meaningful age is "since last event" (silence); else "since updated".
-  const ageSource = run.active && run.lastEventAt ? run.lastEventAt : run.updatedAt;
-  const age = `${ANSI.dim}${pad(formatAgo(ageSource, now), 4)}${ANSI.reset}`;
+  // Rightmost column is the run's duration (elapsed while active, final span when done) —
+  // a single consistent meaning. Silence/staleness rides in the inline ⏱ idle marker above.
+  const age = `${ANSI.dim}${pad(formatDuration(durationMs(run, now)), 4)}${ANSI.reset}`;
   const activeMark = run.active ? `${ANSI.cyan}●${ANSI.reset} ` : "  ";
 
   const line = `${indent}${activeMark}${badge} ${name} ${agent} ${pad(info, 40)} ${age}`;
@@ -285,9 +303,8 @@ export function renderPlain(runs: BoardRun[], now = Date.now()): string {
       info = r.active && r.lastEventAt ? `idle ${formatAgo(r.lastEventAt, now)} · ${task}` : task;
     }
     const mark = r.active ? "* " : "  ";
-    const ageSource = r.active && r.lastEventAt ? r.lastEventAt : r.updatedAt;
     lines.push(
-      `${row.isChild ? "  └ " : "  "}${mark}${r.status.padEnd(9)}\t${disp}\t${r.targetAgent}\t${info}\t${formatAgo(ageSource, now)}`,
+      `${row.isChild ? "  └ " : "  "}${mark}${r.status.padEnd(9)}\t${disp}\t${r.targetAgent}\t${info}\t${formatDuration(durationMs(r, now))}`,
     );
   }
   if (foldedDone > 0) lines.push(`  … ${foldedDone} more done`);

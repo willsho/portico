@@ -81,12 +81,20 @@ test("delegation creates a worktree, artifacts, diff and report", async () => {
     assert.match(report, /Review Decision: approve/);
     assert.match(report, /not an authoritative status source/);
 
+    // The run finished computing at `completedAt`; apply/discard must not overwrite it (that
+    // would inflate the duration by the decision wait). They record their own `decidedAt`.
+    const finishedAt = details.run.completedAt;
+    assert.ok(finishedAt, "ready run records completedAt");
+
     const applied = await orchestrator.apply(repo, runId);
     assert.equal(applied.run.status, "applied");
+    assert.equal(applied.run.completedAt, finishedAt, "apply preserves the finish time");
+    assert.ok(applied.run.decidedAt, "apply records the decision time");
     assert.match(await readFile(join(repo, "delegated.txt"), "utf8"), /created by edit-agent/);
 
     const discarded = await orchestrator.discard(repo, runId);
     assert.equal(discarded.run.status, "discarded");
+    assert.equal(discarded.run.completedAt, finishedAt, "discard preserves the finish time");
     await assert.rejects(() => stat(details.run.worktreePath));
     // The worktree must be deregistered from git, not just deleted from disk.
     const worktrees = await capture("git", ["-C", repo, "worktree", "list"]);

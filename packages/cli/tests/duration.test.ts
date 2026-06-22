@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDuration } from "../src/duration.ts";
+import { parseDuration, formatDuration } from "../src/duration.ts";
 import { isLoopbackHost } from "../src/commands/http.ts";
 
 test("parseDuration understands unit suffixes", () => {
@@ -20,6 +20,17 @@ test("parseDuration rejects garbage", () => {
   assert.equal(parseDuration(""), undefined);
   assert.equal(parseDuration("soon"), undefined);
   assert.equal(parseDuration("5y"), undefined);
+});
+
+test("formatDuration compacts a millisecond span to one unit", () => {
+  assert.equal(formatDuration(0), "0s");
+  assert.equal(formatDuration(500), "0s");
+  assert.equal(formatDuration(8_000), "8s");
+  assert.equal(formatDuration(59_000), "59s");
+  assert.equal(formatDuration(60_000), "1m");
+  assert.equal(formatDuration(3_600_000), "1h");
+  assert.equal(formatDuration(90_000_000), "1d");
+  assert.equal(formatDuration(-5), "?");
 });
 
 test("isLoopbackHost only matches loopback addresses", () => {
