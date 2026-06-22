@@ -190,7 +190,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
             // Idempotent: already-finished children should not block the cascade.
           }
         }
-        const run = await updateRun(details.run, { status: "cancelled", completedAt: new Date().toISOString() });
+        const run = await updateRun(details.run, decideTimestamps(details.run, "cancelled"));
         await writeJson(details.artifacts.resultPath, { ...details.result, childResults: details.result?.childResults ?? details.result?.compareResults, run });
         return readRunDetails(repoPath, id);
       }
@@ -250,7 +250,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         throw new DelegationError("apply_failed", (applied.stderr || applied.stdout || "git apply failed").trim());
       }
       const appliedAt = new Date().toISOString();
-      const run = await updateRun(details.run, { status: "applied", completedAt: appliedAt });
+      const run = await updateRun(details.run, decideTimestamps(details.run, "applied", appliedAt));
       await writeJson(details.artifacts.resultPath, {
         ...details.result,
         run,
@@ -277,7 +277,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
           try {
             const childDetails = await readRunDetails(repoPath, childId);
             await removeWorktree(repoPath, childDetails.run.worktreePath, worktreeMutex);
-            await updateRun(childDetails.run, { status: "discarded", completedAt: new Date().toISOString() });
+            await updateRun(childDetails.run, decideTimestamps(childDetails.run, "discarded"));
           } catch {
             // Idempotent: already-removed worktrees should not block the cascade.
           }
@@ -286,13 +286,13 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         const integrationPath = join(repoPath, ".portico", "worktrees", `${id}_integration`);
         await removeWorktree(repoPath, integrationPath, worktreeMutex);
         await capture("git", ["-C", repoPath, "branch", "-D", `portico/${id}-merge`]);
-        const run = await updateRun(details.run, { status: "discarded", completedAt: new Date().toISOString() });
+        const run = await updateRun(details.run, decideTimestamps(details.run, "discarded"));
         await writeJson(details.artifacts.resultPath, { ...details.result, childResults: details.result?.childResults ?? details.result?.compareResults, run });
         return readRunDetails(repoPath, id);
       }
 
       await removeWorktree(repoPath, details.run.worktreePath, worktreeMutex);
-      const run = await updateRun(details.run, { status: "discarded", completedAt: new Date().toISOString() });
+      const run = await updateRun(details.run, decideTimestamps(details.run, "discarded"));
       await writeJson(details.artifacts.resultPath, { ...details.result, run });
       return readRunDetails(repoPath, id);
     },
@@ -1055,7 +1055,9 @@ async function cleanupRuns(repoPath: string, opts: CleanupOptions, deps: Delegat
     if (!wanted.has(run.status)) continue;
     if (isRunActive(run, deps.activeControllers)) continue;
     if (cutoff !== undefined) {
-      const ts = Date.parse(run.completedAt ?? run.updatedAt ?? run.createdAt);
+      // Age by the most recent lifecycle moment: when it was decided (applied/discarded),
+      // else when it finished, else last touched.
+      const ts = Date.parse(run.decidedAt ?? run.completedAt ?? run.updatedAt ?? run.createdAt);
       if (Number.isNaN(ts) || ts > cutoff) continue;
     }
 
@@ -1275,12 +1277,12 @@ async function applyChild(repoPath: string, groupId: string, childId: string, al
   }
 
   const now = new Date().toISOString();
-  await updateRun(child.run, { status: "applied", completedAt: now });
-  await updateRun(group.run, { status: "applied", completedAt: now });
+  await updateRun(child.run, decideTimestamps(child.run, "applied", now));
+  await updateRun(group.run, decideTimestamps(group.run, "applied", now));
   if (pathPolicyOverride) {
     await writeJson(child.artifacts.resultPath, {
       ...child.result,
-      run: { ...child.run, status: "applied", completedAt: now },
+      run: { ...child.run, ...decideTimestamps(child.run, "applied", now) },
       pathPolicyOverride: { allow: pathPolicyOverride, appliedAt: now },
     });
   }
@@ -1327,11 +1329,11 @@ async function applyGroupMerged(repoPath: string, groupId: string): Promise<RunD
   }
 
   const now = new Date().toISOString();
-  await updateRun(group.run, { status: "applied", completedAt: now });
+  await updateRun(group.run, decideTimestamps(group.run, "applied", now));
   for (const childId of group.run.childRunIds ?? []) {
     try {
       const child = await readRunDetails(repoPath, childId);
-      if (child.run.status === "ready") await updateRun(child.run, { status: "applied", completedAt: now });
+      if (child.run.status === "ready") await updateRun(child.run, decideTimestamps(child.run, "applied", now));
     } catch {
       // A missing child should not block recording the group as applied.
     }
@@ -1355,7 +1357,7 @@ async function cancelAndSalvage(repoPath: string, id: string, deps: DelegationDe
 
   if (TERMINAL_RUN_STATUSES.includes(details.run.status)) {
     if (details.run.status === "cancelled") return details.run;
-    const run = await updateRun(details.run, { status: "cancelled", completedAt: new Date().toISOString() });
+    const run = await updateRun(details.run, decideTimestamps(details.run, "cancelled"));
     await writeJson(details.artifacts.resultPath, { ...details.result, run });
     return run;
   }
@@ -1374,7 +1376,7 @@ async function cancelAndSalvage(repoPath: string, id: string, deps: DelegationDe
     }
   }
 
-  const run = await updateRun(details.run, { status: "cancelled", completedAt: new Date().toISOString() });
+  const run = await updateRun(details.run, decideTimestamps(details.run, "cancelled"));
   const task = await readJson<DelegateRequest>(details.artifacts.taskPath);
   const telemetry = buildTelemetry({
     runStartedMs: Date.parse(run.startedAt ?? run.createdAt),
@@ -2176,6 +2178,21 @@ function attachReviewArtifacts(
   if (diffSummary) result.diffSummary = diffSummary;
   if (verify.length) result.verify = verify;
   return result;
+}
+
+/**
+ * Status patch for a lifecycle action (apply / discard / cancel). Records `decidedAt` as the
+ * action time but preserves the run's existing `completedAt` — the moment it finished
+ * computing — so a long wait before the decision never inflates `completedAt - startedAt`.
+ * A run cancelled while still in flight has no `completedAt` yet, so it gets `at` (it is both
+ * finishing and being decided at once).
+ */
+function decideTimestamps(
+  run: Run,
+  status: RunStatus,
+  at: string = new Date().toISOString(),
+): Partial<Run> {
+  return { status, completedAt: run.completedAt ?? at, decidedAt: at };
 }
 
 /** Assemble a RunTelemetry from captured phase timers, omitting buckets that weren't measured

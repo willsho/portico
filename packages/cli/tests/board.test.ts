@@ -141,14 +141,49 @@ test("normalizeRun lifts _lastEventAt and renderPlain shows idle time for active
     status: "running",
     task: "do a thing",
     targetAgent: "codex",
+    startedAt: "2026-06-20T00:00:00.000Z",
     updatedAt: "2026-06-20T00:00:00.000Z",
     createdAt: "2026-06-20T00:00:00.000Z",
     _active: true,
-    _lastEventAt: "2026-06-20T00:00:00.000Z",
+    _lastEventAt: "2026-06-20T00:00:20.000Z",
   };
   const norm = normalizeRun(raw as never);
-  assert.equal(norm.lastEventAt, "2026-06-20T00:00:00.000Z");
-  // An active run with a last-event time surfaces "idle <ago>" so silence is visible.
+  assert.equal(norm.lastEventAt, "2026-06-20T00:00:20.000Z");
+  // An active run surfaces "idle <ago>" (since the last event) so silence is visible, while the
+  // rightmost column tracks total elapsed time (since startedAt) — two distinct facts.
   const text = renderPlain([norm], Date.parse("2026-06-20T00:00:30.000Z"));
-  assert.match(text, /idle 30s/);
+  assert.match(text, /idle 10s/);
+  assert.match(text, /\t30s$/m); // duration column = now - startedAt
+});
+
+test("renderPlain shows the finished span for a done run, not the time since the decision", () => {
+  // completedAt stays the finish time even after a later discard; duration = completedAt - startedAt.
+  const run = normalizeRun({
+    id: "s1",
+    status: "discarded",
+    task: "do a thing",
+    targetAgent: "codex",
+    startedAt: "2026-06-20T00:00:00.000Z",
+    completedAt: "2026-06-20T00:05:00.000Z",
+    updatedAt: "2026-06-20T00:30:00.000Z", // bumped by the discard, 30m later
+    createdAt: "2026-06-20T00:00:00.000Z",
+  } as never);
+  // Render long after the discard — the duration must read 5m (the run), not ~30m (since updated).
+  const text = renderPlain([run], Date.parse("2026-06-20T01:00:00.000Z"));
+  assert.match(text, /\t5m$/m);
+});
+
+test("normalizeRun lifts startedAt/completedAt when present", () => {
+  const norm = normalizeRun({
+    id: "s1",
+    status: "ready",
+    task: "t",
+    targetAgent: "codex",
+    startedAt: "2026-06-20T00:00:00.000Z",
+    completedAt: "2026-06-20T00:02:00.000Z",
+    updatedAt: "2026-06-20T00:02:00.000Z",
+    createdAt: "2026-06-20T00:00:00.000Z",
+  } as never);
+  assert.equal(norm.startedAt, "2026-06-20T00:00:00.000Z");
+  assert.equal(norm.completedAt, "2026-06-20T00:02:00.000Z");
 });

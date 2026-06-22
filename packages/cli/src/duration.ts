@@ -25,6 +25,20 @@ export function formatAgo(iso: string, now = Date.now()): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+/** Format a millisecond span as a compact duration ("8s", "3m", "2h", "4d").
+ *  Used by `portico watch` to show how long a run took / has been running. */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "?";
+  if (ms < 1000) return "0s";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
 /** Returns the duration in milliseconds, or undefined when the text can't be parsed. */
 export function parseDuration(text: string): number | undefined {
   const match = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$/i.exec(text);

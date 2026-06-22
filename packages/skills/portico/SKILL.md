@@ -267,7 +267,9 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico watch [--repo .]` — live status board: runs grouped by state (decision-needed on top,
   then working, then done), refreshed on an interval, with inline keys to apply/discard/cancel/
   follow/review/integrate the selected run. Active rows show `idle <ago>` (time since the run's
-  last event) so a stalled or silent run is obvious at a glance. Filter with `--status` /
+  last event) so a stalled or silent run is obvious at a glance; the rightmost column is the run's
+  duration — elapsed so far while in flight, the final `startedAt → completedAt` span once done
+  (preserved across apply/discard, so a slow decision never inflates it). Filter with `--status` /
   `--needs-review` / `--to <agent>` / `--since`. Non-TTY (or `--once` / `--json`) prints a
   one-shot snapshot instead, so it stays scriptable. Interactive terminals use the alternate screen
   and skip unchanged redraws, so live refreshes do not fill scrollback. Useful when several

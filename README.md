@@ -301,6 +301,9 @@ Delegation controls in the MVP:
   done (older finished runs fold into a `… N more` row; failures stay visible). Select a row and
   press a key to act on it inline (`a` apply, `d` discard, `c` cancel, `f` follow, `r` review,
   `i` integrate, `enter` status); `apply` first shows a one-line guard check and asks to confirm.
+  Active rows flag `idle <ago>` (time since the last event); the rightmost column is the run's
+  duration — elapsed so far while in flight, the final `startedAt → completedAt` span once done.
+  Finish time is preserved across apply/discard, so the duration reflects the run, not the wait.
   `--needs-review` / `--to <agent>` / `--status` / `--since` filter the board. With no TTY (or
   `--once` / `--json`) it prints a single snapshot instead, so it stays scriptable. The board is a
   hand-written ANSI TUI with no extra dependencies; in interactive terminals it uses the alternate

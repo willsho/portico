@@ -124,7 +124,13 @@ export interface Run {
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
+  /** When the run finished computing (reached ready/partial/conflict/failed, or was
+   *  cancelled while in flight). Set once and never overwritten by later apply/discard
+   *  actions, so `completedAt - startedAt` stays the true run duration. */
   completedAt?: string;
+  /** When a human acted on the finished run (applied / discarded / cancelled-after-ready).
+   *  Distinct from `completedAt` so the decision wait doesn't pollute the run duration. */
+  decidedAt?: string;
   worktreeRemovedAt?: string;
   /** Role in the fan-out structure. Defaults to "single" when absent (backward compat). */
   role?: RunRole;
