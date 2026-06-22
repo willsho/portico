@@ -51,6 +51,16 @@ export const DEFAULT_PROVIDERS: AgentProvider[] = [
     autoEditArgs: ["--dangerously-skip-permissions"],
   },
   {
+    id: "cursor",
+    displayName: "Cursor CLI",
+    commandNames: ["cursor-agent"],
+    envPathNames: ["PORTICO_CURSOR_PATH"],
+    protocols: ["generic-cli"],
+    defaultArgs: ["-p", "--output-format", "text", "--trust"],
+    promptMode: "argument",
+    autoEditArgs: ["--force"],
+  },
+  {
     id: "openclaw",
     displayName: "openclaw",
     commandNames: ["openclaw"],

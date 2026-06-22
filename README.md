@@ -450,13 +450,14 @@ export interface AgentAdapter {
 - **generic-cli** — spawn binary, pass the rendered prompt through stdin or argv, and stream
   stdout as `content`. The universal fallback; currently drives `codex` (`codex exec`),
   `gemini` (`gemini --prompt <prompt>`), `antigravity` (`agy -p -` with stdin),
-  and `opencode` (`opencode run <prompt>`).
+  `opencode` (`opencode run <prompt>`), and `cursor` (`cursor-agent -p <prompt>`, with
+  `--trust` always passed and `--force` as the auto-edit override).
 - **stream-json** — parses Claude Code's `claude -p --output-format stream-json
   --include-partial-messages`: token-level `content` / `reasoning` deltas, `tool_call` /
   `tool_result` events, and `--resume`-based session continuity. Drives `claude`.
 - **codex** — driven through generic-cli; its structured protocol and resume are deferred
   until the non-interactive contract is confirmed stable.
-- **gemini / antigravity / opencode** — driven through generic-cli non-interactive modes.
+- **gemini / antigravity / opencode / cursor** — driven through generic-cli non-interactive modes.
   Antigravity is discovered as `agy` first, then `antigravity`; `PORTICO_ANTIGRAVITY_PATH`
   can pin an explicit binary. Its persistent CLI settings live under
   `~/.gemini/antigravity-cli/settings.json`, while delegation auto-edit mode passes
