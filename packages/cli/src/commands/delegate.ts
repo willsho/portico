@@ -846,6 +846,11 @@ export function printEvent(event: DelegationEvent): void {
         `[${event.runId}] verdict (Portico, in progress): ${event.verdict.topRisks.length ? event.verdict.topRisks.join("; ") : "no risks yet"}`,
       );
       return;
+    case "idle_warning":
+      console.log(
+        `[${event.runId}] idle warning (Portico): no activity for ${Math.round(event.idleForMs / 1000)}s — will stop the run if it stays silent`,
+      );
+      return;
     case "fanin_start":
       console.log(`[${event.runId}] fan-in: ${event.strategy}`);
       return;

@@ -76,13 +76,16 @@ yourself, or anything where spinning up a separate agent adds no value.
    with a known catalog (e.g. claude) is rejected before launch; `--model-force` sends a custom
    id as-is (use `portico models --to <agent>` to see valid ids);
    `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>` (total task duration, independent of the idle watchdog that stops stalled agents);
-   `--idle-timeout <ms>` (how long the agent may go with **no stdout/stderr output** before it's
-   treated as stalled — distinct from `--timeout`'s total wall-clock; `0` or `off` disables the
-   watchdog, leaving only `--timeout` as the backstop; omitted → the daemon's per-agent or
-   `idleTimeoutMs` default. The watchdog now resets on any subprocess I/O, so a quiet edit-agent
-   that logs only to stderr is no longer falsely killed — and a known-quiet agent can be given a
-   longer default leash via `agents.<id>.idleTimeoutMs` or `PORTICO_IDLE_TIMEOUT_MS` in the daemon
-   config, which needs a daemon restart to take effect);
+   `--idle-timeout <ms>` (how long the agent may go with **no sign of life** before it's treated as
+   stalled — distinct from `--timeout`'s total wall-clock; `0` or `off` disables the watchdog,
+   leaving only `--timeout` as the backstop; omitted → the daemon's per-agent or `idleTimeoutMs`
+   default. The watchdog resets on any stdout/stderr output, any streamed event, and — for worktree
+   runs — any worktree file change, so a quiet edit-agent that writes files while logging only to
+   stderr (or nothing) is no longer falsely killed; it also widens the window during cold start and
+   while a tool call is in flight, and is **two-stage** — it first emits a visible `idle_warning`
+   event, then only kills at a larger hard ceiling. A known-quiet agent can be given a longer
+   default leash via `agents.<id>.idleTimeoutMs` or `PORTICO_IDLE_TIMEOUT_MS` in the daemon config,
+   which needs a daemon restart to take effect);
    `--expect-no-changes` (declare that producing no edits is an acceptable outcome — suppresses
    the implement-mode no-change warning and keeps the review decision `approve`; use for
    check/audit tasks run in implement mode);

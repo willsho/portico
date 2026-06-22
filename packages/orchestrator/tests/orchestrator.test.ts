@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { capture, registerProvider } from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
 import { createDelegationOrchestrator } from "../src/index.ts";
+import { computeIdleWindowMs } from "../src/orchestrator.ts";
 import type { AgentEntry, AgentProvider } from "@portico/core";
 import type { DelegationEvent, Run } from "../src/index.ts";
 
@@ -2047,6 +2048,20 @@ function fakeAgentMode(id: string, flag: string): AgentEntry {
   return agentEntry(id, FAKE_AGENT);
 }
 
+test("computeIdleWindowMs widens the window during cold start and in-flight tool calls", () => {
+  const idleMs = 1000;
+  // Steady state: the plain idle window.
+  assert.equal(computeIdleWindowMs({ idleMs, startupPending: false, toolCallOpen: false }), 1000);
+  // Cold start (no real output yet) gets extra grace.
+  assert.ok(computeIdleWindowMs({ idleMs, startupPending: true, toolCallOpen: false }) > 1000);
+  // An in-flight tool call (possibly a long command) gets the most grace.
+  const toolWindow = computeIdleWindowMs({ idleMs, startupPending: false, toolCallOpen: true });
+  assert.ok(toolWindow > 1000);
+  // When both apply, the window is the larger of the two, never smaller than the base.
+  const both = computeIdleWindowMs({ idleMs, startupPending: true, toolCallOpen: true });
+  assert.ok(both >= toolWindow && both >= 1000);
+});
+
 test("an agent that only writes to stderr is not falsely stalled by the idle watchdog", async () => {
   installBuiltinAdapters();
   const repo = await createRepo();
@@ -2090,11 +2105,47 @@ test("a silent hung agent is stopped by the idle watchdog with agent_stalled", a
     )) {
       events.push(event);
     }
+    // Two-stage: an idle warning is surfaced before the run is finally killed.
+    const warnedAt = events.findIndex((e) => e.type === "idle_warning");
+    const erroredAt = events.findIndex((e) => e.type === "run_error");
+    assert.ok(warnedAt >= 0, "should emit an idle warning before stalling");
+    assert.ok(warnedAt < erroredAt, "the idle warning precedes the stall");
     const last = events.at(-1);
     assert.equal(last?.type, "run_error");
     assert.equal(last?.type === "run_error" ? last.code : "", "agent_stalled");
     // A stall is a failure, not a user cancellation, even though the watchdog aborts the process.
     assert.equal(last?.type === "run_error" ? last.status : "", "failed");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("a silent file-editing agent stays alive via the worktree heartbeat", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  // fake-agent --silent-file-edit writes a file into the worktree every ~200ms for ~3s with no
+  // stdout/stderr — the worktree file-change heartbeat is the only thing keeping the run alive.
+  const entry = fakeAgentMode("idle-silent-edit", "--silent-file-edit");
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "idle-silent-edit", repo, task: "edit files quietly", idleTimeoutMs: 1000 },
+      { findEntry: () => entry },
+    )) {
+      events.push(event);
+    }
+    assert.ok(
+      !events.some((e) => e.type === "run_error"),
+      "silent file edits should reset the idle watchdog via the worktree heartbeat",
+    );
+    const done = events.at(-1);
+    assert.equal(done?.type, "run_done");
+    // Sanity: it really did edit files in the worktree (so the heartbeat had something to detect).
+    const runId = done?.type === "run_done" ? done.runId : "";
+    const details = await orchestrator.getRun(repo, runId);
+    assert.ok((details.result?.changedFiles.length ?? 0) > 0, "the silent agent should have edited files");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

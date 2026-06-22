@@ -100,11 +100,19 @@ in `changedFiles` / `diff.patch` and a gate warning notes "left N uncommitted fi
 worktree (partial work — review or resume)", so a cut-short run is reviewable or resumable instead
 of being silently discarded.
 
-The idle watchdog resets on **any** subprocess output — stdout *or* stderr — so an agent that
-works silently (writing files while logging progress only to stderr) is not falsely flagged as
-stalled. Tune the window with `--idle-timeout <ms>` per run (`0`/`off` disables it, leaving only
-the total `--timeout`), or set a default per agent via `agents.<id>.idleTimeoutMs` /
-`PORTICO_IDLE_TIMEOUT_MS` / `limits.idleTimeoutMs` in the daemon config.
+The idle watchdog resets on **any** sign of life, not just stdout: stdout *or* stderr output, and —
+for worktree-isolated runs — observed **file changes in the worktree**. A silent edit-agent that
+writes files while logging only to stderr (or nothing at all) is therefore not falsely flagged as
+stalled. The window is also widened automatically during **cold start** (before the agent's first
+output) and while a **tool call is in flight** (the agent may be running a long command).
+
+Rather than killing the instant the window lapses, the watchdog is **two-stage**: it first emits a
+visible `idle_warning` event ("agent quiet for Ns"), then only raises `agent_stalled` and aborts
+the run once a larger hard ceiling passes with still no activity.
+
+Tune the window with `--idle-timeout <ms>` per run (`0`/`off` disables it, leaving only the total
+`--timeout`), or set a default per agent via `agents.<id>.idleTimeoutMs` / `PORTICO_IDLE_TIMEOUT_MS`
+/ `limits.idleTimeoutMs` in the daemon config.
 
 ## Modes
 

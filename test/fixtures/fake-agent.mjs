@@ -91,6 +91,20 @@ if (args.includes("--stderr-heartbeat")) {
   }, 200);
 }
 
+// A silent edit-agent: write a file into cwd every 200ms with NO stdout/stderr output. Used to
+// exercise the worktree file-change heartbeat (Portico should treat the file writes as activity
+// and not flag the run as stalled even though it produces no stream output).
+if (args.includes("--silent-file-edit")) {
+  let count = 0;
+  const timer = setInterval(() => {
+    writeFileSync(`silent-edit-${count}.txt`, `edit ${count}\n`);
+    if (++count >= 15) { // 15 * 200ms = 3s
+      clearInterval(timer);
+      process.exit(0);
+    }
+  }, 200);
+}
+
 function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -165,7 +179,7 @@ if (args.includes("stream-json")) {
   process.exit(0);
 }
 
-if (!args.includes("--hang") && !args.includes("--stderr-heartbeat")) {
+if (!args.includes("--hang") && !args.includes("--stderr-heartbeat") && !args.includes("--silent-file-edit")) {
   const prompt = await readStdin();
 
   if (args.includes("--echo-argv-stdin")) {
