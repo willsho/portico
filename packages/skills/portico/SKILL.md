@@ -141,7 +141,13 @@ yourself, or anything where spinning up a separate agent adds no value.
    read `report.md`'s `## Portico Observations` section, or `result.json` directly. Trust these
    over the agent's narration — the streamed agent log can show mojibake, internal sub-agent
    chatter, or timeouts that don't reflect the files on disk. The agent log (`agent.ndjson`) is
-   a log, not a status source.
+   a log, not a status source. While a single (non-group) run is still in progress, a
+   `verdict_update` event (same `RunVerdict` shape, but necessarily `readiness: "not_ready"`) is
+   emitted once, right after the diff is ready and before tests run — an honest mid-flight
+   Portico signal, not the agent's self-report. In the default (non-`--json`) terminal rendering
+   it prints as a clearly Portico-labeled line, and raw agent narration (the `content`/`reasoning`
+   deltas) is preceded by an "agent narration (unverified, not Portico's verdict)" banner once per
+   run, so the two are never visually confused while watching a stream live.
    The report's `## Telemetry` section buckets wall time by phase (worktree setup, agent, diff,
    tests, verify, and — for groups — fan-in), and a group's candidate list shows each child's
    agent duration; use these to see whether time went to the agent, the checks, or fan-in
