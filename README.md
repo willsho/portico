@@ -485,8 +485,10 @@ Register your own with `registerAdapter(myAdapter)`.
   **refused unless a `--token` is set**.
 - CORS allows `localhost`/`127.0.0.1` on any port by default; production origins are opt-in
   via `--allow-origin`.
-- The child-process runner enforces a timeout watchdog, a max-output cap, cancellation via
-  `AbortSignal`, and guaranteed process cleanup.
+- The child-process runner enforces a total timeout, an idle watchdog (stops an agent that
+  produces no stdout/stderr output for too long — tunable per run with `--idle-timeout`, per
+  agent, or via `PORTICO_IDLE_TIMEOUT_MS`), a max-output cap, cancellation via `AbortSignal`,
+  and guaranteed process cleanup.
 - Delegation runs execute in isolated git worktrees and generate artifacts before any
   patch is applied to the main working tree. Portico also checks for observed
   out-of-tree writes and fails the run if a delegate modifies the caller's checkout.
