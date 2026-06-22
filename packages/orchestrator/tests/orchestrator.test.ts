@@ -724,6 +724,78 @@ test("path policy failure records out-of-scope paths and a copy-paste retry", as
   }
 });
 
+test("apply --allow lands a diff that only failed path policy", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", allowedPaths: ["src/**"] },
+      { findEntry: () => agentEntry("codex", EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const runId = events.find((e) => "runId" in e && e.runId)?.runId as string;
+
+    const details = await orchestrator.apply(repo, runId, { allow: ["delegated.txt"] });
+    assert.equal(details.run.status, "applied");
+    assert.ok(existsSync(join(repo, "delegated.txt")), "diff should be applied onto the repo working tree");
+    assert.deepEqual(details.result?.pathPolicyOverride?.allow, ["delegated.txt"]);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("apply --allow does not override a forbidden-path violation", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", forbiddenPaths: ["delegated.txt"] },
+      { findEntry: () => agentEntry("codex", EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const runId = events.find((e) => "runId" in e && e.runId)?.runId as string;
+
+    await assert.rejects(
+      orchestrator.apply(repo, runId, { allow: ["delegated.txt"] }),
+      (err: Error) => /not overridable/.test(err.message),
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("apply --allow rejects when it does not cover every out-of-scope path", async () => {
+  installBuiltinAdapters();
+  const repo = await createRepo();
+  const orchestrator = createDelegationOrchestrator();
+  const events: DelegationEvent[] = [];
+
+  try {
+    for await (const event of orchestrator.delegate(
+      { to: "codex", repo, task: "create delegated file", allowedPaths: ["src/**"] },
+      { findEntry: () => agentEntry("codex", EDIT_AGENT) },
+    )) {
+      events.push(event);
+    }
+    const runId = events.find((e) => "runId" in e && e.runId)?.runId as string;
+
+    await assert.rejects(
+      orchestrator.apply(repo, runId, { allow: ["other/path.txt"] }),
+      (err: Error) => /--allow does not cover: delegated\.txt/.test(err.message),
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("--verify checks run separately from tests and report under Verify Checks", async () => {
   installBuiltinAdapters();
   const repo = await createRepo();

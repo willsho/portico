@@ -328,6 +328,9 @@ export interface RunResult {
   diffSummary?: DiffSummary;
   /** Allowed/forbidden path-policy outcome, with retry paths when it failed. */
   pathPolicy?: PathPolicyResult;
+  /** Set when `apply --allow` landed a path-policy-failed run: the user-confirmed
+   *  patterns that covered the out-of-scope files, kept for provenance/audit. */
+  pathPolicyOverride?: { allow: string[]; appliedAt: string };
   /** Coverage of `--expected-change`: expected/touched/untouched/unexpected (when declared). */
   coverage?: CoverageResult;
   telemetry?: RunTelemetry;
