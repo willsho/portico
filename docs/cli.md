@@ -173,6 +173,7 @@ Common options:
 | `--judge-to <agent>` | Optional read-only judge over the candidates / merged result |
 | `--judge-instruction <text>` | Override the judge's default review instruction |
 | `--resume <child_id>` | Re-run a child in its existing worktree with a new task (requires `--task` or `--task-file`) |
+| `--iterate-from <run_id>` | Prepend a failure/result summary from a previous run (top risks, failing test/verify output, changed files) into this task's `## Context` section, then launch as a brand-new run |
 | `--dry-run` | Lint the task for a named file, acceptance criteria, and a test command, then exit (code 0 if all three pass, 1 otherwise) — no network call, no worktree |
 | `--context <path-or-glob>` | File or glob to splice into the task as a `### Context: <path>` section before sending; repeatable |
 | `--context-diff <ref>` | `git diff <ref>` output to splice into the task as a `### Context diff: <ref>` section; repeatable |
@@ -196,6 +197,17 @@ Common options:
 | `--follow <run_id>` | Re-attach to a run's event log (same as `logs --follow`); ignores other run flags |
 | `--url <url>` | Daemon URL override |
 | `--token <token>` | Bearer token |
+
+`--iterate-from <run_id>` is deliberately **not** a continuation mechanism — it never reuses a
+worktree or session. It fetches that run's result, builds a `### Previous attempt: <run_id>
+(<status>)` summary (top risks, each failing test/verify command's last ~2,000 characters of
+output, changed files), and splices it into the new task's `## Context` section — composing
+cleanly with `--context`/`--context-diff` if both are given — then launches a perfectly ordinary
+new run. This is orthogonal to `--resume <child_id>` (re-runs a child in its *existing*
+worktree/session) and to any future continuation flag; it only ever bootstraps the prompt for a
+brand-new delegation, so re-delegating after a failure doesn't require hand-copying
+`report.md`/`test.log` excerpts. The summary is capped at 20,000 combined characters, same
+truncation-marker approach as `--context`.
 
 `--context` / `--context-diff` packing is explicit and deterministic — no retrieval or ranking.
 Sections are appended in flag order under a `## Context` heading, capped at 40,000 combined

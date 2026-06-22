@@ -194,8 +194,12 @@ yourself, or anything where spinning up a separate agent adds no value.
 ## Iterating and orchestrating
 
 - The delegate has no memory between runs. To iterate, launch a **new** `portico delegate`
-  with a refined task that folds in what the previous run got wrong — quote lines from its
-  `report.md` / `test.log` directly into the new task.
+  with a refined task that folds in what the previous run got wrong. `--iterate-from <run_id>`
+  automates the "quote lines from its `report.md` / `test.log`" part — it deterministically
+  splices that run's top risks, failing test/verify output, and changed files into the new
+  task's `## Context` section (composes with `--context`/`--context-diff`), then launches an
+  ordinary new run. It is **not** a continuation — no shared worktree or session — so it's
+  orthogonal to `--resume` below; still write your own refinement in `--task`.
 - To iterate on a **child of a group** without re-running the whole group, use
   `portico delegate --resume <child_id> --task "<refinement>"`. It re-runs that child in its
   existing worktree, regenerates the diff, re-runs tests, and recomputes the group (for a

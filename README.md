@@ -253,6 +253,10 @@ Delegation controls in the MVP:
   auto-merge. On a conflict it records the conflicting files, their source child, and a
   suggested review order; apply the merged result with `apply <group_id> --all`. Compare
   groups are rejected (their children are competing implementations — pick one with `--child`).
+- `--iterate-from <run_id>` (delegate) splices a previous run's failure/result summary (top
+  risks, failing test/verify output, changed files) into the new task's `## Context` section,
+  then launches an ordinary new run — never a continuation. Orthogonal to `--resume`, which
+  re-runs a child in its existing worktree/session.
 - `--dry-run` (delegate) lints the task text for a named file, acceptance criteria, and a test
   command, then exits (0 if all three pass, 1 otherwise) — no network call, no worktree.
   `--context <path-or-glob>` / `--context-diff <ref>` (repeatable) deterministically splice file
