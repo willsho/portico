@@ -69,6 +69,10 @@ yourself, or anything where spinning up a separate agent adds no value.
    to a slug of the task); repeatable `--test`; repeatable `--verify` (checks reported
    separately from tests — use for doc/policy tasks that have no test command); repeatable
    `--allowed`/`--forbidden` (path policy); `--base-ref <ref>`;
+   `--model <id>` (pick the target agent's model, e.g. `opus` / `claude-opus-4-8`; omitted →
+   the agent's own default) and `--effort <level>` (reasoning effort where the agent supports
+   it, e.g. `low|medium|high`); both are translated to the agent's native flags, and a child's
+   `model`/`effort` in `--child` overrides these per child;
    `--cleanup manual|onNoChanges|onSuccess|always`; `--timeout <ms>` (total task duration, independent of the idle watchdog that stops stalled agents);
    `--expect-no-changes` (declare that producing no edits is an acceptable outcome — suppresses
    the implement-mode no-change warning and keeps the review decision `approve`; use for

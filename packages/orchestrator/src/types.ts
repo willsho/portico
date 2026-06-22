@@ -89,6 +89,10 @@ export interface DelegateRequest {
   /** Shorthand for `isolation.cleanup`. */
   cleanup?: CleanupPolicy;
   permissionProfile?: PermissionProfile;
+  /** Model override passed through to the target agent (e.g. "opus"). ChildSpec.model wins per child. */
+  model?: string;
+  /** Reasoning-effort override passed through to the target agent (e.g. "high"). ChildSpec.effort wins per child. */
+  effort?: string;
   testCommands?: string[];
   /** Verification commands, semantically distinct from tests (e.g. doc/policy checks).
    *  Run through the same pipeline; a failure fails the run, but reported separately. */

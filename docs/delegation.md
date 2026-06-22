@@ -39,6 +39,32 @@ portico apply <run_id>
 portico discard <run_id>
 ```
 
+## Choosing the Model and Effort
+
+`--model <id>` picks which model the target agent runs, and `--effort <level>` sets its
+reasoning effort, where the adapter supports them:
+
+```bash
+portico delegate --to claude --repo . \
+  --task "Refactor the auth module" \
+  --model opus --effort high
+```
+
+Portico translates each value into the agent's native flag (for Claude, `--model` and
+`--effort`; for Codex, `--model` and a `model_reasoning_effort` config override; for Gemini,
+`--model`). The model id may be a full name (`claude-opus-4-8`) or an alias the CLI accepts
+(`opus`). Omit a flag to leave the agent on its own default — Portico never injects a default
+of its own, so the choice survives CLI upgrades. Agents without a model knob ignore the flag.
+
+In a fan-out, set `model` / `effort` per child inside its `--child` spec; a child's own value
+overrides the group-level `--model` / `--effort`, and a child without one inherits the group's:
+
+```bash
+portico delegate --mode split --to claude --repo . --task "..." --model opus \
+  --child '{"to":"claude","task":"backend","model":"sonnet"}' \
+  --child '{"to":"codex","task":"frontend"}'
+```
+
 ## Run Lifecycle
 
 Every delegation run moves through the same broad lifecycle:

@@ -217,6 +217,10 @@ Delegation controls in the MVP:
 - `--permission-profile default|read-only|auto-edit` controls whether Portico asks the
   provider adapter for autonomous editing. Shared auto-edit runs require a clean working
   tree so Portico can attribute the resulting diff.
+- `--model <id>` selects the target agent's model (e.g. `opus` or `claude-opus-4-8`) and
+  `--effort <level>` its reasoning effort (e.g. `low|medium|high`), where the adapter supports
+  them. Portico translates each to the agent's native flag; omit them to use the agent's own
+  default. In a fan-out, a child's `model`/`effort` (in its `--child` spec) overrides these.
 - `--mode compare --compare-to <agent>` runs isolated **competing** candidate
   implementations in parallel (bounded by `maxConcurrentAgentProcesses`, default 4) and
   records a parent group report with links to each candidate run. Apply one candidate with

@@ -480,6 +480,8 @@ function buildChildRequest(
       cleanup: isolation.cleanup,
     },
     permissionProfile: spec.permissionProfile ?? "auto-edit",
+    model: spec.model ?? request.model,
+    effort: spec.effort ?? request.effort,
     allowedPaths: spec.allowedPaths ?? request.allowedPaths,
     forbiddenPaths: spec.forbiddenPaths ?? request.forbiddenPaths,
   };
@@ -1481,6 +1483,8 @@ async function* rerunExistingWorktree(
         cwd: workDir,
         timeoutMs: request.timeoutMs,
         autoEdit: details.run.permissionProfile === "auto-edit",
+        ...(request.model ? { model: request.model } : {}),
+        ...(request.effort ? { effort: request.effort } : {}),
       },
     };
 
@@ -1863,6 +1867,8 @@ async function* runSingleDelegation(
         cwd: workDir,
         timeoutMs: request.timeoutMs,
         autoEdit: permissionProfile === "auto-edit",
+        ...(request.model ? { model: request.model } : {}),
+        ...(request.effort ? { effort: request.effort } : {}),
       },
     };
 

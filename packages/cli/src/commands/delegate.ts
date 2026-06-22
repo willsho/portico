@@ -95,6 +95,8 @@ export async function delegateCommand(args: string[]): Promise<number> {
       "base-ref": { type: "string" },
       cleanup: { type: "string" },
       "permission-profile": { type: "string" },
+      model: { type: "string" },
+      effort: { type: "string" },
       "compare-to": { type: "string", multiple: true },
       child: { type: "string", multiple: true },
       merge: { type: "string" },
@@ -148,6 +150,8 @@ Options:
   --base-ref <ref>         Base Git reference
   --cleanup <policy>       Cleanup policy
   --permission-profile <p> Permission profile
+  --model <id>             Model for the target agent (e.g. opus, claude-opus-4-8)
+  --effort <level>         Reasoning-effort level for the target agent (e.g. low|medium|high)
   --compare-to <agent>     Agent to compare against (repeatable)
   --child <json>           Child spec JSON (repeatable)
   --merge <strategy>       Fan-in merge strategy
@@ -367,6 +371,8 @@ Exit codes:
     baseRef: values["base-ref"],
     cleanup: values.cleanup as DelegateRequest["cleanup"],
     permissionProfile: values["permission-profile"] as DelegateRequest["permissionProfile"],
+    model: values.model,
+    effort: values.effort,
     compareTargets: values["compare-to"],
     children,
     fanIn,
