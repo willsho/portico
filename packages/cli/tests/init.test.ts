@@ -24,16 +24,22 @@ test("init refreshes Portico skill files without overwriting config", async () =
     const claudeSkillPath = join(repo, ".claude", "skills", "portico", "SKILL.md");
     const codexSkillPath = join(repo, ".agents", "skills", "portico", "SKILL.md");
 
+    const reviewerPath = join(repo, ".portico", "agents", "reviewer.md");
+
     await initCommand([]);
     await writeFile(configPath, JSON.stringify({ testCommands: ["npm test"] }, null, 2));
     await writeFile(claudeSkillPath, "old claude skill");
     await writeFile(codexSkillPath, "old codex skill");
+    await writeFile(reviewerPath, "edited reviewer profile");
 
     const code = await initCommand([]);
     assert.equal(code, 0);
     assert.equal(await readFile(configPath, "utf8"), JSON.stringify({ testCommands: ["npm test"] }, null, 2));
     assert.equal(await readFile(claudeSkillPath, "utf8"), renderSkill("claude"));
     assert.equal(await readFile(codexSkillPath, "utf8"), renderSkill("codex"));
+    // Example profiles are scaffolded, then never overwritten so user edits survive re-init.
+    assert.equal(await readFile(reviewerPath, "utf8"), "edited reviewer profile");
+    assert.match(await readFile(join(repo, ".portico", "agents", "implementer.md"), "utf8"), /name: implementer/);
   } finally {
     console.log = originalLog;
     process.chdir(previousCwd);

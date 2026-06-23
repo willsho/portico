@@ -7,6 +7,7 @@ import { agentsCommand } from "./commands/agents.ts";
 import { modelsCommand } from "./commands/models.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { delegateCommand } from "./commands/delegate.ts";
+import { profilesCommand } from "./commands/profiles.ts";
 import { resultCommand } from "./commands/result.ts";
 import {
   runsCommand,
@@ -35,8 +36,10 @@ Usage:
   portico agents [--json]     List Agents discovered on this machine
   portico models [--to a] [--json]  List known models per agent
   portico delegate --to a (--task t | --task-file file) [--test cmd]
+  portico delegate --profile p --task t   Apply a delegate profile from .portico/agents/p.md
   portico delegate --mode review --to a --task t
   portico delegate --mode compare --to a --compare-to b --task t
+  portico profiles list|show  Manage delegate profiles (.portico/agents/*.md)
   portico runs [--repo .]     List delegation runs (--status, --since filters; --watch for the board)
   portico watch [--repo .]    Live status board of runs (grouped, inline apply/discard/follow)
   portico status <run_id>     Show a delegation run
@@ -81,6 +84,8 @@ async function main(): Promise<number> {
       return modelsCommand(rest);
     case "delegate":
       return delegateCommand(rest);
+    case "profiles":
+      return profilesCommand(rest);
     case "runs":
       return runsCommand(rest);
     case "watch":

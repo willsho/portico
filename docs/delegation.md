@@ -72,6 +72,81 @@ id anyway (e.g. a newly released model). The model and effort a run actually use
 its `report.md` (`## Summary`), and per child in a group's candidate list, so a compare of the
 same agent across models is easy to tell apart.
 
+## Delegate Profiles
+
+A **delegate profile** is a named, reusable preset for a delegation — the analog of a saved
+subagent definition. Instead of re-typing `--to`, `--model`, `--permission-profile`, `--allowed`,
+`--test`, and friends on every run, you store them once in a Markdown file and apply them with
+`--profile <name>`.
+
+Profiles resolve from two scopes, closest-wins:
+
+| Scope   | Location                         | Use for                                          |
+| ------- | -------------------------------- | ------------------------------------------------ |
+| project | `<repo>/.portico/agents/<name>.md` | team presets, shared via version control        |
+| user    | `~/.portico/agents/<name>.md`      | personal presets available in every repo        |
+
+When both scopes define the same name, the project scope overrides the user scope
+field-by-field. `PORTICO_HOME` overrides the home base used for the user scope.
+
+A profile is a Markdown file with YAML frontmatter (the config) and an optional body (a standing
+task preamble):
+
+```markdown
+---
+name: reviewer
+description: Read-only review — find issues, change nothing.
+mode: review
+permissionProfile: read-only
+allowed:
+  - "src/**"
+testCommands:
+  - npm test
+idleTimeoutMs: 300000
+---
+You are performing a read-only review. Do not modify any files. Report findings grouped by
+severity (critical / warning / suggestion), each with a file:line reference and a concrete fix.
+```
+
+Supported frontmatter fields: `to`, `mode`, `model`, `effort`, `permissionProfile`, `allowed`,
+`forbidden`, `testCommands`, `idleTimeoutMs`, `description`. The **body**, if present, is
+prepended to the task as standing instructions — the way a subagent's system prompt frames
+every run.
+
+Apply a profile, overriding individual fields with explicit flags as needed:
+
+```bash
+# Use the profile as-is (it supplies the target, mode, permission profile, paths, tests):
+portico delegate --profile reviewer --to claude --task "Review the auth module"
+
+# An explicit flag always wins over the profile:
+portico delegate --profile reviewer --to claude --task "..." --permission-profile auto-edit
+```
+
+Resolution happens CLI-side and only fills fields you left unset, so the precedence is
+**explicit flag > profile > config > default**. A fan-out child can pull a profile too — the
+child's own keys win over the profile's fields:
+
+```bash
+portico delegate --mode split --to claude --repo . --task "..." \
+  --child '{"profile":"backend","task":"backend part"}' \
+  --child '{"profile":"frontend","task":"frontend part"}'
+```
+
+Inspect resolved profiles:
+
+```bash
+portico profiles list              # every profile visible to this repo, with its source scope
+portico profiles show reviewer     # one resolved profile (project merged over user)
+portico profiles list --json       # machine-readable
+```
+
+`portico init` scaffolds two example profiles — `reviewer` (read-only review) and `implementer`
+(auto-edit with tests) — under `.portico/agents/`. Editing or deleting them is fine; re-running
+`init` never overwrites an existing profile. Project profiles under `.portico/agents/` stay
+trackable by git even though the rest of `.portico/` (runs, worktrees, config) is excluded, so
+you can commit and share them with your team.
+
 ## Run Lifecycle
 
 Every delegation run moves through the same broad lifecycle:

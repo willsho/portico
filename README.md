@@ -99,7 +99,9 @@ portico daemon start
 portico daemon stop
 portico agents [--url <url>] [--token <token>] [--json]
 portico models [--to <agent>] [--json]
+portico profiles list|show [<name>] [--repo .] [--json]
 portico delegate --to <agent> --repo . (--task "<task>" | --task-file <path>) [--test "npm test"]
+portico delegate --profile <name> --repo . --task "<task>"  # apply a saved preset; flags override it
 portico delegate --mode review --to <agent> --repo . --task "<review task>"
 portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" --judge-to <agent-c>
 portico delegate --mode split --to <agent-a> --repo . --task "<task>" \
@@ -139,10 +141,11 @@ per-provider discovery (path, version, status, why-unavailable), port availabili
 the CORS/LAN security posture.
 
 `portico init` creates `.portico/config.json`, `.portico/runs`,
-`.portico/worktrees`, and local Portico Skill files for Claude Code and Codex-compatible
+`.portico/worktrees`, example delegate profiles under `.portico/agents/` (`reviewer`,
+`implementer`), and local Portico Skill files for Claude Code and Codex-compatible
 agent runtimes. Re-running it refreshes those Portico-managed Skill files from the
-canonical bundled Skill without overwriting an existing `.portico/config.json` or touching
-other project-level skills.
+canonical bundled Skill without overwriting an existing `.portico/config.json`, an existing
+profile, or other project-level skills.
 
 ## Delegation
 
@@ -206,6 +209,14 @@ project changes.
 
 Delegation controls in the MVP:
 
+- `--profile <name>` applies a reusable **delegate profile** — a named preset stored at
+  `.portico/agents/<name>.md` (project, version-controllable) or `~/.portico/agents/<name>.md`
+  (user). Its frontmatter fills any of `to` / `mode` / `model` / `effort` / `permissionProfile` /
+  `allowed` / `forbidden` / `testCommands` / `idleTimeoutMs` you didn't pass, and its Markdown body
+  is prepended to the task as standing instructions. Resolution is CLI-side and only fills unset
+  fields, so precedence is explicit flag > profile > config > default; a `--child '{"profile":…}'`
+  works the same per child. `portico profiles list` / `show <name>` inspect them; `portico init`
+  scaffolds `reviewer` and `implementer` examples. See [docs/delegation.md](docs/delegation.md#delegate-profiles).
 - Default max delegation depth is 1; nested delegation is blocked.
 - Default forbidden paths include `.env`, `.ssh/**`, `node_modules/**`, `dist/**`, and
   `build/**`.

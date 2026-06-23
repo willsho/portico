@@ -2630,6 +2630,35 @@ async function ensurePorticoDirs(repoPath: string): Promise<void> {
   await mkdir(join(repoPath, ".portico", "worktrees"), { recursive: true });
 }
 
+// Keep Portico's runtime artifacts (runs, worktrees, config) out of the caller's git status,
+// but leave `.portico/agents/` trackable so project-scope delegate profiles can be shared via
+// version control. The blanket `/.portico/` form excludes the whole dir (a re-include under it is
+// impossible in gitignore), so we use `/.portico/*` + `!/.portico/agents/` and migrate any repo
+// that already has the legacy blanket line.
+const PORTICO_EXCLUDE_LINES = ["/.portico/*", "!/.portico/agents/"];
+
+/**
+ * Pure transform for `.git/info/exclude`: returns the new contents, or null when the granular
+ * Portico block is already present. Drops the legacy blanket `/.portico/` (it would defeat the
+ * agents re-include) and any partial desired lines, preserves every other user entry, then
+ * appends `/.portico/*` + `!/.portico/agents/`.
+ */
+export function applyPorticoExclude(existing: string): string | null {
+  const lines = existing.split("\n").map((line) => line.trim());
+  if (PORTICO_EXCLUDE_LINES.every((want) => lines.includes(want))) return null;
+
+  const preserved = existing
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim();
+      return t !== "/.portico/" && !PORTICO_EXCLUDE_LINES.includes(t);
+    })
+    .join("\n")
+    .replace(/\n+$/, "");
+  const prefix = preserved.length ? `${preserved}\n` : "";
+  return `${prefix}${PORTICO_EXCLUDE_LINES.join("\n")}\n`;
+}
+
 async function ensurePorticoExcluded(repoPath: string): Promise<void> {
   const gitPath = await capture("git", ["-C", repoPath, "rev-parse", "--git-path", "info/exclude"]);
   if (gitPath.code !== 0) return;
@@ -2641,9 +2670,9 @@ async function ensurePorticoExcluded(repoPath: string): Promise<void> {
   } catch {
     await mkdir(dirname(excludePath), { recursive: true });
   }
-  if (!existing.split("\n").some((line) => line.trim() === "/.portico/")) {
-    await appendFile(excludePath, `${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}/.portico/\n`);
-  }
+
+  const updated = applyPorticoExclude(existing);
+  if (updated !== null) await writeFile(excludePath, updated);
 }
 
 function artifactPaths(repoPath: string, id: string): RunArtifact {
