@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listProfiles, loadProfile, parseFrontmatter } from "../src/profiles.ts";
+import { lintProfiles, listProfiles, loadProfile, parseFrontmatter } from "../src/profiles.ts";
 import { profilesCommand } from "../src/commands/profiles.ts";
 
 test("parseFrontmatter reads scalars, inline arrays, block lists, and the body", () => {
@@ -86,6 +86,30 @@ test("listProfiles unions names across scopes and sorts them", async () => {
     assert.deepEqual(names, ["projecty", "shared", "userly"]);
     const shared = listProfiles(repo, env).find((p) => p.name === "shared");
     assert.equal(shared?.to, "claude"); // project wins
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("lintProfiles flags unknown keys and invalid enum values, and passes a clean profile", async () => {
+  const { home, repo, env } = await setupScopes();
+  try {
+    await writeFile(
+      join(repo, ".portico", "agents", "messy.md"),
+      `---\nto: claude\nmode: reveiw\npermissionProfile: read_only\nidleTimeoutMs: soon\ntypoKey: oops\n---\nbody`,
+    );
+    await writeFile(join(repo, ".portico", "agents", "clean.md"), `---\nto: claude\nmode: review\npermissionProfile: read-only\n---\nbody`);
+    const lints = lintProfiles(repo, env);
+    const messy = lints.find((l) => l.name === "messy");
+    const clean = lints.find((l) => l.name === "clean");
+    assert.ok(messy);
+    assert.equal(messy.scope, "project");
+    assert.ok(messy.warnings.some((w) => /unknown key "typoKey"/.test(w)));
+    assert.ok(messy.warnings.some((w) => /invalid mode "reveiw"/.test(w)));
+    assert.ok(messy.warnings.some((w) => /invalid permissionProfile "read_only"/.test(w)));
+    assert.ok(messy.warnings.some((w) => /idleTimeoutMs "soon" is not a number/.test(w)));
+    assert.deepEqual(clean?.warnings, []);
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(repo, { recursive: true, force: true });

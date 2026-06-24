@@ -128,8 +128,11 @@ yourself, or anything where spinning up a separate agent adds no value.
 
    Then `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
    **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can't retarget the
-   daemon's cwd), the base ref, the worktree root, the effective timeout, and the agents about to run. Read it back to
-   confirm the run is pointed at the repo you intended before agents start working.
+   daemon's cwd), the base ref, the worktree root, the effective timeout, and the agents about to
+   run — plus, when set (e.g. from a `--profile`), the resolved mode, permission profile,
+   model/effort, path policy, test commands, and idle timeout, so you can confirm what a profile
+   actually resolved to. Read it back to confirm the run is pointed at the repo you intended
+   before agents start working.
 
    `--apply-on-ready` is an explicit opt-in that auto-applies a **single** ready run only when
    every safety guard holds — you passed `--allowed` (a path boundary), the tracked tree is
@@ -277,6 +280,8 @@ pass, so any explicit flag (or `--child` key) always wins.
 - Apply one with `portico delegate --profile <name> …`. A `--child` can pull a profile too:
   `--child '{"profile":"backend","task":"…"}'` (the child's own keys win over the profile's).
 - Inspect with `portico profiles list` and `portico profiles show <name>` (`--json` for both).
+  `portico doctor` also lists profiles and flags authoring mistakes (unknown frontmatter keys,
+  invalid `mode` / `permissionProfile` values).
 - `portico init` scaffolds two examples — `reviewer` (read-only review) and `implementer`
   (auto-edit + tests). Editing or deleting them is fine; re-running `init` never overwrites
   an existing profile.

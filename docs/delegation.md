@@ -141,6 +141,13 @@ portico profiles show reviewer     # one resolved profile (project merged over u
 portico profiles list --json       # machine-readable
 ```
 
+`portico doctor` includes a **Profiles** section that lists every profile file and flags
+authoring mistakes the lenient loader otherwise swallows — unknown frontmatter keys (typos),
+invalid `mode` / `permissionProfile` values, and a non-numeric `idleTimeoutMs`. The
+**preflight** that `delegate` prints before launch also echoes the resolved `mode`, permission
+profile, model/effort, path policy, tests, and idle timeout, so you can confirm what a profile
+actually resolved to (after any overriding flags) before agents start.
+
 `portico init` scaffolds two example profiles — `reviewer` (read-only review) and `implementer`
 (auto-edit with tests) — under `.portico/agents/`. Editing or deleting them is fine; re-running
 `init` never overwrites an existing profile. Project profiles under `.portico/agents/` stay

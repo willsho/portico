@@ -137,8 +137,8 @@ portico doctor [--config path]
 ```
 
 `portico doctor` reports Node/platform, config source, login-shell PATH recovery,
-per-provider discovery (path, version, status, why-unavailable), port availability, and
-the CORS/LAN security posture.
+per-provider discovery (path, version, status, why-unavailable), delegate profiles (with lint
+warnings for unknown keys / invalid values), port availability, and the CORS/LAN security posture.
 
 `portico init` creates `.portico/config.json`, `.portico/runs`,
 `.portico/worktrees`, example delegate profiles under `.portico/agents/` (`reviewer`,

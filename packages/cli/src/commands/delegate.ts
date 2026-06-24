@@ -535,7 +535,7 @@ Exit codes:
   // is caught up front instead of after N fan-out agents have already burned time. For a
   // multi-agent fan-out at an interactive terminal, also require confirmation (skip with
   // --yes / non-TTY so agent-driven and scripted use never blocks).
-  if (!(await printPreflightAndConfirm(request, base, values.yes ?? false))) {
+  if (!(await printPreflightAndConfirm(request, base, values.yes ?? false, values.profile))) {
 
     console.error("[portico] aborted before launch (no agents started).");
     return 0;
@@ -824,14 +824,25 @@ function snippet(text: string): string {
  * stream, and confirmation is skipped for `--yes` and non-interactive (agent-driven / scripted)
  * use so automation never blocks.
  */
-async function printPreflightAndConfirm(request: DelegateRequest, base: string, skipConfirm: boolean): Promise<boolean> {
+async function printPreflightAndConfirm(request: DelegateRequest, base: string, skipConfirm: boolean, profileName?: string): Promise<boolean> {
   const { count, lines } = describeTargets(request);
   const worktreeRoot = join(request.repo, ".portico", "worktrees");
   console.error("[portico] preflight:");
   console.error(`  daemon:        ${base}`);
   console.error(`  repo:          ${request.repo}`);
+  if (profileName) console.error(`  profile:       ${profileName}`);
   console.error(`  base ref:      ${request.baseRef ?? "HEAD (default)"}`);
   console.error(`  worktree root: ${worktreeRoot}`);
+  // Echo the fields a profile/flags resolved to, so applying a profile shows what actually took
+  // effect. Only printed when set, so a plain run stays as terse as before.
+  if (request.mode) console.error(`  mode:          ${request.mode}`);
+  if (request.permissionProfile) console.error(`  permission:    ${request.permissionProfile}`);
+  if (request.model) console.error(`  model:         ${request.model}${request.effort ? ` (effort ${request.effort})` : ""}`);
+  else if (request.effort) console.error(`  effort:        ${request.effort}`);
+  if (request.allowedPaths?.length) console.error(`  allowed:       ${request.allowedPaths.join(", ")}`);
+  if (request.forbiddenPaths?.length) console.error(`  forbidden:     ${request.forbiddenPaths.join(", ")}`);
+  if (request.testCommands?.length) console.error(`  tests:         ${request.testCommands.join(", ")}`);
+  if (request.idleTimeoutMs !== undefined) console.error(`  idle timeout:  ${request.idleTimeoutMs === 0 ? "off" : `${request.idleTimeoutMs}ms`}`);
   console.error(`  timeout:       ${request.timeoutMs ? `${request.timeoutMs}ms` : "daemon default"}`);
   console.error(`  ${count === 1 ? "agent" : `agents (${count})`}:`);
   for (const line of lines) console.error(line);

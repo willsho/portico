@@ -506,6 +506,56 @@ Do a read-only review. Change nothing.`);
   }
 });
 
+test("delegate --profile echoes the resolved profile fields in the preflight", async () => {
+  const { repo, home } = await setupProfileRepo(`---
+to: agent
+mode: review
+permissionProfile: read-only
+allowed:
+  - "src/**"
+testCommands:
+  - npm test
+idleTimeoutMs: 300000
+---
+Review only.`);
+
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalHome = process.env.PORTICO_HOME;
+  process.env.PORTICO_HOME = home;
+  let errOut = "";
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+  console.log = () => {};
+  globalThis.fetch = async () =>
+    new Response(
+      `${JSON.stringify({ type: "run_done", runId: "run_1", status: "ready", reportPath: "r.md", resultPath: "x.json" })}\n`,
+      { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+    );
+  try {
+    const code = await delegateCommand([
+      "--profile", "reviewer", "--task", "x", "--repo", repo, "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    assert.match(errOut, /profile:\s+reviewer/);
+    assert.match(errOut, /mode:\s+review/);
+    assert.match(errOut, /permission:\s+read-only/);
+    assert.match(errOut, /allowed:\s+src\/\*\*/);
+    assert.match(errOut, /tests:\s+npm test/);
+    assert.match(errOut, /idle timeout:\s+300000ms/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+    if (originalHome === undefined) delete process.env.PORTICO_HOME;
+    else process.env.PORTICO_HOME = originalHome;
+    await rm(repo, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("delegate --profile errors when the profile is not found", async () => {
   const home = await mkdtemp(join(tmpdir(), "portico-prof-home-"));
   const originalHome = process.env.PORTICO_HOME;

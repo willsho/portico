@@ -34,6 +34,24 @@ export interface DelegateProfile {
   sources: string[];
 }
 
+/** Frontmatter keys a profile understands (including accepted aliases). */
+const KNOWN_KEYS = new Set([
+  "name", "description", "to", "mode", "model", "effort",
+  "permissionProfile", "permission-profile",
+  "allowed", "allowedPaths", "forbidden", "forbiddenPaths",
+  "testCommands", "test", "idleTimeoutMs", "idleTimeout",
+]);
+const VALID_MODES = new Set(["implement", "review", "compare", "split"]);
+const VALID_PERMISSION_PROFILES = new Set(["default", "read-only", "auto-edit"]);
+
+/** A single profile file's lint result (per file, not merged), for `portico doctor`. */
+export interface ProfileLint {
+  name: string;
+  scope: "project" | "user";
+  path: string;
+  warnings: string[];
+}
+
 /** The two profile directories for a repo, in precedence order (project wins over user). */
 export function profileDirs(repo: string, env: NodeJS.ProcessEnv = process.env): { project: string; user: string } {
   const userBase = env["PORTICO_HOME"] ?? homedir();
@@ -69,6 +87,47 @@ export function listProfiles(repo: string, env: NodeJS.ProcessEnv = process.env)
     .sort()
     .map((name) => loadProfile(repo, name, env))
     .filter((p): p is DelegateProfile => p !== undefined);
+}
+
+/**
+ * Lint every profile file (per file, not merged) so `portico doctor` can surface authoring
+ * mistakes the lenient loader otherwise swallows: unknown frontmatter keys (typos), invalid
+ * `mode` / `permissionProfile` values, and a non-numeric `idleTimeoutMs`.
+ */
+export function lintProfiles(repo: string, env: NodeJS.ProcessEnv = process.env): ProfileLint[] {
+  const dirs = profileDirs(repo, env);
+  const results: ProfileLint[] = [];
+  for (const [scope, dir] of [["project", dirs.project], ["user", dirs.user]] as const) {
+    for (const file of safeReaddir(dir).sort()) {
+      if (!file.endsWith(".md")) continue;
+      const path = join(dir, file);
+      let data: Record<string, unknown>;
+      try {
+        data = parseFrontmatter(readFileSync(path, "utf8")).data;
+      } catch {
+        results.push({ name: file.slice(0, -3), scope, path, warnings: ["could not read the file"] });
+        continue;
+      }
+      const warnings: string[] = [];
+      for (const key of Object.keys(data)) {
+        if (!KNOWN_KEYS.has(key)) warnings.push(`unknown key "${key}" (ignored — typo?)`);
+      }
+      const mode = data.mode;
+      if (typeof mode === "string" && !VALID_MODES.has(mode)) {
+        warnings.push(`invalid mode "${mode}" (expected ${[...VALID_MODES].join(" | ")})`);
+      }
+      const perm = data.permissionProfile ?? data["permission-profile"];
+      if (typeof perm === "string" && !VALID_PERMISSION_PROFILES.has(perm)) {
+        warnings.push(`invalid permissionProfile "${perm}" (expected ${[...VALID_PERMISSION_PROFILES].join(" | ")})`);
+      }
+      const idle = data.idleTimeoutMs ?? data.idleTimeout;
+      if (idle !== undefined && asNumber(idle) === undefined) {
+        warnings.push(`idleTimeoutMs "${String(idle)}" is not a number`);
+      }
+      results.push({ name: file.slice(0, -3), scope, path, warnings });
+    }
+  }
+  return results;
 }
 
 function safeReaddir(dir: string): string[] {
