@@ -449,6 +449,7 @@ const CONFLICT_CODES = new Set([
   "working_tree_dirty",
   "no_ready_children",
   "missing_diff",
+  "hook_blocked",
 ]);
 
 function writeDelegationError(res: ServerResponse, err: unknown): void {

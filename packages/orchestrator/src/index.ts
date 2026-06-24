@@ -7,6 +7,8 @@ export {
 export type { DelegationOrchestrator } from "./orchestrator.ts";
 export { buildRunVerdict } from "./verdict.ts";
 export type { RunVerdict, TestTally } from "./verdict.ts";
+export { readHooksConfig, normalizeHooks, runGateHooks } from "./hooks.ts";
+export type { HookEvent, HookSpec, HooksConfig, HookPayload, GateResult } from "./hooks.ts";
 export type {
   ChildSpec,
   CleanupOptions,

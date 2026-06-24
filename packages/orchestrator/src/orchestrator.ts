@@ -36,6 +36,7 @@ import type {
 import { createSemaphore, mergeAsyncIterables } from "./concurrency.ts";
 import type { Semaphore } from "./concurrency.ts";
 import { buildRunVerdict } from "./verdict.ts";
+import { readHooksConfig, runGateHooks } from "./hooks.ts";
 
 const DEFAULT_FORBIDDEN = [".env", ".ssh/**", "node_modules/**", "dist/**", "build/**"];
 
@@ -245,6 +246,7 @@ export function createDelegationOrchestrator(options: OrchestratorOptions = {}):
         throw new DelegationError("missing_diff", `Run ${id} does not have a diff.patch artifact.`);
       }
       await assertTrackedTreeClean(repoPath);
+      await gatePreApply(repoPath, details);
       const applied = await capture("git", ["-C", repoPath, "apply", "--binary", details.artifacts.diffPath]);
       if (applied.code !== 0) {
         throw new DelegationError("apply_failed", (applied.stderr || applied.stdout || "git apply failed").trim());
@@ -1248,6 +1250,42 @@ function extractFirstJsonObject(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * preApply gate: run any configured `preApply` hooks just before a patch lands in the main
+ * tree. A blocking hook throws, so the apply RPC fails with a `hook_blocked` error and nothing
+ * is applied. Covers every apply path (single run, group child, group merged) so a repo-level
+ * apply policy can't be bypassed by choosing a different apply shape.
+ */
+async function gatePreApply(repoPath: string, details: RunDetails): Promise<void> {
+  const hooks = await readHooksConfig(repoPath);
+  if (!hooks.preApply?.length) return;
+  const { run, result, artifacts } = details;
+  const verdict = buildRunVerdict(run, result);
+  const gate = await runGateHooks(
+    hooks,
+    {
+      event: "preApply",
+      runId: run.id,
+      repo: repoPath,
+      worktree: run.worktreePath,
+      mode: run.mode,
+      targetAgent: run.targetAgent,
+      status: run.status,
+      changedFiles: result?.changedFiles ?? [],
+      outOfTreeChanges: result?.outOfTreeChanges ?? [],
+      sandboxEscaped: result?.sandboxEscaped ?? false,
+      reviewDecision: result?.reviewDecision ?? null,
+      tests: verdict.tests,
+      verify: verdict.verify,
+      reportPath: artifacts.reportPath,
+      diffPath: artifacts.diffPath,
+      resultPath: artifacts.resultPath,
+    },
+    repoPath,
+  );
+  if (gate.blocked) throw new DelegationError("hook_blocked", gate.reason ?? "preApply hook blocked the apply.");
+}
+
 async function applyChild(repoPath: string, groupId: string, childId: string, allow?: string[]): Promise<RunDetails> {
   const group = await readRunDetails(repoPath, groupId);
   if (!group.run.childRunIds?.includes(childId)) {
@@ -1273,6 +1311,7 @@ async function applyChild(repoPath: string, groupId: string, childId: string, al
   }
 
   await assertTrackedTreeClean(repoPath);
+  await gatePreApply(repoPath, child);
   const applied = await capture("git", ["-C", repoPath, "apply", "--binary", child.artifacts.diffPath]);
   if (applied.code !== 0) {
     throw new DelegationError("apply_failed", (applied.stderr || applied.stdout || "git apply failed").trim());
@@ -1325,6 +1364,7 @@ async function applyGroupMerged(repoPath: string, groupId: string): Promise<RunD
   }
 
   await assertTrackedTreeClean(repoPath);
+  await gatePreApply(repoPath, group);
   const applied = await capture("git", ["-C", repoPath, "apply", "--binary", diffPath]);
   if (applied.code !== 0) {
     throw new DelegationError("apply_failed", (applied.stderr || applied.stdout || "git apply failed").trim());
@@ -1865,6 +1905,21 @@ async function* runSingleDelegation(
     }
     const mainWorkspaceSnapshot =
       isolation.workspace === "worktree" ? await captureMainWorkspaceSnapshot(repoPath) : undefined;
+
+    // preLaunch gate: a precondition hook that can block before we burn an agent run. Runs in
+    // the workspace the agent will use; a non-zero exit throws → the run lands as failed.
+    {
+      const hooks = await readHooksConfig(repoPath);
+      if (hooks.preLaunch?.length) {
+        const gateCwd = isolation.workspace === "worktree" ? worktreePath : repoPath;
+        const gate = await runGateHooks(
+          hooks,
+          { event: "preLaunch", runId: run.id, repo: repoPath, worktree: worktreePath, mode, targetAgent: request.to, task: run.task, depth: run.depth },
+          gateCwd,
+        );
+        if (gate.blocked) throw new DelegationError("hook_blocked", gate.reason ?? "preLaunch hook blocked the run.");
+      }
+    }
 
     run = await updateRun(run, { status: mode === "review" ? "reviewing" : "running" });
     yield await recordEvent(artifacts.eventsPath, { type: "agent_start", runId: run.id, agent: request.to });

@@ -563,10 +563,28 @@ portico apply <group_id> --all         # split group: apply the merged patch
 - the run has no `diff.patch` (or a split group has no merged patch);
 - a compare group is applied without `--child`, or `--all` targets a non-split group;
 - the main worktree has tracked changes;
+- a configured `preApply` [hook](#lifecycle-hooks) exits non-zero (a programmable apply gate);
 - `git apply` fails.
 
 Applied changes land in the main worktree as ordinary unstaged file changes. Portico does
 not commit them. `apply --all` marks every contributing child `applied` alongside the group.
+
+## Lifecycle Hooks
+
+A repo can declare **gate hooks** in `.portico/config.json` that run at a delegation's two
+"before-action" points and can block it — generalizing Portico's built-in apply guards into a
+policy hook you control:
+
+- `preLaunch` runs (in the worktree) after isolation is set up but before the agent launches; a
+  non-zero exit aborts the run before any agent time is spent. Use it for preconditions —
+  fixtures, dependency install, a clean-state check.
+- `preApply` runs (in the repo) just before any patch lands, for every apply shape; a non-zero
+  exit blocks the apply. Use it as a programmable gate — a secret scan, a license check, a
+  custom lint that *must* pass before code reaches the main tree.
+
+Each hook receives a JSON payload on stdin and is **fail-closed** (a non-zero exit, spawn error,
+or timeout all block). See [Lifecycle Hooks in the configuration guide](configuration.md#lifecycle-hooks)
+for the config shape, the full payload, and timeout behavior.
 
 ## Discard
 

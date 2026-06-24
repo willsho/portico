@@ -207,6 +207,9 @@ yourself, or anything where spinning up a separate agent adds no value.
    - `ready` and the diff looks right → present a summary and **ask before** running
      `portico apply <run_id>`. Apply refuses unless the main tree's tracked files are clean,
      then lands the patch in the main working tree (unstaged) for the user to review and commit.
+     A repo may also configure a `preApply` gate hook (see [Lifecycle hooks](#lifecycle-hooks)):
+     if apply fails with `hook_blocked`, surface the hook's message to the user and fix the
+     underlying issue — it's a deliberate policy gate, don't try to route around it.
    - `failed` → read `.portico/runs/<run_id>/test.log` to diagnose, then either start a
      **new** run with a sharper task or `portico discard <run_id>`.
    - `failed` **solely** because of `path_not_allowed` (check `## Portico Observations` /
@@ -286,6 +289,23 @@ pass, so any explicit flag (or `--child` key) always wins.
   (auto-edit + tests). Editing or deleting them is fine; re-running `init` never overwrites
   an existing profile.
 
+## Lifecycle hooks
+
+A repo can declare **gate hooks** in `.portico/config.json` that run at two "before-action"
+points and can block a delegation. You don't invoke these — Portico runs them — but you should
+recognize when one fires:
+
+- `preLaunch` runs after the worktree is created, before the agent launches. A non-zero exit
+  aborts the run before any agent time is spent; it surfaces as a `run_error` with code
+  `hook_blocked`.
+- `preApply` runs just before any patch lands (single run, group child, or group merged). A
+  non-zero exit blocks `apply` with a `hook_blocked` error.
+
+These are repo-level policy gates (e.g. a secret scan or license check that must pass before
+code reaches the main tree), and they are **fail-closed**. When you hit `hook_blocked`, read the
+hook's message, tell the user what the gate objected to, and address it — never try to bypass the
+gate. Hooks are configured by the repo owner; see `docs/configuration.md` for the format.
+
 ## Hard rules
 
 - Never edit the user's main working tree to do delegated work yourself.
@@ -360,3 +380,7 @@ pass, so any explicit flag (or `--child` key) always wins.
   you can skip the retry and land it directly with user approval:
   `portico apply <run_id> --allow <path>…` (see "Decide apply vs discard" above).
 - `working_tree_dirty` on apply → commit or stash the main tree first, then apply.
+- `hook_blocked` → a repo gate hook ([Lifecycle hooks](#lifecycle-hooks)) refused the action: a
+  `preApply` hook blocked the apply, or a `preLaunch` hook stopped the run before the agent. The
+  error carries the hook's own message — relay it to the user and fix what the gate flagged; this
+  is a deliberate policy gate, not a transient error to retry around.

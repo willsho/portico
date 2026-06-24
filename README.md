@@ -273,6 +273,12 @@ Delegation controls in the MVP:
   and cost fields.
 - `apply` requires an explicit command, only applies implement runs, and refuses to run
   when tracked files in the main worktree are dirty.
+- **Lifecycle gate hooks** (`.portico/config.json` `hooks`) let a repo block a delegation at two
+  points: `preLaunch` (after the worktree, before the agent — aborts the run) and `preApply`
+  (before any patch lands, for every apply shape — blocks the apply). Each hook gets a JSON
+  payload on stdin and is fail-closed (non-zero exit, spawn error, or timeout all block). Use it
+  for a secret scan / license check / custom lint that must pass before code reaches the main
+  tree. See [docs/configuration.md](docs/configuration.md#lifecycle-hooks).
 - `integrate <group_id>` merges an implement/split group's **ready** children into one patch
   on demand — useful for a `partial` group (some children failed, some ready) that did not
   auto-merge. On a conflict it records the conflicting files, their source child, and a
@@ -504,7 +510,8 @@ Register your own with `registerAdapter(myAdapter)`.
   patch is applied to the main working tree. Portico also checks for observed
   out-of-tree writes and fails the run if a delegate modifies the caller's checkout.
 - Delegation `apply` is never automatic; it must be triggered by the user and requires a
-  clean tracked working tree.
+  clean tracked working tree. A repo can add fail-closed `preApply` / `preLaunch` gate hooks
+  (see Delegation) to enforce its own policy before an agent launches or a patch lands.
 - Portico holds no host-app secrets and never reads host data — it only processes the
   `context` (or short-lived `contextUrl`) handed to it per request.
 
