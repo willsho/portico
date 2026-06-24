@@ -29,6 +29,7 @@ import {
 } from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
 import { buildContextSections } from "./context-pack.ts";
+import { loadProfile } from "../profiles.ts";
 
 
 export const EXIT_CLIENT_DISCONNECTED = 3;
@@ -57,6 +58,47 @@ function parseIdle(val: string | undefined): number | undefined {
   if (val === "0" || val === "off") return 0;
   const num = Number(val);
   return Number.isNaN(num) ? undefined : num;
+}
+
+/**
+ * Expand a `--child` JSON spec, resolving a `"profile"` key against `.portico/agents/`. The
+ * child's own keys win over the profile's fields (same CLI-flag-wins precedence as the top-level
+ * `--profile`). Returns `{ error }` on bad JSON, a missing profile, or a child left without a
+ * target agent. A child with no `"profile"` key passes through unchanged.
+ */
+export function expandChildSpec(repo: string, raw: string): ChildSpec | { error: string } {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return { error: `[portico] Invalid --child JSON: ${raw}` };
+  }
+
+  const profileName = typeof parsed.profile === "string" ? parsed.profile : undefined;
+  if (!profileName) return parsed as unknown as ChildSpec;
+
+  const profile = loadProfile(repo, profileName);
+  if (!profile) {
+    return { error: `[portico] --child profile "${profileName}" not found in .portico/agents/ or ~/.portico/agents/` };
+  }
+
+  const child = parsed as Partial<ChildSpec> & { profile?: string };
+  delete child.profile;
+  const merged: ChildSpec = {
+    to: child.to ?? profile.to ?? "",
+    task: child.task,
+    permissionProfile: child.permissionProfile ?? (profile.permissionProfile as ChildSpec["permissionProfile"]),
+    model: child.model ?? profile.model,
+    effort: child.effort ?? profile.effort,
+    allowedPaths: child.allowedPaths ?? profile.allowed,
+    forbiddenPaths: child.forbiddenPaths ?? profile.forbidden,
+    label: child.label ?? profileName,
+  };
+  if (!merged.to) {
+    return { error: `[portico] --child profile "${profileName}" has no target; add a "to" to the child or the profile` };
+  }
+  if (profile.body && merged.task) merged.task = `${profile.body}\n\n${merged.task}`;
+  return merged;
 }
 
 export async function buildIterateSection(details: RunDetails, maxChars = 20000): Promise<string> {
@@ -99,6 +141,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
     options: {
       help: { type: "boolean", short: "h" },
       to: { type: "string" },
+      profile: { type: "string" },
       from: { type: "string" },
       repo: { type: "string" },
       task: { type: "string" },
@@ -152,6 +195,7 @@ export async function delegateCommand(args: string[]): Promise<number> {
 
 Options:
   --to <agent>             Target agent to delegate to
+  --profile <name>         Apply a delegate profile from .portico/agents/<name>.md (CLI flags override it)
   --from <agent>           Agent that initiated this delegation
   --repo <path>            Repository path (default: cwd)
   --task <task>            The task description
@@ -229,6 +273,21 @@ Exit codes:
   }
 
   const repo = resolveRepoArg(values.repo);
+
+  // Delegate profile: a named preset that fills any DelegateRequest field the caller left unset.
+  // Resolved CLI-side so an explicit flag always wins; the daemon never sees the profile. The
+  // body (if any) is a standing preamble prepended to the task — skipped for resume/continue,
+  // which reuse an existing run and only carry feedback text.
+  const profile = values.profile ? loadProfile(repo, values.profile) : undefined;
+  if (values.profile && !profile) {
+    console.error(`[portico] profile "${values.profile}" not found in .portico/agents/ or ~/.portico/agents/`);
+    return 1;
+  }
+  const effectiveTo = values.to ?? profile?.to;
+  if (profile?.body && !values.resume && !values.continue) {
+    task.value = `${profile.body}\n\n${task.value}`;
+  }
+
   const contextBlocks: string[] = [];
   const continuationFlags = [
     values.resume ? "--resume" : undefined,
@@ -308,22 +367,23 @@ Exit codes:
     return (await consumeRunStream(res, values.json ?? false, values.detach ?? false)).code;
   }
 
-  // Children: parse JSON specs from repeated --child flags.
+  // Children: parse JSON specs from repeated --child flags. A `"profile"` key expands into the
+  // profile's fields, with the child's own keys winning (same CLI-flag-wins precedence).
   let children: ChildSpec[] | undefined;
   if (values.child?.length) {
     children = [];
     for (const raw of values.child) {
-      try {
-        children.push(JSON.parse(raw) as ChildSpec);
-      } catch {
-        console.error(`[portico] Invalid --child JSON: ${raw}`);
+      const child = expandChildSpec(repo, raw);
+      if ("error" in child) {
+        console.error(child.error);
         return 1;
       }
+      children.push(child);
     }
   }
 
-  if (!values.to) {
-    console.error("Usage: portico delegate --to <agent> (--task <task> | --task-file <path>) [--repo .] [--test <cmd>]");
+  if (!effectiveTo) {
+    console.error("Usage: portico delegate --to <agent> (--task <task> | --task-file <path>) [--repo .] [--test <cmd>] (or set 'to' in --profile)");
     return 1;
   }
 
@@ -335,7 +395,7 @@ Exit codes:
     const hasTestFlag = (values.test?.length ?? 0) > 0;
     const hasTestCmd = hasTestFlag || /\b(npm (run|test)|pytest|go test|cargo test|yarn test|pnpm test)\b/i.test(packedText);
 
-    console.log(`[portico] dry-run task self-check (--to ${values.to}):`);
+    console.log(`[portico] dry-run task self-check (--to ${effectiveTo}):`);
     console.log(`  [${hasFilePath ? "✓" : "✗"}] names a concrete file or path`);
     console.log(`  [${hasAcceptance ? "✓" : "✗"}] states acceptance criteria`);
     console.log(`  [${hasTestCmd ? "✓" : "✗"}] specifies a test command`);
@@ -378,29 +438,30 @@ Exit codes:
     }
   }
 
+  // A profile only fills fields the caller left unset, so an explicit flag always wins.
   const request: DelegateRequest = {
-    to: values.to,
+    to: effectiveTo,
     from: values.from,
     repo: resolveRepoArg(values.repo),
     task: task.value,
     name: values.name,
-    mode: values.mode as DelegateRequest["mode"],
+    mode: (values.mode ?? profile?.mode) as DelegateRequest["mode"],
     isolation: values.isolation as DelegateRequest["isolation"],
     baseRef: values["base-ref"],
     cleanup: values.cleanup as DelegateRequest["cleanup"],
-    permissionProfile: values["permission-profile"] as DelegateRequest["permissionProfile"],
-    model: values.model,
-    effort: values.effort,
+    permissionProfile: (values["permission-profile"] ?? profile?.permissionProfile) as DelegateRequest["permissionProfile"],
+    model: values.model ?? profile?.model,
+    effort: values.effort ?? profile?.effort,
     compareTargets: values["compare-to"],
     children,
     fanIn,
-    testCommands: values.test,
+    testCommands: values.test ?? profile?.testCommands,
     verifyCommands: values.verify,
-    allowedPaths: values.allowed,
-    forbiddenPaths: values.forbidden,
+    allowedPaths: values.allowed ?? profile?.allowed,
+    forbiddenPaths: values.forbidden ?? profile?.forbidden,
     expectedChangePaths: expectedChangePaths,
     timeoutMs: values.timeout ? Number(values.timeout) : undefined,
-    idleTimeoutMs: parseIdle(values["idle-timeout"]),
+    idleTimeoutMs: parseIdle(values["idle-timeout"]) ?? profile?.idleTimeoutMs,
     expectNoChanges: values["expect-no-changes"],
     depth: Number(process.env["PORTICO_DELEGATION_DEPTH"] ?? "0"),
   };
@@ -442,30 +503,31 @@ Exit codes:
   }
 
   // Validate the chosen model for the single --to target (per-child validation is out of scope).
+  // The effective model may come from --model or a profile; either way validate/normalize it.
   // Only reject against an authoritative static catalog; an unknown/probe/empty catalog passes
   // through, and `--model-force` bypasses the check entirely (for newly-released ids).
-  if (values.model && request.to) {
+  if (request.model && request.to) {
     const provider = getProvider(request.to);
     if (provider && !modelSelectionSupported(provider)) {
       console.error(
-        `[portico] note: "${request.to}" manages model selection itself — --model ${values.model} is ignored.`,
+        `[portico] note: "${request.to}" manages model selection itself — model ${request.model} is ignored.`,
       );
     } else if (provider) {
       const entry = discovered.find((a) => a.provider === request.to);
       const models = entry ? await discoverModels(provider, entry) : [];
-      if (modelKnownIncompatible(provider, models, values.model) && !values["model-force"]) {
+      if (modelKnownIncompatible(provider, models, request.model) && !values["model-force"]) {
         const known = models
           .map((m) => (m.aliases?.length ? `${m.id} (${m.aliases.join(", ")})` : m.id))
           .join(", ");
         console.error(
-          `[portico] "${request.to}" does not recognize model "${values.model}".\n` +
+          `[portico] "${request.to}" does not recognize model "${request.model}".\n` +
             `  Known: ${known}\n` +
             `  Pass --model-force to send a custom id anyway.`,
         );
         return 1;
       }
       // Normalize an alias to its canonical id before sending (only when we have a catalog).
-      if (models.length > 0) request.model = resolveModel(models, values.model);
+      if (models.length > 0) request.model = resolveModel(models, request.model);
     }
   }
 
@@ -473,7 +535,7 @@ Exit codes:
   // is caught up front instead of after N fan-out agents have already burned time. For a
   // multi-agent fan-out at an interactive terminal, also require confirmation (skip with
   // --yes / non-TTY so agent-driven and scripted use never blocks).
-  if (!(await printPreflightAndConfirm(request, base, values.yes ?? false))) {
+  if (!(await printPreflightAndConfirm(request, base, values.yes ?? false, values.profile))) {
 
     console.error("[portico] aborted before launch (no agents started).");
     return 0;
@@ -762,14 +824,25 @@ function snippet(text: string): string {
  * stream, and confirmation is skipped for `--yes` and non-interactive (agent-driven / scripted)
  * use so automation never blocks.
  */
-async function printPreflightAndConfirm(request: DelegateRequest, base: string, skipConfirm: boolean): Promise<boolean> {
+async function printPreflightAndConfirm(request: DelegateRequest, base: string, skipConfirm: boolean, profileName?: string): Promise<boolean> {
   const { count, lines } = describeTargets(request);
   const worktreeRoot = join(request.repo, ".portico", "worktrees");
   console.error("[portico] preflight:");
   console.error(`  daemon:        ${base}`);
   console.error(`  repo:          ${request.repo}`);
+  if (profileName) console.error(`  profile:       ${profileName}`);
   console.error(`  base ref:      ${request.baseRef ?? "HEAD (default)"}`);
   console.error(`  worktree root: ${worktreeRoot}`);
+  // Echo the fields a profile/flags resolved to, so applying a profile shows what actually took
+  // effect. Only printed when set, so a plain run stays as terse as before.
+  if (request.mode) console.error(`  mode:          ${request.mode}`);
+  if (request.permissionProfile) console.error(`  permission:    ${request.permissionProfile}`);
+  if (request.model) console.error(`  model:         ${request.model}${request.effort ? ` (effort ${request.effort})` : ""}`);
+  else if (request.effort) console.error(`  effort:        ${request.effort}`);
+  if (request.allowedPaths?.length) console.error(`  allowed:       ${request.allowedPaths.join(", ")}`);
+  if (request.forbiddenPaths?.length) console.error(`  forbidden:     ${request.forbiddenPaths.join(", ")}`);
+  if (request.testCommands?.length) console.error(`  tests:         ${request.testCommands.join(", ")}`);
+  if (request.idleTimeoutMs !== undefined) console.error(`  idle timeout:  ${request.idleTimeoutMs === 0 ? "off" : `${request.idleTimeoutMs}ms`}`);
   console.error(`  timeout:       ${request.timeoutMs ? `${request.timeoutMs}ms` : "daemon default"}`);
   console.error(`  ${count === 1 ? "agent" : `agents (${count})`}:`);
   for (const line of lines) console.error(line);

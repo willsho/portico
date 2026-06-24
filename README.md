@@ -99,7 +99,9 @@ portico daemon start
 portico daemon stop
 portico agents [--url <url>] [--token <token>] [--json]
 portico models [--to <agent>] [--json]
+portico profiles list|show [<name>] [--repo .] [--json]
 portico delegate --to <agent> --repo . (--task "<task>" | --task-file <path>) [--test "npm test"]
+portico delegate --profile <name> --repo . --task "<task>"  # apply a saved preset; flags override it
 portico delegate --mode review --to <agent> --repo . --task "<review task>"
 portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" --judge-to <agent-c>
 portico delegate --mode split --to <agent-a> --repo . --task "<task>" \
@@ -135,14 +137,15 @@ portico doctor [--config path]
 ```
 
 `portico doctor` reports Node/platform, config source, login-shell PATH recovery,
-per-provider discovery (path, version, status, why-unavailable), port availability, and
-the CORS/LAN security posture.
+per-provider discovery (path, version, status, why-unavailable), delegate profiles (with lint
+warnings for unknown keys / invalid values), port availability, and the CORS/LAN security posture.
 
 `portico init` creates `.portico/config.json`, `.portico/runs`,
-`.portico/worktrees`, and local Portico Skill files for Claude Code and Codex-compatible
+`.portico/worktrees`, example delegate profiles under `.portico/agents/` (`reviewer`,
+`implementer`), and local Portico Skill files for Claude Code and Codex-compatible
 agent runtimes. Re-running it refreshes those Portico-managed Skill files from the
-canonical bundled Skill without overwriting an existing `.portico/config.json` or touching
-other project-level skills.
+canonical bundled Skill without overwriting an existing `.portico/config.json`, an existing
+profile, or other project-level skills.
 
 ## Delegation
 
@@ -206,6 +209,14 @@ project changes.
 
 Delegation controls in the MVP:
 
+- `--profile <name>` applies a reusable **delegate profile** — a named preset stored at
+  `.portico/agents/<name>.md` (project, version-controllable) or `~/.portico/agents/<name>.md`
+  (user). Its frontmatter fills any of `to` / `mode` / `model` / `effort` / `permissionProfile` /
+  `allowed` / `forbidden` / `testCommands` / `idleTimeoutMs` you didn't pass, and its Markdown body
+  is prepended to the task as standing instructions. Resolution is CLI-side and only fills unset
+  fields, so precedence is explicit flag > profile > config > default; a `--child '{"profile":…}'`
+  works the same per child. `portico profiles list` / `show <name>` inspect them; `portico init`
+  scaffolds `reviewer` and `implementer` examples. See [docs/delegation.md](docs/delegation.md#delegate-profiles).
 - Default max delegation depth is 1; nested delegation is blocked.
 - Default forbidden paths include `.env`, `.ssh/**`, `node_modules/**`, `dist/**`, and
   `build/**`.
@@ -262,6 +273,12 @@ Delegation controls in the MVP:
   and cost fields.
 - `apply` requires an explicit command, only applies implement runs, and refuses to run
   when tracked files in the main worktree are dirty.
+- **Lifecycle gate hooks** (`.portico/config.json` `hooks`) let a repo block a delegation at two
+  points: `preLaunch` (after the worktree, before the agent — aborts the run) and `preApply`
+  (before any patch lands, for every apply shape — blocks the apply). Each hook gets a JSON
+  payload on stdin and is fail-closed (non-zero exit, spawn error, or timeout all block). Use it
+  for a secret scan / license check / custom lint that must pass before code reaches the main
+  tree. See [docs/configuration.md](docs/configuration.md#lifecycle-hooks).
 - `integrate <group_id>` merges an implement/split group's **ready** children into one patch
   on demand — useful for a `partial` group (some children failed, some ready) that did not
   auto-merge. On a conflict it records the conflicting files, their source child, and a
@@ -493,7 +510,8 @@ Register your own with `registerAdapter(myAdapter)`.
   patch is applied to the main working tree. Portico also checks for observed
   out-of-tree writes and fails the run if a delegate modifies the caller's checkout.
 - Delegation `apply` is never automatic; it must be triggered by the user and requires a
-  clean tracked working tree.
+  clean tracked working tree. A repo can add fail-closed `preApply` / `preLaunch` gate hooks
+  (see Delegation) to enforce its own policy before an agent launches or a patch lands.
 - Portico holds no host-app secrets and never reads host data — it only processes the
   `context` (or short-lived `contextUrl`) handed to it per request.
 

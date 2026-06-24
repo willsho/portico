@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { discoverAgents, loginShellPath } from "@portico/core";
 import { installBuiltinAdapters } from "@portico/adapters";
 import { resolveConfig } from "@portico/daemon";
+import { lintProfiles } from "../profiles.ts";
 
 export async function doctorCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -65,6 +66,18 @@ Options:
     console.log(`  ${agent.provider.padEnd(10)} ${status.padEnd(12)} ${bits.join(" ")}`);
     if (agent.path) console.log(`             path: ${agent.path}`);
     if (agent.reason) console.log(`             note: ${agent.reason}`);
+  }
+  console.log("");
+
+  console.log("Profiles");
+  const lints = lintProfiles(process.cwd());
+  if (lints.length === 0) {
+    console.log("  none found (.portico/agents/ or ~/.portico/agents/).");
+  } else {
+    for (const lint of lints) {
+      console.log(`  ${lint.name.padEnd(14)} [${lint.scope.padEnd(7)}] ${lint.warnings.length ? "WARN" : "ok"}`);
+      for (const warning of lint.warnings) console.log(`             - ${warning}`);
+    }
   }
   console.log("");
 

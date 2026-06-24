@@ -42,7 +42,8 @@ yourself, or anything where spinning up a separate agent adds no value.
 2. **Pick the target agent** with `--to <agent>`. If the user named one, use it. Otherwise
    pick a *different* capable local agent than the one you are — run `portico agents` to see
    what's available. Never delegate to yourself, and never bypass Portico to call another
-   agent directly.
+   agent directly. A saved `--profile <name>` can supply the target (and more) — see
+   [Delegate profiles](#delegate-profiles).
 
 3. **Write a self-contained task.** The delegate sees only this text. A good task states:
    - the goal, in a sentence or two;
@@ -65,6 +66,11 @@ yourself, or anything where spinning up a separate agent adds no value.
      --test "npm test" \
      --allowed "src/**" --allowed "tests/**"
    ```
+   Reuse a preset with `--profile <name>`: it fills any flag you didn't pass from
+   `.portico/agents/<name>.md` (target, model, permission profile, path policy, test commands,
+   idle timeout) and prepends the profile's body to your task as standing instructions. An
+   explicit flag always overrides the profile. See [Delegate profiles](#delegate-profiles).
+
    Useful flags: `--name <slug>` (a human-readable run name shown in `runs`/`watch`; defaults
    to a slug of the task); repeatable `--test`; repeatable `--verify` (checks reported
    separately from tests — use for doc/policy tasks that have no test command); repeatable
@@ -122,8 +128,11 @@ yourself, or anything where spinning up a separate agent adds no value.
 
    Then `delegate` prints a **preflight** to stderr: the resolved daemon URL, the
    **absolute** repo path (a relative `--repo .` is resolved CLI-side, so it can't retarget the
-   daemon's cwd), the base ref, the worktree root, the effective timeout, and the agents about to run. Read it back to
-   confirm the run is pointed at the repo you intended before agents start working.
+   daemon's cwd), the base ref, the worktree root, the effective timeout, and the agents about to
+   run — plus, when set (e.g. from a `--profile`), the resolved mode, permission profile,
+   model/effort, path policy, test commands, and idle timeout, so you can confirm what a profile
+   actually resolved to. Read it back to confirm the run is pointed at the repo you intended
+   before agents start working.
 
    `--apply-on-ready` is an explicit opt-in that auto-applies a **single** ready run only when
    every safety guard holds — you passed `--allowed` (a path boundary), the tracked tree is
@@ -198,6 +207,9 @@ yourself, or anything where spinning up a separate agent adds no value.
    - `ready` and the diff looks right → present a summary and **ask before** running
      `portico apply <run_id>`. Apply refuses unless the main tree's tracked files are clean,
      then lands the patch in the main working tree (unstaged) for the user to review and commit.
+     A repo may also configure a `preApply` gate hook (see [Lifecycle hooks](#lifecycle-hooks)):
+     if apply fails with `hook_blocked`, surface the hook's message to the user and fix the
+     underlying issue — it's a deliberate policy gate, don't try to route around it.
    - `failed` → read `.portico/runs/<run_id>/test.log` to diagnose, then either start a
      **new** run with a sharper task or `portico discard <run_id>`.
    - `failed` **solely** because of `path_not_allowed` (check `## Portico Observations` /
@@ -256,6 +268,44 @@ yourself, or anything where spinning up a separate agent adds no value.
 - Don't chain delegations: if you are yourself a delegate running inside a Portico worktree,
   do not call `portico delegate` again — nested delegation is rejected by the daemon's depth guard.
 
+## Delegate profiles
+
+A **profile** is a named, reusable preset for a delegation, stored as a Markdown file with
+frontmatter at `.portico/agents/<name>.md` (project scope — shareable via version control) or
+`~/.portico/agents/<name>.md` (user scope — personal, all repos). The project scope overrides
+the user scope field-by-field. Resolution is CLI-side: a profile only fills fields you didn't
+pass, so any explicit flag (or `--child` key) always wins.
+
+- Frontmatter fields: `to`, `mode`, `model`, `effort`, `permissionProfile`, `allowed`,
+  `forbidden`, `testCommands`, `idleTimeoutMs`, `description`.
+- The Markdown **body** is a standing task preamble — prepended to your task, the way a
+  subagent's system prompt frames every run.
+- Apply one with `portico delegate --profile <name> …`. A `--child` can pull a profile too:
+  `--child '{"profile":"backend","task":"…"}'` (the child's own keys win over the profile's).
+- Inspect with `portico profiles list` and `portico profiles show <name>` (`--json` for both).
+  `portico doctor` also lists profiles and flags authoring mistakes (unknown frontmatter keys,
+  invalid `mode` / `permissionProfile` values).
+- `portico init` scaffolds two examples — `reviewer` (read-only review) and `implementer`
+  (auto-edit + tests). Editing or deleting them is fine; re-running `init` never overwrites
+  an existing profile.
+
+## Lifecycle hooks
+
+A repo can declare **gate hooks** in `.portico/config.json` that run at two "before-action"
+points and can block a delegation. You don't invoke these — Portico runs them — but you should
+recognize when one fires:
+
+- `preLaunch` runs after the worktree is created, before the agent launches. A non-zero exit
+  aborts the run before any agent time is spent; it surfaces as a `run_error` with code
+  `hook_blocked`.
+- `preApply` runs just before any patch lands (single run, group child, or group merged). A
+  non-zero exit blocks `apply` with a `hook_blocked` error.
+
+These are repo-level policy gates (e.g. a secret scan or license check that must pass before
+code reaches the main tree), and they are **fail-closed**. When you hit `hook_blocked`, read the
+hook's message, tell the user what the gate objected to, and address it — never try to bypass the
+gate. Hooks are configured by the repo owner; see `docs/configuration.md` for the format.
+
 ## Hard rules
 
 - Never edit the user's main working tree to do delegated work yourself.
@@ -272,6 +322,9 @@ yourself, or anything where spinning up a separate agent adds no value.
 - `portico agents [--url <url>] [--token <token>] [--json]` — list local agents you can delegate to (does not require a running daemon).
 - `portico models [--to <agent>] [--json]` — list the models each agent can run (id, default, aliases). claude has a fixed catalog; cursor and opencode are probed live from the CLI on demand (so this is slower than `portico agents`); agents that self-manage model choice show "model selection managed by runtime". The model/effort a run actually used is recorded in its `report.md` (and per child in a group's candidate list).
 - `portico delegate --to <agent> --repo . --task "<task>" [--test "<cmd>"]…` — run a delegation (exit 0 success, 1 fail, 3 client disconnected).
+- `portico delegate --profile <name> --task "<task>"` — apply a saved delegate profile; explicit flags override it.
+- `portico profiles list [--repo .] [--json]` — list delegate profiles from `.portico/agents/` and `~/.portico/agents/`.
+- `portico profiles show <name> [--repo .] [--json]` — show one resolved profile (project merged over user).
 - `portico delegate --mode review --to <agent> --repo . --task "<task>"` — run a read-only review.
 - `portico delegate --mode compare --to <agent-a> --compare-to <agent-b> --repo . --task "<task>" [--judge-to <agent>]` — run candidate implementations for comparison.
 - `portico delegate --mode split --to <agent> --repo . --task "<task>" --child '{…,"task":"…"}' --child '{…}'` — split into complementary sub-tasks and merge.
@@ -327,3 +380,7 @@ yourself, or anything where spinning up a separate agent adds no value.
   you can skip the retry and land it directly with user approval:
   `portico apply <run_id> --allow <path>…` (see "Decide apply vs discard" above).
 - `working_tree_dirty` on apply → commit or stash the main tree first, then apply.
+- `hook_blocked` → a repo gate hook ([Lifecycle hooks](#lifecycle-hooks)) refused the action: a
+  `preApply` hook blocked the apply, or a `preLaunch` hook stopped the run before the agent. The
+  error carries the hook's own message — relay it to the user and fix what the gate flagged; this
+  is a deliberate policy gate, not a transient error to retry around.

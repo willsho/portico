@@ -233,6 +233,40 @@ Delegation uses these commands when `--test` is omitted:
 
 Command-line `--test` flags take precedence for that run.
 
+### Lifecycle Hooks
+
+The repository config can also declare **gate hooks** — commands that run at a delegation's two
+"before-action" decision points and can block it:
+
+```json
+{
+  "testCommands": ["npm test"],
+  "hooks": {
+    "preLaunch": [
+      { "command": "./scripts/setup-fixtures.sh" }
+    ],
+    "preApply": [
+      { "command": "./scripts/secret-scan.sh", "timeoutMs": 30000 }
+    ]
+  }
+}
+```
+
+- `preLaunch` runs after the isolated worktree is created but before the target agent launches,
+  with the worktree as its working directory. A non-zero exit aborts the run before any agent
+  time is spent (the run lands `failed` with a `hook_blocked` reason).
+- `preApply` runs just before a patch lands in the main tree (for every apply shape — single
+  run, group child, and group merged), with the repo as its working directory. A non-zero exit
+  blocks the apply; nothing is written to the working tree.
+
+Each hook receives a JSON payload on **stdin** describing the run (`event`, `runId`, `repo`,
+`worktree`, `mode`, `targetAgent`, and — for `preApply` — `status`, `changedFiles`,
+`outOfTreeChanges`, `sandboxEscaped`, `reviewDecision`, `tests`/`verify` tallies, and the
+artifact paths). `command` runs through the shell. The gate is **fail-closed**: a non-zero exit,
+a spawn error, or exceeding `timeoutMs` (default 60s) all block the action — a crashing policy
+check never silently lets an apply through. Hooks run in declared order; the first to block wins
+and its stderr is surfaced.
+
 ## Discovery Troubleshooting
 
 Run:

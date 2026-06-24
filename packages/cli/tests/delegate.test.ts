@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildIterateSection, delegateCommand, parseCoverageManifest, printEvent } from "../src/commands/delegate.ts";
+import { buildIterateSection, delegateCommand, expandChildSpec, parseCoverageManifest, printEvent } from "../src/commands/delegate.ts";
 import { registerProvider } from "@portico/core";
 import { buildContextSections } from "../src/commands/context-pack.ts";
 import type { RunDetails } from "@portico/orchestrator";
@@ -429,6 +429,176 @@ test("delegate returns 1 on run_error", async () => {
     globalThis.fetch = originalFetch;
     console.log = originalLog;
     console.error = originalError;
+  }
+});
+
+async function setupProfileRepo(profile: string, file = "reviewer.md"): Promise<{ repo: string; home: string }> {
+  const repo = await mkdtemp(join(tmpdir(), "portico-prof-repo-"));
+  const home = await mkdtemp(join(tmpdir(), "portico-prof-home-"));
+  await mkdir(join(repo, ".portico", "agents"), { recursive: true });
+  await writeFile(join(repo, ".portico", "agents", file), profile);
+  return { repo, home };
+}
+
+test("delegate --profile fills request fields and prepends the body; CLI flags override", async () => {
+  const { repo, home } = await setupProfileRepo(`---
+to: agent
+mode: review
+permissionProfile: read-only
+allowed:
+  - "src/**"
+testCommands:
+  - npm test
+idleTimeoutMs: 300000
+---
+Do a read-only review. Change nothing.`);
+
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalHome = process.env.PORTICO_HOME;
+  process.env.PORTICO_HOME = home; // hermetic user scope (empty)
+  let body = "";
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    body = String(init?.body ?? "");
+    return new Response(
+      `${JSON.stringify({ type: "run_done", runId: "run_1", status: "ready", reportPath: "r.md", resultPath: "x.json" })}\n`,
+      { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+    );
+  };
+  console.log = () => {};
+  console.error = () => {};
+
+  try {
+    let code = await delegateCommand([
+      "--profile", "reviewer", "--task", "check the auth module",
+      "--repo", repo, "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    let parsed = JSON.parse(body);
+    assert.equal(parsed.to, "agent");
+    assert.equal(parsed.mode, "review");
+    assert.equal(parsed.permissionProfile, "read-only");
+    assert.deepEqual(parsed.allowedPaths, ["src/**"]);
+    assert.deepEqual(parsed.testCommands, ["npm test"]);
+    assert.equal(parsed.idleTimeoutMs, 300000);
+    // Body is a standing preamble prepended ahead of the task.
+    assert.match(parsed.task, /^Do a read-only review\. Change nothing\.\n\ncheck the auth module/);
+
+    // Explicit flags win over the profile's fields.
+    code = await delegateCommand([
+      "--profile", "reviewer", "--task", "x", "--repo", repo,
+      "--permission-profile", "auto-edit", "--allowed", "lib/**",
+      "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    parsed = JSON.parse(body);
+    assert.equal(parsed.permissionProfile, "auto-edit");
+    assert.deepEqual(parsed.allowedPaths, ["lib/**"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+    if (originalHome === undefined) delete process.env.PORTICO_HOME;
+    else process.env.PORTICO_HOME = originalHome;
+    await rm(repo, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("delegate --profile echoes the resolved profile fields in the preflight", async () => {
+  const { repo, home } = await setupProfileRepo(`---
+to: agent
+mode: review
+permissionProfile: read-only
+allowed:
+  - "src/**"
+testCommands:
+  - npm test
+idleTimeoutMs: 300000
+---
+Review only.`);
+
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalHome = process.env.PORTICO_HOME;
+  process.env.PORTICO_HOME = home;
+  let errOut = "";
+  console.error = (msg?: unknown) => {
+    errOut += String(msg ?? "") + "\n";
+  };
+  console.log = () => {};
+  globalThis.fetch = async () =>
+    new Response(
+      `${JSON.stringify({ type: "run_done", runId: "run_1", status: "ready", reportPath: "r.md", resultPath: "x.json" })}\n`,
+      { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+    );
+  try {
+    const code = await delegateCommand([
+      "--profile", "reviewer", "--task", "x", "--repo", repo, "--url", "http://127.0.0.1:1",
+    ]);
+    assert.equal(code, 0);
+    assert.match(errOut, /profile:\s+reviewer/);
+    assert.match(errOut, /mode:\s+review/);
+    assert.match(errOut, /permission:\s+read-only/);
+    assert.match(errOut, /allowed:\s+src\/\*\*/);
+    assert.match(errOut, /tests:\s+npm test/);
+    assert.match(errOut, /idle timeout:\s+300000ms/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+    if (originalHome === undefined) delete process.env.PORTICO_HOME;
+    else process.env.PORTICO_HOME = originalHome;
+    await rm(repo, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("delegate --profile errors when the profile is not found", async () => {
+  const home = await mkdtemp(join(tmpdir(), "portico-prof-home-"));
+  const originalHome = process.env.PORTICO_HOME;
+  process.env.PORTICO_HOME = home;
+  try {
+    const result = await captureError(() =>
+      delegateCommand(["--profile", "nope", "--task", "x", "--url", "http://127.0.0.1:1"]),
+    );
+    assert.equal(result.code, 1);
+    assert.match(result.output, /profile "nope" not found/);
+  } finally {
+    if (originalHome === undefined) delete process.env.PORTICO_HOME;
+    else process.env.PORTICO_HOME = originalHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("expandChildSpec resolves a child's profile, with the child's own keys winning", async () => {
+  const { repo, home } = await setupProfileRepo(`---
+to: agent
+permissionProfile: read-only
+allowed:
+  - "src/**"
+---
+Backend preamble.`, "backend.md");
+  const originalHome = process.env.PORTICO_HOME;
+  process.env.PORTICO_HOME = home;
+  try {
+    const child = expandChildSpec(repo, JSON.stringify({ profile: "backend", task: "do the backend", permissionProfile: "auto-edit", label: "be" }));
+    assert.ok(!("error" in child));
+    assert.equal(child.to, "agent"); // from profile
+    assert.equal(child.permissionProfile, "auto-edit"); // child key wins
+    assert.deepEqual(child.allowedPaths, ["src/**"]); // from profile
+    assert.equal(child.label, "be");
+    assert.match(child.task ?? "", /^Backend preamble\.\n\ndo the backend/);
+
+    const missing = expandChildSpec(repo, JSON.stringify({ profile: "ghost", task: "x" }));
+    assert.ok("error" in missing);
+  } finally {
+    if (originalHome === undefined) delete process.env.PORTICO_HOME;
+    else process.env.PORTICO_HOME = originalHome;
+    await rm(repo, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
